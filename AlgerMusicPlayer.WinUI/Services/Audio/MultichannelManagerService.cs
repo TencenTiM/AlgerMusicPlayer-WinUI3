@@ -179,6 +179,14 @@ public class MultichannelManagerService : IDisposable
 
                 int sampleRate = 48000;
                 int channels = Math.Max(2, totalChannels);
+                // 测试音按逻辑音箱位置应用微调增益与静音，使滑块调节可直接听出差异
+                var gains = MultichannelGainSampleProvider.ComputeGains(_configService.Settings.Multichannel);
+                float speakerGain = speakerIndex < gains.Length ? gains[speakerIndex] : 1f;
+                // 5.1 模式下测试音的环绕左右 (4/5) 输出对调，与实际音箱位置一致
+                if (channels == 6 && (speakerIndex == 4 || speakerIndex == 5))
+                {
+                    speakerIndex = speakerIndex == 4 ? 5 : 4;
+                }
                 int mask = channels == 8
                     ? MultichannelSampleToWaveProvider.SpeakerMask7Point1Surround
                     : (channels == 6 ? MultichannelSampleToWaveProvider.SpeakerMask5Point1Back : 0x3);
@@ -189,7 +197,7 @@ public class MultichannelManagerService : IDisposable
                 int totalFrames = (int)(sampleRate * durationSeconds);
 
                 var sampleProvider = new SingleChannelTestSampleProvider(
-                    sampleRate, channels, speakerIndex, frequency, totalFrames);
+                    sampleRate, channels, speakerIndex, frequency, totalFrames, speakerGain);
 
                 var waveProvider = new MultichannelSampleToWaveProvider(sampleProvider, mask);
 
@@ -255,12 +263,14 @@ internal class SingleChannelTestSampleProvider : ISampleProvider
     private readonly int _targetChannel;
     private readonly double _frequency;
     private readonly int _totalFrames;
+    private readonly float _gain;
     private int _currentFrame;
 
     public WaveFormat WaveFormat { get; }
 
-    public SingleChannelTestSampleProvider(int sampleRate, int channels, int targetChannel, double frequency, int totalFrames)
+    public SingleChannelTestSampleProvider(int sampleRate, int channels, int targetChannel, double frequency, int totalFrames, float gain = 1f)
     {
+        _gain = gain;
         _channels = channels;
         _targetChannel = Math.Clamp(targetChannel, 0, channels - 1);
         _frequency = frequency;
@@ -294,7 +304,8 @@ internal class SingleChannelTestSampleProvider : ISampleProvider
                 window = 0.5 * (1.0 - Math.Cos(Math.PI * (_totalFrames - frameIdx) / fadeFrames));
             }
 
-            float sampleValue = (float)(Math.Sin(2.0 * Math.PI * _frequency * t) * 0.45 * window);
+            // 基础幅度 0.22，叠加 +12dB 增益后仍不削波
+            float sampleValue = (float)Math.Clamp(Math.Sin(2.0 * Math.PI * _frequency * t) * 0.22 * window * _gain, -1.0, 1.0);
 
             for (int ch = 0; ch < _channels; ch++)
             {

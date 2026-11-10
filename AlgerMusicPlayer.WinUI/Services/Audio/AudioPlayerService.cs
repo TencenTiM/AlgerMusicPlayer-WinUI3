@@ -415,6 +415,7 @@ public class AudioPlayerService : IDisposable
                 _isStoppingManually = false;
 
                 var eq = _configService.Settings.Equalizer;
+                await _mpvService.SetChannelGainsAsync(MultichannelGainSampleProvider.ComputeGains(_configService.Settings.Multichannel));
                 await _mpvService.LoadAsync(new MpvLoadRequest
                 {
                     FilePath = resolvedSource,
@@ -2249,6 +2250,8 @@ public class AudioPlayerService : IDisposable
     {
         _configService.Settings.Multichannel = config;
         _multichannelGainProvider?.ApplyConfig(config);
+        // 本地/SMB 文件走 mpv 后端，同步应用各音箱增益
+        _ = _mpvService.SetChannelGainsAsync(MultichannelGainSampleProvider.ComputeGains(config));
         _ = _configService.SaveSettingsAsync();
     }
 

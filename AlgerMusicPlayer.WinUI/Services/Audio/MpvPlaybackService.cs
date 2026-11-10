@@ -538,9 +538,15 @@ public sealed class MpvPlaybackService : IDisposable
                 }
                 break;
             case "audio-params":
+                int? prevChannels = _inputAudio?.ChannelCount;
                 _inputAudio = ParseAudioParams(data);
                 InputAudioParamsChanged?.Invoke(_inputAudio);
                 CheckChannelLayout();
+                // 声道数变化后按实际声道数重建多声道增益滤镜
+                if (_inputAudio?.ChannelCount != prevChannels && BuildChannelGainFilter(_channelGains) != null)
+                {
+                    _ = ApplyEqAsync(_lastLoadRequest?.EqEnabled ?? false, _lastLoadRequest?.EqBandGains ?? []);
+                }
                 break;
             case "audio-out-params":
                 _outputAudio = ParseAudioParams(data);
@@ -652,8 +658,39 @@ public sealed class MpvPlaybackService : IDisposable
 
     private Task ApplyEqAsync(bool enabled, float[] bandGains)
     {
-        string filter = enabled ? BuildEqFilter(bandGains) : string.Empty;
-        return SendCommandAsync(["af", "set", filter]);
+        var parts = new List<string>(2);
+        if (enabled) parts.Add(BuildEqFilter(bandGains));
+        string? channelFilter = BuildChannelGainFilter(_channelGains);
+        if (channelFilter != null) parts.Add(channelFilter);
+        return SendCommandAsync(["af", "set", string.Join(',', parts)]);
+    }
+
+    // 多声道各音箱独立线性增益 (索引顺序：FL FR C LFE SL SR BL BR)
+    private float[] _channelGains = [1f, 1f, 1f, 1f, 1f, 1f, 1f, 1f];
+
+    /// <summary>
+    /// 实时更新 mpv 后端的多声道各音箱增益与静音
+    /// </summary>
+    public async Task SetChannelGainsAsync(float[] gains)
+    {
+        _channelGains = (float[])gains.Clone();
+        try
+        {
+            await ApplyEqAsync(_lastLoadRequest?.EqEnabled ?? false, _lastLoadRequest?.EqBandGains ?? []);
+        }
+        catch
+        {
+            // mpv 尚未启动时忽略，加载时会自动应用
+        }
+    }
+
+    private string? BuildChannelGainFilter(float[] gains)
+    {
+        if (gains.All(g => Math.Abs(g - 1f) < 0.0001f)) return null;
+        // 表达式数量与实际输入声道数一致，aeval 按声道逐路乘以增益，c=same 保持原声道布局
+        int channels = Math.Clamp(_inputAudio?.ChannelCount ?? 2, 1, gains.Length);
+        var exprs = gains.Take(channels).Select((g, i) => string.Create(CultureInfo.InvariantCulture, $"val({i})*{g:0.#####}"));
+        return $"lavfi=[aeval=exprs='{string.Join('|', exprs)}':c=same]";
     }
 
     private static string BuildEqFilter(float[] bandGains)

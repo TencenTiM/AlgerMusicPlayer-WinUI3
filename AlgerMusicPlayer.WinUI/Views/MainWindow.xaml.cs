@@ -6125,7 +6125,8 @@ public sealed partial class MainWindow : Window
         SpeakerBadgeBackRight.Text = FormatDb(cfg.BackRightDb);
     }
 
-    private static string FormatDb(float db) => $"{(db >= 0 ? "+" : "")}{db:F1}dB";
+    // 先加 0f 消除 -0.0 导致的 "+-0.0dB" 显示
+    private static string FormatDb(float db) { db = MathF.Round(db, 1) + 0f; return $"{(db >= 0 ? "+" : "")}{db:F1}dB"; }
 
     private async void OnSpeakerNodeButtonClick(object sender, RoutedEventArgs e)
     {

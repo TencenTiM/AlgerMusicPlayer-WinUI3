@@ -22,32 +22,35 @@ public class MultichannelGainSampleProvider : ISampleProvider
 
     public void ApplyConfig(MultichannelConfig config)
     {
+        var gains = ComputeGains(config);
         lock (_lock)
         {
-            if (!config.IsEnabled)
-            {
-                Array.Fill(_channelGains, 1.0f);
-                return;
-            }
-
-            // 标准 Windows WAVEFORMATEXTENSIBLE 声道索引映射：
-            // 0: 前置左 (FL)
-            // 1: 前置右 (FR)
-            // 2: 前置中置 (C)
-            // 3: 重低音 (LFE / Subwoofer)
-            // 4: 环绕/后置左 (SL / BL)
-            // 5: 环绕/后置右 (SR / BR)
-            // 6: 侧环绕左 (7.1 SL)
-            // 7: 侧环绕右 (7.1 SR)
-            _channelGains[0] = config.MuteFrontLeft ? 0f : DbToLinear(config.FrontLeftDb);
-            _channelGains[1] = config.MuteFrontRight ? 0f : DbToLinear(config.FrontRightDb);
-            _channelGains[2] = config.MuteCenter ? 0f : DbToLinear(config.CenterDb);
-            _channelGains[3] = config.MuteSubwoofer ? 0f : DbToLinear(config.SubwooferDb);
-            _channelGains[4] = (config.MuteSurroundLeft || config.MuteBackLeft) ? 0f : DbToLinear((config.SurroundLeftDb + config.BackLeftDb) / 2f);
-            _channelGains[5] = (config.MuteSurroundRight || config.MuteBackRight) ? 0f : DbToLinear((config.SurroundRightDb + config.BackRightDb) / 2f);
-            _channelGains[6] = config.MuteSurroundLeft ? 0f : DbToLinear(config.SurroundLeftDb);
-            _channelGains[7] = config.MuteSurroundRight ? 0f : DbToLinear(config.SurroundRightDb);
+            Array.Copy(gains, _channelGains, _channelGains.Length);
         }
+    }
+
+    /// <summary>
+    /// 按标准 Windows WAVEFORMATEXTENSIBLE 声道索引计算 8 路线性增益：
+    /// 0: FL, 1: FR, 2: C, 3: LFE, 4: SL/BL, 5: SR/BR, 6: 7.1 SL, 7: 7.1 SR
+    /// </summary>
+    public static float[] ComputeGains(MultichannelConfig config)
+    {
+        var g = new float[8];
+        if (!config.IsEnabled)
+        {
+            Array.Fill(g, 1.0f);
+            return g;
+        }
+
+        g[0] = config.MuteFrontLeft ? 0f : DbToLinear(config.FrontLeftDb);
+        g[1] = config.MuteFrontRight ? 0f : DbToLinear(config.FrontRightDb);
+        g[2] = config.MuteCenter ? 0f : DbToLinear(config.CenterDb);
+        g[3] = config.MuteSubwoofer ? 0f : DbToLinear(config.SubwooferDb);
+        g[4] = (config.MuteSurroundLeft || config.MuteBackLeft) ? 0f : DbToLinear((config.SurroundLeftDb + config.BackLeftDb) / 2f);
+        g[5] = (config.MuteSurroundRight || config.MuteBackRight) ? 0f : DbToLinear((config.SurroundRightDb + config.BackRightDb) / 2f);
+        g[6] = config.MuteSurroundLeft ? 0f : DbToLinear(config.SurroundLeftDb);
+        g[7] = config.MuteSurroundRight ? 0f : DbToLinear(config.SurroundRightDb);
+        return g;
     }
 
     private static float DbToLinear(float db) => (float)Math.Pow(10.0, Math.Clamp(db, -24f, 18f) / 20.0);
