@@ -121,6 +121,12 @@
                         ToolTipService.ToolTip="下一首">
                         <FontIcon Glyph="&#xE893;" FontSize="11" />
                     </Button>
+                    <Button
+                        Style="{StaticResource MiniCircleActionButtonStyle}"
+                        Click="OnStopClick"
+                        ToolTipService.ToolTip="停止播放">
+                        <FontIcon Glyph="&#xE71A;" FontSize="10" />
+                    </Button>
                 </StackPanel>
 
                 <!-- 右侧：收藏红心 / 展开播放列表 / 还原主窗口 -->
@@ -190,11 +196,10 @@
             <Grid>
                 <ListView
                     x:Name="MiniQueueListView"
-                    SelectionMode="None"
+                    SelectionMode="Single"
                     CanReorderItems="True"
                     AllowDrop="True"
-                    IsItemClickEnabled="True"
-                    ItemClick="OnMiniQueueItemClick"
+                    IsItemClickEnabled="False"
                     Padding="8,6">
                     <ListView.ItemContainerStyle>
                         <Style TargetType="ListViewItem">
@@ -208,7 +213,9 @@
                             <Border
                                 CornerRadius="10"
                                 Padding="6,5"
-                                Background="Transparent">
+                                Background="Transparent"
+                                Tag="{Binding}"
+                                DoubleTapped="OnMiniQueueRowDoubleTapped">
                                 <Grid ColumnSpacing="8">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="40" />

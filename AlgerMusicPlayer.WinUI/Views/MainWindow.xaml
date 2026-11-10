@@ -660,12 +660,11 @@
                                 </Grid>
                                 <GridView
                                     x:Name="HomeNewSongsGrid"
-                                    SelectionMode="None"
-                                    IsItemClickEnabled="True"
-                                    ItemClick="OnHomeNewSongItemClick">
+                                    SelectionMode="Single"
+                                    IsItemClickEnabled="False">
                                     <GridView.ItemTemplate>
                                         <DataTemplate x:DataType="models:SongItem">
-                                            <Border Width="320" Padding="10,8" Margin="0,0,10,8" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" Tag="{x:Bind}" RightTapped="OnSongItemRightTapped">
+                                            <Border Width="320" Padding="10,8" Margin="0,0,10,8" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" Tag="{x:Bind}" DoubleTapped="OnHomeNewSongRowDoubleTapped" RightTapped="OnSongItemRightTapped">
                                                 <Grid ColumnSpacing="12">
                                                     <Grid.ColumnDefinitions>
                                                         <ColumnDefinition Width="48" />
@@ -768,12 +767,11 @@
                                 </Grid>
                                 <GridView
                                     x:Name="PodcastPreferredGrid"
-                                    SelectionMode="None"
-                                    IsItemClickEnabled="True"
-                                    ItemClick="OnPodcastPreferredItemClick">
+                                    SelectionMode="Single"
+                                    IsItemClickEnabled="False">
                                     <GridView.ItemTemplate>
                                         <DataTemplate x:DataType="models:RadioProgramItem">
-                                            <Border Width="320" Padding="10,8" Margin="0,0,10,8" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+                                            <Border Width="320" Padding="10,8" Margin="0,0,10,8" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" Tag="{x:Bind}" DoubleTapped="OnPodcastPreferredRowDoubleTapped">
                                                 <Grid ColumnSpacing="12">
                                                     <Grid.ColumnDefinitions>
                                                         <ColumnDefinition Width="52" />
@@ -1155,10 +1153,10 @@
                                     </Grid>
                                 </Border>
 
-                                <!-- 3A. 标准布局列表 (1:1 还原 StandardSongItem.vue: 48x48 圆角封面 + 标题/歌手 + 右侧 [ ♥ (▶) ] 胶囊，支持右键菜单) -->
+                                <!-- 3A. 标准布局列表 (1:1 还原 StandardSongItem.vue: 48x48 圆角封面 + 标题/歌手 + 右侧 [ ♥ (▶) ] 胶囊，支持双击播放与右键菜单) -->
                                 <ListView
                                     x:Name="DetailSongsListView"
-                                    SelectionMode="None"
+                                    SelectionMode="Single"
                                     IsItemClickEnabled="True"
                                     ItemClick="OnDetailSongItemClick">
                                     <ListView.ItemContainerStyle>
@@ -1175,6 +1173,7 @@
                                                 CornerRadius="12"
                                                 Background="Transparent"
                                                 Tag="{x:Bind}"
+                                                DoubleTapped="OnDetailSongRowDoubleTapped"
                                                 RightTapped="OnSongItemRightTapped">
                                                 <Grid ColumnSpacing="14">
                                                     <Grid.ColumnDefinitions>
@@ -1321,7 +1320,7 @@
                                 <ListView
                                     x:Name="DetailCompactSongsListView"
                                     Visibility="Collapsed"
-                                    SelectionMode="None"
+                                    SelectionMode="Single"
                                     IsItemClickEnabled="True"
                                     ItemClick="OnDetailSongItemClick">
                                     <ListView.ItemContainerStyle>
@@ -1336,9 +1335,11 @@
                                             <Border
                                                 Padding="8,6"
                                                 CornerRadius="10"
+                                                Background="Transparent"
                                                 BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
                                                 BorderThickness="0,0,0,1"
                                                 Tag="{x:Bind}"
+                                                DoubleTapped="OnDetailSongRowDoubleTapped"
                                                 RightTapped="OnSongItemRightTapped">
                                                 <Grid ColumnSpacing="12">
                                                     <Grid.ColumnDefinitions>
@@ -1567,12 +1568,11 @@
                             <ListView
                                 x:Name="SearchSongsListView"
                                 Visibility="Visible"
-                                SelectionMode="None"
-                                IsItemClickEnabled="True"
-                                ItemClick="OnSearchSongItemClick">
+                                SelectionMode="Single"
+                                IsItemClickEnabled="False">
                                 <ListView.ItemTemplate>
                                     <DataTemplate x:DataType="models:SongItem">
-                                        <Grid Padding="10,8" ColumnSpacing="12" Tag="{x:Bind}" RightTapped="OnSongItemRightTapped">
+                                        <Grid Padding="10,8" ColumnSpacing="12" Background="Transparent" Tag="{x:Bind}" DoubleTapped="OnSearchSongRowDoubleTapped" RightTapped="OnSongItemRightTapped">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="2*" />
                                                 <ColumnDefinition Width="*" />
@@ -1695,12 +1695,11 @@
                             <ListView
                                 x:Name="SearchBiliListView"
                                 Visibility="Collapsed"
-                                SelectionMode="None"
-                                IsItemClickEnabled="True"
-                                ItemClick="OnBiliVideoItemClick">
+                                SelectionMode="Single"
+                                IsItemClickEnabled="False">
                                 <ListView.ItemTemplate>
                                     <DataTemplate x:DataType="models:BilibiliVideoItem">
-                                        <Grid Padding="8" ColumnSpacing="14">
+                                        <Grid Padding="8" ColumnSpacing="14" Background="Transparent" Tag="{x:Bind}" DoubleTapped="OnBiliVideoRowDoubleTapped">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="120" />
                                                 <ColumnDefinition Width="*" />
@@ -1822,12 +1821,11 @@
                         <ListView
                             x:Name="BiliDedicatedListView"
                             Grid.Row="1"
-                            SelectionMode="None"
-                            IsItemClickEnabled="True"
-                            ItemClick="OnBiliVideoItemClick">
+                            SelectionMode="Single"
+                            IsItemClickEnabled="False">
                             <ListView.ItemTemplate>
                                 <DataTemplate x:DataType="models:BilibiliVideoItem">
-                                    <Grid Padding="8" ColumnSpacing="14">
+                                    <Grid Padding="8" ColumnSpacing="14" Background="Transparent" Tag="{x:Bind}" DoubleTapped="OnBiliVideoRowDoubleTapped">
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="128" />
                                             <ColumnDefinition Width="*" />
@@ -1887,12 +1885,11 @@
                             <ListView
                                 x:Name="FavoriteSongsListView"
                                 Visibility="Visible"
-                                SelectionMode="None"
-                                IsItemClickEnabled="True"
-                                ItemClick="OnFavoriteSongItemClick">
+                                SelectionMode="Single"
+                                IsItemClickEnabled="False">
                                 <ListView.ItemTemplate>
                                     <DataTemplate x:DataType="models:SongItem">
-                                        <Grid Padding="10,8" ColumnSpacing="12" Tag="{x:Bind}" RightTapped="OnSongItemRightTapped">
+                                        <Grid Padding="10,8" ColumnSpacing="12" Background="Transparent" Tag="{x:Bind}" DoubleTapped="OnFavoriteSongRowDoubleTapped" RightTapped="OnSongItemRightTapped">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="2*" />
                                                 <ColumnDefinition Width="*" />
@@ -1911,12 +1908,11 @@
                             <ListView
                                 x:Name="HistorySongsListView"
                                 Visibility="Collapsed"
-                                SelectionMode="None"
-                                IsItemClickEnabled="True"
-                                ItemClick="OnHistorySongItemClick">
+                                SelectionMode="Single"
+                                IsItemClickEnabled="False">
                                 <ListView.ItemTemplate>
                                     <DataTemplate x:DataType="models:SongItem">
-                                        <Grid Padding="10,8" ColumnSpacing="12" Tag="{x:Bind}" RightTapped="OnSongItemRightTapped">
+                                        <Grid Padding="10,8" ColumnSpacing="12" Background="Transparent" Tag="{x:Bind}" DoubleTapped="OnHistorySongRowDoubleTapped" RightTapped="OnSongItemRightTapped">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="2*" />
                                                 <ColumnDefinition Width="*" />
@@ -2175,11 +2171,10 @@
                                             x:Name="CurrentFolderSongsListView"
                                             Grid.Row="2"
                                             SelectionMode="Single"
-                                            IsItemClickEnabled="True"
-                                            ItemClick="OnCurrentFolderSongItemClick">
+                                            IsItemClickEnabled="False">
                                             <ListView.ItemTemplate>
                                                 <DataTemplate x:DataType="models:SongItem">
-                                                    <Grid Padding="6,6" ColumnSpacing="12" Tag="{x:Bind}" RightTapped="OnSongItemRightTapped">
+                                                    <Grid Padding="6,6" ColumnSpacing="12" Background="Transparent" Tag="{x:Bind}" DoubleTapped="OnCurrentFolderSongRowDoubleTapped" RightTapped="OnSongItemRightTapped">
                                                         <Grid.ColumnDefinitions>
                                                             <ColumnDefinition Width="40" />
                                                             <ColumnDefinition Width="2.5*" />
@@ -2225,11 +2220,10 @@
                                 <ListView
                                     x:Name="LocalSongsListView"
                                     SelectionMode="Single"
-                                    IsItemClickEnabled="True"
-                                    ItemClick="OnLocalSongItemClick">
+                                    IsItemClickEnabled="False">
                                     <ListView.ItemTemplate>
                                         <DataTemplate x:DataType="models:SongItem">
-                                            <Grid Padding="8,6" ColumnSpacing="12" Tag="{x:Bind}" RightTapped="OnSongItemRightTapped">
+                                            <Grid Padding="8,6" ColumnSpacing="12" Background="Transparent" Tag="{x:Bind}" DoubleTapped="OnLocalSongRowDoubleTapped" RightTapped="OnSongItemRightTapped">
                                                 <Grid.ColumnDefinitions>
                                                     <ColumnDefinition Width="40" />
                                                     <ColumnDefinition Width="2*" />
@@ -2679,14 +2673,16 @@
                                     </StackPanel>
 
                                     <!-- 已下载歌曲列表 -->
-                                    <ListView x:Name="CompletedDownloadsListView" SelectionMode="None">
+                                    <ListView x:Name="CompletedDownloadsListView" SelectionMode="Single">
                                         <ListView.ItemTemplate>
                                             <DataTemplate x:DataType="models:CompletedDownloadItem">
                                                 <Border
                                                     Style="{StaticResource FluentSettingsCardStyle}"
                                                     Margin="0,0,0,8"
                                                     Padding="14,10"
-                                                    CornerRadius="12">
+                                                    CornerRadius="12"
+                                                    Tag="{x:Bind}"
+                                                    DoubleTapped="OnCompletedDownloadRowDoubleTapped">
                                                     <Grid ColumnSpacing="14">
                                                         <Grid.ColumnDefinitions>
                                                             <ColumnDefinition Width="48" />
@@ -3433,12 +3429,11 @@
                                         <ListView
                                             x:Name="UserPlayRecordListView"
                                             MaxHeight="420"
-                                            SelectionMode="None"
-                                            IsItemClickEnabled="True"
-                                            ItemClick="OnUserPlayRecordItemClick">
+                                            SelectionMode="Single"
+                                            IsItemClickEnabled="False">
                                             <ListView.ItemTemplate>
                                                 <DataTemplate x:DataType="models:PlayRecordItem">
-                                                    <Grid Padding="4,6" ColumnSpacing="10">
+                                                    <Grid Padding="4,6" ColumnSpacing="10" Background="Transparent" Tag="{x:Bind}" DoubleTapped="OnUserPlayRecordRowDoubleTapped">
                                                         <Grid.ColumnDefinitions>
                                                             <ColumnDefinition Width="*" />
                                                             <ColumnDefinition Width="Auto" />
@@ -5107,11 +5102,10 @@
                         x:Name="QueueListView"
                         Grid.Row="1"
                         Padding="6,6,6,12"
-                        SelectionMode="None"
+                        SelectionMode="Single"
                         CanReorderItems="True"
                         AllowDrop="True"
-                        IsItemClickEnabled="True"
-                        ItemClick="OnQueueItemClick">
+                        IsItemClickEnabled="False">
                         <ListView.ItemContainerStyle>
                             <Style TargetType="ListViewItem">
                                 <Setter Property="HorizontalContentAlignment" Value="Stretch" />
@@ -5121,7 +5115,7 @@
                         </ListView.ItemContainerStyle>
                         <ListView.ItemTemplate>
                             <DataTemplate x:DataType="models:SongItem">
-                                <Grid ColumnSpacing="10" Padding="4,4">
+                                <Grid ColumnSpacing="10" Padding="4,4" Background="Transparent" Tag="{x:Bind}" DoubleTapped="OnQueueRowDoubleTapped">
                                     <Grid.ContextFlyout>
                                         <MenuFlyout>
                                             <MenuFlyoutItem Text="下一首播放" Tag="{x:Bind}" Click="OnQueueContextPlayNextClick">
@@ -6038,7 +6032,7 @@
                                 Orientation="Horizontal"
                                 HorizontalAlignment="Center"
                                 VerticalAlignment="Center"
-                                Spacing="24">
+                                Spacing="16">
                                 <Button
                                     x:Name="SimplePlayBarPrevBtn"
                                     Width="36"
@@ -6070,6 +6064,17 @@
                                     Click="OnNextButtonClick"
                                     ToolTipService.ToolTip="下一首">
                                     <FontIcon x:Name="SimplePlayBarNextIcon" Glyph="&#xE893;" FontSize="18" Foreground="White" />
+                                </Button>
+
+                                <Button
+                                    x:Name="SimplePlayBarStopBtn"
+                                    Width="36"
+                                    Height="36"
+                                    CornerRadius="18"
+                                    Style="{StaticResource TransportPrevNextButtonStyle}"
+                                    Click="OnStopButtonClick"
+                                    ToolTipService.ToolTip="停止播放">
+                                    <FontIcon x:Name="SimplePlayBarStopIcon" Glyph="&#xE71A;" FontSize="15" Foreground="White" />
                                 </Button>
                             </StackPanel>
 
@@ -6430,6 +6435,13 @@
                             Click="OnNextButtonClick"
                             ToolTipService.ToolTip="下一首 (Ctrl+Right)">
                             <FontIcon Glyph="&#xE893;" FontSize="16" />
+                        </Button>
+
+                        <Button
+                            Style="{StaticResource TransportPrevNextButtonStyle}"
+                            Click="OnStopButtonClick"
+                            ToolTipService.ToolTip="停止播放">
+                            <FontIcon Glyph="&#xE71A;" FontSize="14" />
                         </Button>
                     </StackPanel>
 

@@ -305,6 +305,8 @@ public sealed partial class MiniPlayerWindow : Window
 
     private void OnPlayPauseClick(object sender, RoutedEventArgs e) => _vm.Player.TogglePlayPause();
 
+    private void OnStopClick(object sender, RoutedEventArgs e) => _vm.Player.StopPlayback();
+
     private async void OnNextClick(object sender, RoutedEventArgs e) => await _vm.Player.NextAsync();
 
     private async void OnToggleLikeCurrentClick(object sender, RoutedEventArgs e)
@@ -337,10 +339,11 @@ public sealed partial class MiniPlayerWindow : Window
 
     // ==================== 迷你播放列表项交互 (MiniSongItem.vue) ====================
 
-    private async void OnMiniQueueItemClick(object sender, ItemClickEventArgs e)
+    private async void OnMiniQueueRowDoubleTapped(object sender, DoubleTappedRoutedEventArgs e)
     {
-        if (e.ClickedItem is SongItem song)
+        if (sender is FrameworkElement fe && fe.Tag is SongItem song)
         {
+            e.Handled = true;
             await _vm.Player.PlaySongAsync(song);
         }
     }

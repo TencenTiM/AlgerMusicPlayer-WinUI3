@@ -1446,10 +1446,11 @@ public sealed partial class MainWindow : Window
 
     private async void OnFmTrashClick(object sender, RoutedEventArgs e) => await ViewModel.TrashFmAsync();
 
-    private async void OnHomeNewSongItemClick(object sender, ItemClickEventArgs e)
+    private async void OnHomeNewSongRowDoubleTapped(object sender, DoubleTappedRoutedEventArgs e)
     {
-        if (e.ClickedItem is SongItem song)
+        if (sender is FrameworkElement fe && fe.Tag is SongItem song)
         {
+            e.Handled = true;
             ViewModel.IsFmModeActive = false;
             await ViewModel.Player.PlaySongAsync(song, ViewModel.HomeNewSongs);
         }
@@ -1482,10 +1483,11 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private async void OnPodcastPreferredItemClick(object sender, ItemClickEventArgs e)
+    private async void OnPodcastPreferredRowDoubleTapped(object sender, DoubleTappedRoutedEventArgs e)
     {
-        if (e.ClickedItem is RadioProgramItem program && program.MainSong != null)
+        if (sender is FrameworkElement fe && fe.Tag is RadioProgramItem program && program.MainSong != null)
         {
+            e.Handled = true;
             var queue = ViewModel.PodcastTodayPreferred
                 .Where(p => p.MainSong != null)
                 .Select(p => p.MainSong!)
@@ -1588,16 +1590,21 @@ public sealed partial class MainWindow : Window
         DetailCollectText.Text = ViewModel.IsDetailCollected ? "取消收藏" : "收藏";
     }
 
-    private async void OnDetailSongItemClick(object sender, ItemClickEventArgs e)
+    private void OnDetailSongItemClick(object sender, ItemClickEventArgs e)
     {
-        if (e.ClickedItem is SongItem song)
+        if (e.ClickedItem is SongItem song && ViewModel.IsDetailSelecting)
         {
-            if (ViewModel.IsDetailSelecting)
-            {
-                song.IsBatchSelected = !song.IsBatchSelected;
-                SyncDetailBatchSelectionUi();
-                return;
-            }
+            song.IsBatchSelected = !song.IsBatchSelected;
+            SyncDetailBatchSelectionUi();
+        }
+    }
+
+    private async void OnDetailSongRowDoubleTapped(object sender, DoubleTappedRoutedEventArgs e)
+    {
+        if (ViewModel.IsDetailSelecting) return;
+        if (sender is FrameworkElement fe && fe.Tag is SongItem song)
+        {
+            e.Handled = true;
             ViewModel.IsFmModeActive = false;
             var playList = ViewModel.FilteredDetailSongs.Count > 0 ? ViewModel.FilteredDetailSongs : ViewModel.DetailSongs;
             await ViewModel.Player.PlaySongAsync(song, playList);
@@ -2268,19 +2275,21 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private async void OnSearchSongItemClick(object sender, ItemClickEventArgs e)
+    private async void OnSearchSongRowDoubleTapped(object sender, DoubleTappedRoutedEventArgs e)
     {
-        if (e.ClickedItem is SongItem song)
+        if (sender is FrameworkElement fe && fe.Tag is SongItem song)
         {
+            e.Handled = true;
             ViewModel.IsFmModeActive = false;
             await ViewModel.Player.PlaySongAsync(song, ViewModel.SearchSongs);
         }
     }
 
-    private async void OnBiliVideoItemClick(object sender, ItemClickEventArgs e)
+    private async void OnBiliVideoRowDoubleTapped(object sender, DoubleTappedRoutedEventArgs e)
     {
-        if (e.ClickedItem is BilibiliVideoItem video)
+        if (sender is FrameworkElement fe && fe.Tag is BilibiliVideoItem video)
         {
+            e.Handled = true;
             await ViewModel.PlayBilibiliVideoAsAudioAsync(video);
         }
     }
@@ -2443,18 +2452,20 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private async void OnFavoriteSongItemClick(object sender, ItemClickEventArgs e)
+    private async void OnFavoriteSongRowDoubleTapped(object sender, DoubleTappedRoutedEventArgs e)
     {
-        if (e.ClickedItem is SongItem song)
+        if (sender is FrameworkElement fe && fe.Tag is SongItem song)
         {
+            e.Handled = true;
             await ViewModel.Player.PlaySongAsync(song, ViewModel.FavoriteSongs);
         }
     }
 
-    private async void OnHistorySongItemClick(object sender, ItemClickEventArgs e)
+    private async void OnHistorySongRowDoubleTapped(object sender, DoubleTappedRoutedEventArgs e)
     {
-        if (e.ClickedItem is SongItem song)
+        if (sender is FrameworkElement fe && fe.Tag is SongItem song)
         {
+            e.Handled = true;
             await ViewModel.Player.PlaySongAsync(song, ViewModel.HistorySongs);
         }
     }
@@ -2602,10 +2613,11 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private async void OnCurrentFolderSongItemClick(object sender, ItemClickEventArgs e)
+    private async void OnCurrentFolderSongRowDoubleTapped(object sender, DoubleTappedRoutedEventArgs e)
     {
-        if (e.ClickedItem is SongItem song)
+        if (sender is FrameworkElement fe && fe.Tag is SongItem song)
         {
+            e.Handled = true;
             ViewModel.IsFmModeActive = false;
             await ViewModel.Player.PlaySongAsync(song, ViewModel.CurrentFolderSongs);
         }
@@ -2625,10 +2637,11 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private async void OnLocalSongItemClick(object sender, ItemClickEventArgs e)
+    private async void OnLocalSongRowDoubleTapped(object sender, DoubleTappedRoutedEventArgs e)
     {
-        if (e.ClickedItem is SongItem song)
+        if (sender is FrameworkElement fe && fe.Tag is SongItem song)
         {
+            e.Handled = true;
             ViewModel.IsFmModeActive = false;
             await ViewModel.Player.PlaySongAsync(song, ViewModel.FilteredLocalSongs);
         }
@@ -2856,7 +2869,18 @@ public sealed partial class MainWindow : Window
     private async void OnPlayCompletedDownloadClick(object sender, RoutedEventArgs e)
     {
         if (sender is not Button btn || btn.Tag is not CompletedDownloadItem item) return;
+        await PlayCompletedDownloadItemInternalAsync(item);
+    }
 
+    private async void OnCompletedDownloadRowDoubleTapped(object sender, DoubleTappedRoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement fe || fe.Tag is not CompletedDownloadItem item) return;
+        e.Handled = true;
+        await PlayCompletedDownloadItemInternalAsync(item);
+    }
+
+    private async Task PlayCompletedDownloadItemInternalAsync(CompletedDownloadItem item)
+    {
         if (!File.Exists(item.FilePath))
         {
             ViewModel.Downloader.CompletedTasks.Remove(item);
@@ -3354,10 +3378,11 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private async void OnUserPlayRecordItemClick(object sender, ItemClickEventArgs e)
+    private async void OnUserPlayRecordRowDoubleTapped(object sender, DoubleTappedRoutedEventArgs e)
     {
-        if (e.ClickedItem is PlayRecordItem record)
+        if (sender is FrameworkElement fe && fe.Tag is PlayRecordItem record)
         {
+            e.Handled = true;
             var songs = ViewModel.UserPlayRecords.Select(r => r.Song).ToList();
             await ViewModel.Player.PlaySongAsync(record.Song, songs);
         }
@@ -4138,6 +4163,8 @@ public sealed partial class MainWindow : Window
     // ==================== 底部播放控制栏、倍速、10段独立EQ滑块与全屏沉浸歌词控制 ====================
 
     private void OnPlayPauseButtonClick(object sender, RoutedEventArgs e) => ViewModel.Player.TogglePlayPause();
+
+    private void OnStopButtonClick(object sender, RoutedEventArgs e) => ViewModel.Player.StopPlayback();
 
     private async void OnPrevButtonClick(object sender, RoutedEventArgs e) => await ViewModel.Player.PreviousAsync();
 
@@ -5123,6 +5150,7 @@ public sealed partial class MainWindow : Window
         SimplePlayBarDurationText.Foreground = mutedFg;
         SimplePlayBarModeIcon.Foreground = mainFg;
         SimplePlayBarPrevIcon.Foreground = mainFg;
+        SimplePlayBarStopIcon.Foreground = mainFg;
         SimplePlayBarNextIcon.Foreground = mainFg;
         SimplePlayBarQueueIcon.Foreground = mainFg;
         SimplePlayBarVolumeIcon.Foreground = mainFg;
@@ -5317,10 +5345,11 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private async void OnQueueItemClick(object sender, ItemClickEventArgs e)
+    private async void OnQueueRowDoubleTapped(object sender, DoubleTappedRoutedEventArgs e)
     {
-        if (e.ClickedItem is SongItem song)
+        if (sender is FrameworkElement fe && fe.Tag is SongItem song)
         {
+            e.Handled = true;
             await ViewModel.Player.PlaySongAsync(song);
         }
     }

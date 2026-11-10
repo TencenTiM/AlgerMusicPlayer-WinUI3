@@ -276,6 +276,7 @@ public class AudioPlayerService : IDisposable
             _smtc.IsEnabled = true;
             _smtc.IsPlayEnabled = true;
             _smtc.IsPauseEnabled = true;
+            _smtc.IsStopEnabled = true;
             _smtc.IsNextEnabled = true;
             _smtc.IsPreviousEnabled = true;
             _smtc.ButtonPressed += OnSmtcButtonPressed;
@@ -297,6 +298,9 @@ public class AudioPlayerService : IDisposable
                     break;
                 case SystemMediaTransportControlsButton.Pause:
                     Pause();
+                    break;
+                case SystemMediaTransportControlsButton.Stop:
+                    StopPlayback();
                     break;
                 case SystemMediaTransportControlsButton.Next:
                     _ = NextAsync();
@@ -1264,6 +1268,47 @@ public class AudioPlayerService : IDisposable
         IsPlaying = true;
         UpdateSmtcPlayState(true);
         PlayStateChanged?.Invoke(true);
+    }
+
+    /// <summary>
+    /// 停止当前歌曲播放并将播放进度重置为 00:00
+    /// </summary>
+    public void StopPlayback()
+    {
+        _loadCts?.Cancel();
+        _isStoppingManually = true;
+        StopInternal();
+
+        IsBuffering = false;
+        IsPlaying = false;
+        _configService.Settings.LastPlayedPositionSeconds = 0;
+        _ = _configService.SaveSettingsAsync();
+
+        if (_smtc != null)
+        {
+            try
+            {
+                _smtc.PlaybackStatus = MediaPlaybackStatus.Stopped;
+            }
+            catch
+            {
+            }
+        }
+
+        var dur = TimeSpan.FromMilliseconds(CurrentSong?.DurationMs ?? 0);
+        RunOnUi(() =>
+        {
+            if (CurrentSong != null)
+            {
+                CurrentSong.IsLoading = false;
+            }
+            foreach (var q in Queue)
+            {
+                q.IsAudioActivelyPlaying = false;
+            }
+            PlayStateChanged?.Invoke(false);
+            PositionChanged?.Invoke(TimeSpan.Zero, dur);
+        });
     }
 
     public void Seek(TimeSpan position)
