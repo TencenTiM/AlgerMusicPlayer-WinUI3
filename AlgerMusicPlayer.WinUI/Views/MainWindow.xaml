@@ -6791,14 +6791,21 @@
                 <!-- 主控制行 -->
                 <Grid Grid.Row="1">
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="340" />
+                        <ColumnDefinition Width="380" />
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="380" />
                     </Grid.ColumnDefinitions>
 
                     <!-- 左下角：圆角封面（带悬停展开/收起箭头遮罩，对应 PlayBar.vue .play-bar-img-wrapper）、曲名、歌手、音源胶囊、收藏矢量图标 -->
-                    <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Spacing="12">
+                    <Grid Grid.Column="0" VerticalAlignment="Center" ColumnSpacing="10" Margin="0,0,8,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+
                         <Button
+                            Grid.Column="0"
                             CornerRadius="8"
                             Style="{StaticResource CoverOverlayButtonStyle}"
                             Click="OnToggleImmersiveLyricClick"
@@ -6823,9 +6830,9 @@
                             </Grid>
                         </Button>
 
-                        <StackPanel VerticalAlignment="Center" MaxWidth="248" Spacing="2">
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
                             <StackPanel Orientation="Horizontal" Spacing="6">
-                                <TextBlock x:Name="BottomSongTitleText" Text="未在播放" FontWeight="SemiBold" MaxWidth="165" TextTrimming="CharacterEllipsis" />
+                                <TextBlock x:Name="BottomSongTitleText" Text="未在播放" FontWeight="SemiBold" MaxWidth="210" TextTrimming="CharacterEllipsis" />
                                 <Border Background="{StaticResource BrandAccentSubtleBrush}" CornerRadius="4" Padding="5,1" VerticalAlignment="Center">
                                     <TextBlock x:Name="BottomRateBadgeText" Text="1.0x" FontSize="10" Foreground="{StaticResource BrandAccentBrush}" FontWeight="SemiBold" />
                                 </Border>
@@ -6876,17 +6883,18 @@
                                     </Button.Flyout>
                                 </Button>
                             </StackPanel>
-                            <TextBlock x:Name="BottomInlineLyricText" Text="" FontSize="11" Foreground="{StaticResource BrandAccentBrush}" MaxWidth="235" TextTrimming="CharacterEllipsis" />
+                            <TextBlock x:Name="BottomInlineLyricText" Text="" FontSize="11" Foreground="{StaticResource BrandAccentBrush}" MaxWidth="265" TextTrimming="CharacterEllipsis" />
                         </StackPanel>
 
                         <Button
+                            Grid.Column="2"
                             x:Name="BottomLikeBtn"
                             Style="{StaticResource TransportIconButtonStyle}"
                             Click="OnToggleCurrentSongLikeClick"
                             ToolTipService.ToolTip="喜欢 / 取消喜欢当前歌曲">
                             <FontIcon x:Name="BottomLikeIcon" Glyph="&#xEB51;" FontSize="15" />
                         </Button>
-                    </StackPanel>
+                    </Grid>
 
                     <!-- 中部：Fluent 媒体传输按钮组（循环模式、上一首、圆形主播放键、下一首） -->
                     <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="10">
