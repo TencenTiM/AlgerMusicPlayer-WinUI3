@@ -1,3 +1,4 @@
+using AlgerMusicPlayer.WinUI.Helpers;
 using AlgerMusicPlayer.WinUI.Services.Api;
 using AlgerMusicPlayer.WinUI.Services.Audio;
 using AlgerMusicPlayer.WinUI.Services.Download;
@@ -22,6 +23,7 @@ public partial class App : Application
 
     public App()
     {
+        SingleInstanceGuard.AcquireOrRedirectAndExit();
         InitializeComponent();
         Services = ConfigureServices();
     }

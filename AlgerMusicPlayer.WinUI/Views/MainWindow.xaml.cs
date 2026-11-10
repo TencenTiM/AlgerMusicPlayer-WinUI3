@@ -108,6 +108,7 @@ public sealed partial class MainWindow : Window
         _appWindow.Changed += OnAppWindowChanged;
         _appWindow.Closing += OnAppWindowClosing;
         InitializeSystemTrayIcon();
+        SingleInstanceGuard.ExternalActivationRequested += OnExternalActivationRequested;
 
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(TitleBarDragRegion);
@@ -5408,6 +5409,8 @@ public sealed partial class MainWindow : Window
 
         if (_isForceExiting)
         {
+            SingleInstanceGuard.ExternalActivationRequested -= OnExternalActivationRequested;
+            SingleInstanceGuard.Release();
             RemoveSystemTrayIcon();
             ViewModel.Player.Dispose();
             _desktopLyricWindow?.Close();
@@ -5418,6 +5421,8 @@ public sealed partial class MainWindow : Window
         var closeAction = ViewModel.Config.Settings.CloseAction;
         if (string.Equals(closeAction, "close", StringComparison.OrdinalIgnoreCase))
         {
+            SingleInstanceGuard.ExternalActivationRequested -= OnExternalActivationRequested;
+            SingleInstanceGuard.Release();
             RemoveSystemTrayIcon();
             ViewModel.Player.Dispose();
             _desktopLyricWindow?.Close();
@@ -5499,6 +5504,8 @@ public sealed partial class MainWindow : Window
     private void ForceExitApplication()
     {
         _isForceExiting = true;
+        SingleInstanceGuard.ExternalActivationRequested -= OnExternalActivationRequested;
+        SingleInstanceGuard.Release();
         RemoveSystemTrayIcon();
         ViewModel.Player.Dispose();
         _desktopLyricWindow?.Close();
@@ -5704,13 +5711,42 @@ public sealed partial class MainWindow : Window
         _appWindow.Hide();
     }
 
+    private void OnExternalActivationRequested()
+    {
+        DispatcherQueue?.TryEnqueue(() =>
+        {
+            if (_miniPlayerWindow != null)
+            {
+                try
+                {
+                    _miniPlayerWindow.Close();
+                }
+                catch
+                {
+                }
+                _miniPlayerWindow = null;
+            }
+            ShowMainWindowRestoringBounds();
+        });
+    }
+
     private void ShowMainWindowRestoringBounds()
     {
-        if (_hasSessionWindowBounds && _appWindow.Presenter is OverlappedPresenter { State: OverlappedPresenterState.Restored })
+        if (_appWindow.Presenter is OverlappedPresenter { State: OverlappedPresenterState.Minimized } minimizedPresenter)
+        {
+            minimizedPresenter.Restore();
+        }
+        else if (_hasSessionWindowBounds && _appWindow.Presenter is OverlappedPresenter { State: OverlappedPresenterState.Restored })
         {
             _appWindow.MoveAndResize(_sessionWindowBounds);
         }
+
         _appWindow.Show();
+        if (Win32Interop.IsIconic(_hWnd))
+        {
+            _ = Win32Interop.ShowWindow(_hWnd, Win32Interop.SW_RESTORE);
+        }
+        _ = Win32Interop.SetForegroundWindow(_hWnd);
         Activate();
     }
 
@@ -6864,9 +6900,12 @@ public sealed partial class MainWindow : Window
         var exePath = Environment.ProcessPath;
         if (!string.IsNullOrWhiteSpace(exePath) && File.Exists(exePath))
         {
+            SingleInstanceGuard.ExternalActivationRequested -= OnExternalActivationRequested;
+            SingleInstanceGuard.Release();
             Process.Start(new ProcessStartInfo
             {
                 FileName = exePath,
+                Arguments = "--restarting",
                 UseShellExecute = true
             });
             ForceExitApplication();
