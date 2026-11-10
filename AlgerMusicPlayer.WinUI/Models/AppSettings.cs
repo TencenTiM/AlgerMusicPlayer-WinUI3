@@ -312,6 +312,8 @@ public class AppSettings
     public float Volume { get; set; } = 0.8f;
     public float PlaybackRate { get; set; } = 1.0f;
     public PlayMode PlayMode { get; set; } = PlayMode.LoopAll;
+    public bool EnableAudioFade { get; set; } = false;
+    public double AudioFadeDurationSeconds { get; set; } = 1.0;
 
     // 上次播放歌曲与进度记忆（退出重进后精准恢复当前歌曲、播放进度与选中文件夹）
     public string LastPlayedSongId { get; set; } = string.Empty;

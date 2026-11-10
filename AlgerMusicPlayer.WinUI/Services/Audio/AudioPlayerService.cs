@@ -31,6 +31,7 @@ public class AudioPlayerService : IDisposable
     private WaveStream? _waveReader;
     private Stream? _activeFileStream;
     private EqualizerSampleProvider? _eqProvider;
+    private FadeSampleProvider? _fadeProvider;
     private VolumeSampleProvider? _volumeProvider;
     private readonly MpvPlaybackService _mpvService = new();
     private string _activeBackend = "naudio"; // "naudio" | "mpv"
@@ -42,6 +43,8 @@ public class AudioPlayerService : IDisposable
     private bool _suppressQueueAutoSave;
     private volatile bool _isStoppingManually;
     private long _lastAutoAdvanceTickMs;
+    private int _currentPlaySessionId;
+    private readonly object _deviceLock = new();
 
     public ObservableCollection<SongItem> Queue { get; } = [];
     public SongItem? CurrentSong { get; private set; }
@@ -319,9 +322,13 @@ public class AudioPlayerService : IDisposable
     {
         if (song == null) return;
 
+        int sessionId = Interlocked.Increment(ref _currentPlaySessionId);
         _loadCts?.Cancel();
         _loadCts = new CancellationTokenSource();
         var ct = _loadCts.Token;
+
+        // 立即同步停止当前可能正在发声的旧音频流，防止任何重叠发声
+        StopInternal();
 
         RunOnUi(() =>
         {
@@ -377,7 +384,7 @@ public class AudioPlayerService : IDisposable
         try
         {
             var resolvedSource = await ResolvePlayableSourceAsync(song, forcePlatform, ct);
-            if (ct.IsCancellationRequested) return;
+            if (sessionId != _currentPlaySessionId || ct.IsCancellationRequested) return;
 
             if (string.IsNullOrWhiteSpace(resolvedSource))
             {
@@ -394,7 +401,12 @@ public class AudioPlayerService : IDisposable
 
             if (isLocalOrUnc && _mpvService.IsAvailable(out _))
             {
-                StopNaudioInternal();
+                lock (_deviceLock)
+                {
+                    StopNaudioInternal();
+                }
+                if (sessionId != _currentPlaySessionId || ct.IsCancellationRequested) return;
+
                 _activeBackend = "mpv";
                 _isStoppingManually = false;
 
@@ -410,6 +422,12 @@ public class AudioPlayerService : IDisposable
                     EqBandGains = eq.BandGains
                 }, ct);
 
+                if (sessionId != _currentPlaySessionId || ct.IsCancellationRequested)
+                {
+                    _ = _mpvService.StopAsync();
+                    return;
+                }
+
                 IsPlaying = true;
                 UpdateSmtcPlayState(true);
                 PlayStateChanged?.Invoke(true);
@@ -420,9 +438,13 @@ public class AudioPlayerService : IDisposable
                 {
                     await _mpvService.StopAsync();
                 }
+                if (sessionId != _currentPlaySessionId || ct.IsCancellationRequested) return;
+
                 _activeBackend = "naudio";
-                await Task.Run(() => StartNaudioPipeline(resolvedSource, initialSeekPosition), ct);
+                await Task.Run(() => StartNaudioPipeline(resolvedSource, initialSeekPosition, sessionId, ct), ct);
             }
+
+            if (sessionId != _currentPlaySessionId || ct.IsCancellationRequested) return;
 
             RunOnUi(() => song.IsLoading = false);
             IsBuffering = false;
@@ -437,9 +459,12 @@ public class AudioPlayerService : IDisposable
         }
         catch (Exception ex)
         {
-            RunOnUi(() => song.IsLoading = false);
-            IsBuffering = false;
-            StatusMessage?.Invoke($"播放失败: {ex.Message}");
+            if (sessionId == _currentPlaySessionId)
+            {
+                RunOnUi(() => song.IsLoading = false);
+                IsBuffering = false;
+                StatusMessage?.Invoke($"播放失败: {ex.Message}");
+            }
         }
     }
 
@@ -923,17 +948,33 @@ public class AudioPlayerService : IDisposable
         }
     }
 
-    private void StartNaudioPipeline(string mediaSource, TimeSpan? initialSeekPosition = null)
+    private void StartNaudioPipeline(string mediaSource, TimeSpan? initialSeekPosition, int sessionId, CancellationToken ct)
     {
-        StopInternal();
+        if (sessionId != _currentPlaySessionId || ct.IsCancellationRequested) return;
 
-        _waveReader = CreateWaveReaderRobust(mediaSource);
-        if (initialSeekPosition is { TotalSeconds: > 0.5 } seekPos && _waveReader.CanSeek && seekPos < _waveReader.TotalTime)
+        WaveStream? waveReader = null;
+        try
         {
-            _waveReader.CurrentTime = seekPos;
+            waveReader = CreateWaveReaderRobust(mediaSource);
+        }
+        catch
+        {
+            if (sessionId != _currentPlaySessionId || ct.IsCancellationRequested) return;
+            throw;
         }
 
-        var sampleProvider = _waveReader.ToSampleProvider();
+        if (sessionId != _currentPlaySessionId || ct.IsCancellationRequested)
+        {
+            waveReader?.Dispose();
+            return;
+        }
+
+        if (initialSeekPosition is { TotalSeconds: > 0.5 } seekPos && waveReader.CanSeek && seekPos < waveReader.TotalTime)
+        {
+            waveReader.CurrentTime = seekPos;
+        }
+
+        var sampleProvider = waveReader.ToSampleProvider();
         int sourceChannels = Math.Max(1, sampleProvider.WaveFormat.Channels);
         int sampleRate = sampleProvider.WaveFormat.SampleRate;
 
@@ -980,20 +1021,32 @@ public class AudioPlayerService : IDisposable
         // 1:1 对应 src/renderer/utils/audioDestinationChannel.ts (不做软件矩阵混解码)
         _ = EqualizerSampleProvider.ResolveAudioDestinationChannelConfig(sourceChannels, endpointChannels);
 
-        _eqProvider = new EqualizerSampleProvider(sampleProvider, _configService.Settings.Equalizer)
+        var eqProvider = new EqualizerSampleProvider(sampleProvider, _configService.Settings.Equalizer)
         {
             PlaybackRate = PlaybackRate
         };
-        _volumeProvider = new VolumeSampleProvider(_eqProvider)
+
+        var fadeProvider = new FadeSampleProvider(eqProvider);
+        if (_configService.Settings.EnableAudioFade)
+        {
+            fadeProvider.StartFadeIn(_configService.Settings.AudioFadeDurationSeconds * 1000.0);
+        }
+        else
+        {
+            fadeProvider.ResetToFullVolume();
+        }
+
+        var volumeProvider = new VolumeSampleProvider(fadeProvider)
         {
             Volume = Math.Clamp(_configService.Settings.Volume, 0f, 1f)
         };
 
+        IWavePlayer? outputDevice = null;
         bool initialized = false;
 
         if (sourceChannels > 2 && supportsNativeMultichannel)
         {
-            var multichannelWaveProvider = new MultichannelSampleToWaveProvider(_volumeProvider, endpointChannelMask);
+            var multichannelWaveProvider = new MultichannelSampleToWaveProvider(volumeProvider, endpointChannelMask);
             try
             {
                 var wasapiOut = targetMmDevice != null
@@ -1001,13 +1054,13 @@ public class AudioPlayerService : IDisposable
                     : new WasapiOut(AudioClientShareMode.Shared, useEventSync: true, latency: 100);
                 wasapiOut.PlaybackStopped += OnPlaybackStopped;
                 wasapiOut.Init(multichannelWaveProvider);
-                _outputDevice = wasapiOut;
+                outputDevice = wasapiOut;
                 initialized = true;
             }
             catch
             {
-                _outputDevice?.Dispose();
-                _outputDevice = null;
+                outputDevice?.Dispose();
+                outputDevice = null;
             }
         }
         else if (sourceChannels == 6 && endpointChannels != 6)
@@ -1029,8 +1082,8 @@ public class AudioPlayerService : IDisposable
 
             try
             {
-                waveOut.Init(_volumeProvider);
-                _outputDevice = waveOut;
+                waveOut.Init(volumeProvider);
+                outputDevice = waveOut;
             }
             catch
             {
@@ -1042,14 +1095,33 @@ public class AudioPlayerService : IDisposable
                     DesiredLatency = 150
                 };
                 fallbackWaveOut.PlaybackStopped += OnPlaybackStopped;
-                var resampled = new WdlResamplingSampleProvider(_volumeProvider, 48000);
+                var resampled = new WdlResamplingSampleProvider(volumeProvider, 48000);
                 fallbackWaveOut.Init(resampled);
-                _outputDevice = fallbackWaveOut;
+                outputDevice = fallbackWaveOut;
             }
         }
 
-        _isStoppingManually = false;
-        _outputDevice?.Play();
+        // 临界区同步：严格验证 session ID，销毁旧设备并替换为新设备
+        lock (_deviceLock)
+        {
+            if (sessionId != _currentPlaySessionId || ct.IsCancellationRequested)
+            {
+                outputDevice?.Dispose();
+                waveReader.Dispose();
+                return;
+            }
+
+            StopNaudioInternal();
+
+            _waveReader = waveReader;
+            _eqProvider = eqProvider;
+            _fadeProvider = fadeProvider;
+            _volumeProvider = volumeProvider;
+            _outputDevice = outputDevice;
+            _isStoppingManually = false;
+
+            _outputDevice?.Play();
+        }
 
         IsPlaying = true;
         UpdateSmtcPlayState(true);
@@ -1217,20 +1289,23 @@ public class AudioPlayerService : IDisposable
     {
         _configService.Settings.LastPlayedPositionSeconds = Position.TotalSeconds;
         _ = _configService.SaveSettingsAsync();
+        _isStoppingManually = true;
 
-        if (_activeBackend == "mpv")
+        // 同时暂停内置 mpv 与 NAudio，绝不遗漏任一后端导致孤儿音频
+        _ = _mpvService.PauseAsync();
+
+        lock (_deviceLock)
         {
-            _isStoppingManually = true;
-            _ = _mpvService.PauseAsync();
-            IsPlaying = false;
-            UpdateSmtcPlayState(false);
-            PlayStateChanged?.Invoke(false);
-            return;
+            if (_outputDevice != null)
+            {
+                try
+                {
+                    _outputDevice.Pause();
+                }
+                catch { }
+            }
         }
 
-        if (_outputDevice == null) return;
-        _isStoppingManually = true;
-        _outputDevice.Pause();
         IsPlaying = false;
         UpdateSmtcPlayState(false);
         PlayStateChanged?.Invoke(false);
@@ -1238,9 +1313,18 @@ public class AudioPlayerService : IDisposable
 
     public void Resume()
     {
+        _isStoppingManually = false;
+        if (_configService.Settings.EnableAudioFade && _fadeProvider != null)
+        {
+            _fadeProvider.StartFadeIn(_configService.Settings.AudioFadeDurationSeconds * 1000.0);
+        }
+        else
+        {
+            _fadeProvider?.ResetToFullVolume();
+        }
+
         if (_activeBackend == "mpv" && !_mpvService.IsIdle)
         {
-            _isStoppingManually = false;
             _ = _mpvService.ResumeAsync();
             IsPlaying = true;
             UpdateSmtcPlayState(true);
@@ -1248,23 +1332,30 @@ public class AudioPlayerService : IDisposable
             return;
         }
 
-        if (_outputDevice == null)
+        lock (_deviceLock)
         {
-            if (CurrentSong != null)
+            if (_outputDevice == null)
             {
-                double savedSec = Math.Max(0, _configService.Settings.LastPlayedPositionSeconds);
-                TimeSpan? seekPos = savedSec > 1.0 ? TimeSpan.FromSeconds(savedSec) : null;
-                _ = PlaySongAsync(CurrentSong, initialSeekPosition: seekPos);
+                if (CurrentSong != null)
+                {
+                    double savedSec = Math.Max(0, _configService.Settings.LastPlayedPositionSeconds);
+                    TimeSpan? seekPos = savedSec > 1.0 ? TimeSpan.FromSeconds(savedSec) : null;
+                    _ = PlaySongAsync(CurrentSong, initialSeekPosition: seekPos);
+                }
+                else if (Queue.Count > 0)
+                {
+                    _ = PlaySongAsync(Queue[0]);
+                }
+                return;
             }
-            else if (Queue.Count > 0)
+
+            try
             {
-                _ = PlaySongAsync(Queue[0]);
+                _outputDevice.Play();
             }
-            return;
+            catch { }
         }
 
-        _isStoppingManually = false;
-        _outputDevice.Play();
         IsPlaying = true;
         UpdateSmtcPlayState(true);
         PlayStateChanged?.Invoke(true);
@@ -1275,6 +1366,7 @@ public class AudioPlayerService : IDisposable
     /// </summary>
     public void StopPlayback()
     {
+        Interlocked.Increment(ref _currentPlaySessionId);
         _loadCts?.Cancel();
         _isStoppingManually = true;
         StopInternal();
@@ -1538,8 +1630,23 @@ public class AudioPlayerService : IDisposable
         await PlaySongAsync(Queue[prevIdx]);
     }
 
+    public void SetAudioFade(bool enable, double durationSeconds)
+    {
+        _configService.Settings.EnableAudioFade = enable;
+        _configService.Settings.AudioFadeDurationSeconds = durationSeconds;
+        if (!enable)
+        {
+            _fadeProvider?.ResetToFullVolume();
+        }
+    }
+
     private void OnPlaybackStopped(object? sender, StoppedEventArgs e)
     {
+        lock (_deviceLock)
+        {
+            if (sender != _outputDevice) return;
+        }
+
         if (_isStoppingManually || IsBuffering) return;
 
         bool reachedEnd = _eqProvider?.ReachedEndOfStream == true ||
@@ -1708,34 +1815,54 @@ public class AudioPlayerService : IDisposable
             {
                 // 忽略设备停止异常
             }
-            _outputDevice.Dispose();
+            try
+            {
+                _outputDevice.Dispose();
+            }
+            catch
+            {
+                // 忽略设备释放异常
+            }
             _outputDevice = null;
         }
 
         if (_waveReader != null)
         {
-            _waveReader.Dispose();
+            try
+            {
+                _waveReader.Dispose();
+            }
+            catch { }
             _waveReader = null;
         }
 
         if (_activeFileStream != null)
         {
-            _activeFileStream.Dispose();
+            try
+            {
+                _activeFileStream.Dispose();
+            }
+            catch { }
             _activeFileStream = null;
         }
+
+        _fadeProvider = null;
+        _eqProvider = null;
+        _volumeProvider = null;
     }
 
     private void StopInternal()
     {
-        StopNaudioInternal();
-        if (_activeBackend == "mpv")
+        lock (_deviceLock)
         {
-            _ = _mpvService.StopAsync();
+            StopNaudioInternal();
         }
+        _ = _mpvService.StopAsync();
     }
 
     public void Dispose()
     {
+        Interlocked.Increment(ref _currentPlaySessionId);
         if (CurrentSong != null)
         {
             _configService.Settings.LastPlayedSongId = CurrentSong.Id;
@@ -1752,7 +1879,7 @@ public class AudioPlayerService : IDisposable
         _positionTimer.Dispose();
         _sleepTimer?.Dispose();
         _loadCts?.Cancel();
-        StopNaudioInternal();
+        StopInternal();
         _mpvService.Dispose();
         GC.SuppressFinalize(this);
     }

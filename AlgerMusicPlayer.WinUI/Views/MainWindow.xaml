@@ -3810,7 +3810,29 @@
                                                     </Grid>
                                                 </Border>
 
-                                                <!-- 2.4 音频输出设备 (1:1 对齐 AudioDeviceSettings.vue) -->
+                                                <!-- 2.4 音频淡入淡出 -->
+                                                <Border Style="{StaticResource SettingItemRowStyle}">
+                                                    <Grid ColumnSpacing="16">
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+                                                        <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="2">
+                                                            <TextBlock Text="音频淡入淡出" FontSize="15" FontWeight="Medium" />
+                                                            <TextBlock Text="在开始、暂停或切歌时平滑过渡音量，避免声音突变" FontSize="13" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                                        </StackPanel>
+                                                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="16" VerticalAlignment="Center">
+                                                            <StackPanel x:Name="AudioFadeDurationPanel" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                                                                <TextBlock Text="时长" FontSize="13" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
+                                                                <Slider x:Name="AudioFadeDurationSlider" Width="120" Minimum="0.5" Maximum="5.0" StepFrequency="0.5" ValueChanged="OnAudioFadeDurationChanged" VerticalAlignment="Center" />
+                                                                <TextBlock x:Name="AudioFadeDurationLabel" Text="1.0s" Width="36" FontSize="13" VerticalAlignment="Center" />
+                                                            </StackPanel>
+                                                            <ToggleSwitch x:Name="AudioFadeToggle" MinWidth="0" OffContent="关闭" OnContent="开启" Toggled="OnAudioFadeToggled" VerticalAlignment="Center" />
+                                                        </StackPanel>
+                                                    </Grid>
+                                                </Border>
+
+                                                <!-- 2.5 音频输出设备 (1:1 对齐 AudioDeviceSettings.vue) -->
                                                 <Border Style="{StaticResource SettingItemLastRowStyle}">
                                                     <Grid ColumnSpacing="16">
                                                         <Grid.ColumnDefinitions>

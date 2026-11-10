@@ -231,6 +231,11 @@ public sealed partial class MainWindow : Window
         UnblockToggle.IsOn = s.EnableMusicUnblock;
         SyncUnblockSettingsUi();
         AutoPlayToggle.IsOn = s.AutoPlay;
+        AudioFadeToggle.IsOn = s.EnableAudioFade;
+        AudioFadeDurationSlider.Value = Math.Clamp(s.AudioFadeDurationSeconds, 0.5, 5.0);
+        AudioFadeDurationLabel.Text = $"{s.AudioFadeDurationSeconds:F1}s";
+        AudioFadeDurationPanel.Opacity = s.EnableAudioFade ? 1.0 : 0.4;
+        AudioFadeDurationSlider.IsEnabled = s.EnableAudioFade;
         EmbedTagToggle.IsOn = s.EmbedCoverAndLyricOnDownload;
         AlwaysShowDownloadToggle.IsOn = s.AlwaysShowDownloadButton;
         AlwaysShowDownloadStateLabel.Text = s.AlwaysShowDownloadButton ? "显示" : "隐藏";
@@ -5926,6 +5931,27 @@ public sealed partial class MainWindow : Window
     {
         if (!_isInitialized) return;
         ViewModel.Config.Settings.AutoPlay = AutoPlayToggle.IsOn;
+        await ViewModel.Config.SaveSettingsAsync();
+    }
+
+    private async void OnAudioFadeToggled(object sender, RoutedEventArgs e)
+    {
+        if (!_isInitialized) return;
+        bool enabled = AudioFadeToggle.IsOn;
+        ViewModel.Config.Settings.EnableAudioFade = enabled;
+        AudioFadeDurationPanel.Opacity = enabled ? 1.0 : 0.4;
+        AudioFadeDurationSlider.IsEnabled = enabled;
+        ViewModel.Player.SetAudioFade(enabled, ViewModel.Config.Settings.AudioFadeDurationSeconds);
+        await ViewModel.Config.SaveSettingsAsync();
+    }
+
+    private async void OnAudioFadeDurationChanged(object sender, RangeBaseValueChangedEventArgs e)
+    {
+        if (!_isInitialized) return;
+        double duration = Math.Round(e.NewValue * 2) / 2.0; // 0.5s 步进
+        AudioFadeDurationLabel.Text = $"{duration:F1}s";
+        ViewModel.Config.Settings.AudioFadeDurationSeconds = duration;
+        ViewModel.Player.SetAudioFade(ViewModel.Config.Settings.EnableAudioFade, duration);
         await ViewModel.Config.SaveSettingsAsync();
     }
 
