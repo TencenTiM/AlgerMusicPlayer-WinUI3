@@ -109,6 +109,36 @@ public class DownloadManagerService
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// 将歌曲按用户指定的音源直链及音质规格加入下载队列（跳过自动重复解析，确保下载所选音质）
+    /// </summary>
+    public Task EnqueueDownloadWithSourceAsync(SongItem song, string directUrl, string extHint, string qualityBadge)
+    {
+        if (song == null) return Task.CompletedTask;
+
+        var existing = Tasks.FirstOrDefault(t =>
+            t.Song.Id == song.Id && t.State is "queued" or "downloading" or "paused");
+        if (existing != null) return Task.CompletedTask;
+
+        var formattedName = FormatDownloadFileName(song);
+        var taskItem = new DownloadTaskItem
+        {
+            Song = song,
+            Filename = formattedName,
+            State = "queued",
+            Status = $"等待下载 ({qualityBadge})",
+            Progress = 0,
+            DirectSourceUrl = directUrl,
+            DirectExtensionHint = extHint,
+            SelectedQualityBadge = qualityBadge
+        };
+        Tasks.Insert(0, taskItem);
+        NotifyStateChanged();
+
+        _ = ProcessQueueAsync();
+        return Task.CompletedTask;
+    }
+
     public void PauseTask(string taskId)
     {
         var task = Tasks.FirstOrDefault(t => t.TaskId == taskId);
@@ -232,11 +262,15 @@ public class DownloadManagerService
         {
             RunOnUiThread(() =>
             {
-                taskItem.Status = "解析无损音源";
+                taskItem.Status = !string.IsNullOrWhiteSpace(taskItem.SelectedQualityBadge)
+                    ? $"准备下载 ({taskItem.SelectedQualityBadge})"
+                    : "解析无损音源";
                 NotifyStateChanged();
             });
 
-            var (sourceUrl, extHint) = await _playerService.ResolveDownloadSourceAsync(taskItem.Song, token);
+            var (sourceUrl, extHint) = !string.IsNullOrWhiteSpace(taskItem.DirectSourceUrl)
+                ? (taskItem.DirectSourceUrl, taskItem.DirectExtensionHint ?? ".flac")
+                : await _playerService.ResolveDownloadSourceAsync(taskItem.Song, token);
             token.ThrowIfCancellationRequested();
 
             if (string.IsNullOrWhiteSpace(sourceUrl))

@@ -1269,6 +1269,22 @@
 
                                                             <Button
                                                                 Tag="{x:Bind}"
+                                                                Click="OnSongDownloadButtonClick"
+                                                                Width="32"
+                                                                Height="32"
+                                                                Padding="0"
+                                                                CornerRadius="16"
+                                                                Background="Transparent"
+                                                                BorderThickness="0"
+                                                                ToolTipService.ToolTip="下载歌曲">
+                                                                <FontIcon
+                                                                    Glyph="&#xE896;"
+                                                                    FontSize="14"
+                                                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                                            </Button>
+
+                                                            <Button
+                                                                Tag="{x:Bind}"
                                                                 Click="OnDetailRowPlayButtonClick"
                                                                 Width="38"
                                                                 Height="38"
@@ -1450,6 +1466,22 @@
                                                                     Foreground="#6B7280"
                                                                     Visibility="{x:Bind NotLikedVisibility, Mode=OneWay}" />
                                                             </Grid>
+                                                        </Button>
+
+                                                        <Button
+                                                            Tag="{x:Bind}"
+                                                            Click="OnSongDownloadButtonClick"
+                                                            Width="28"
+                                                            Height="28"
+                                                            Padding="0"
+                                                            CornerRadius="14"
+                                                            Background="Transparent"
+                                                            BorderThickness="0"
+                                                            ToolTipService.ToolTip="下载歌曲">
+                                                            <FontIcon
+                                                                Glyph="&#xE896;"
+                                                                FontSize="13"
+                                                                Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                                                         </Button>
 
                                                         <Button
@@ -1899,7 +1931,12 @@
                                             <TextBlock Grid.Column="0" Text="{x:Bind Name}" FontWeight="SemiBold" VerticalAlignment="Center" />
                                             <TextBlock Grid.Column="1" Text="{x:Bind ArtistText}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
                                             <TextBlock Grid.Column="2" Text="{x:Bind DurationText}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
-                                            <Button Grid.Column="3" Content="取消收藏" Tag="{x:Bind}" Click="OnSongLikeButtonClick" />
+                                            <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                                                <Button Style="{StaticResource TransportIconButtonStyle}" Tag="{x:Bind}" Click="OnSongDownloadButtonClick" ToolTipService.ToolTip="下载歌曲">
+                                                    <FontIcon Glyph="&#xE896;" FontSize="13" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                                </Button>
+                                                <Button Content="取消收藏" Tag="{x:Bind}" Click="OnSongLikeButtonClick" />
+                                            </StackPanel>
                                         </Grid>
                                     </DataTemplate>
                                 </ListView.ItemTemplate>
@@ -1917,10 +1954,14 @@
                                                 <ColumnDefinition Width="2*" />
                                                 <ColumnDefinition Width="*" />
                                                 <ColumnDefinition Width="90" />
+                                                <ColumnDefinition Width="Auto" />
                                             </Grid.ColumnDefinitions>
                                             <TextBlock Grid.Column="0" Text="{x:Bind Name}" FontWeight="SemiBold" VerticalAlignment="Center" />
                                             <TextBlock Grid.Column="1" Text="{x:Bind ArtistText}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
                                             <TextBlock Grid.Column="2" Text="{x:Bind DurationText}" FontSize="12" Foreground="{StaticResource BrandAccentBrush}" VerticalAlignment="Center" />
+                                            <Button Grid.Column="3" Style="{StaticResource TransportIconButtonStyle}" Tag="{x:Bind}" Click="OnSongDownloadButtonClick" ToolTipService.ToolTip="下载歌曲">
+                                                <FontIcon Glyph="&#xE896;" FontSize="13" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                            </Button>
                                         </Grid>
                                     </DataTemplate>
                                 </ListView.ItemTemplate>
@@ -3833,7 +3874,7 @@
                                                 </Border>
 
                                                 <!-- 2.5 音频输出设备 (1:1 对齐 AudioDeviceSettings.vue) -->
-                                                <Border Style="{StaticResource SettingItemLastRowStyle}">
+                                                <Border Style="{StaticResource SettingItemRowStyle}">
                                                     <Grid ColumnSpacing="16">
                                                         <Grid.ColumnDefinitions>
                                                             <ColumnDefinition Width="*" />
@@ -3861,6 +3902,31 @@
                                                             <ComboBox x:Name="AudioDeviceComboBox" HorizontalAlignment="Stretch" PlaceholderText="选择输出设备" SelectionChanged="OnAudioDeviceSelectionChanged" />
                                                             <TextBlock Text="Windows x64 本地/SMB 多声道播放使用 Windows 默认输出设备。" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
                                                         </StackPanel>
+                                                    </Grid>
+                                                </Border>
+
+                                                <!-- 2.6 多声道环绕声空间配置 (5.1 / 7.1) -->
+                                                <Border Style="{StaticResource SettingItemLastRowStyle}">
+                                                    <Grid ColumnSpacing="16">
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+                                                        <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="4">
+                                                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                                                <TextBlock Text="多声道环绕声空间配置" FontSize="15" FontWeight="Medium" />
+                                                                <Border Background="#1A10B981" BorderBrush="#4010B981" BorderThickness="1" CornerRadius="4" Padding="6,1" VerticalAlignment="Center">
+                                                                    <TextBlock Text="5.1 / 7.1 原生" FontSize="11" FontWeight="SemiBold" Foreground="{StaticResource BrandAccentBrush}" />
+                                                                </Border>
+                                                            </StackPanel>
+                                                            <TextBlock x:Name="MultichannelSummaryLabel" Text="精准侦测设备多声道输出能力、可视化独立音箱声场校准与单声道发声巡检" FontSize="13" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                                        </StackPanel>
+                                                        <Button x:Name="OpenMultichannelModalBtn" Grid.Column="1" Click="OnOpenMultichannelModalClick" CornerRadius="8" Padding="16,8" VerticalAlignment="Center" Style="{StaticResource BrandPrimaryButtonStyle}">
+                                                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                                                <FontIcon Glyph="&#xEC15;" FontSize="14" />
+                                                                <TextBlock Text="配置多声道环绕声" FontWeight="Medium" />
+                                                            </StackPanel>
+                                                        </Button>
                                                     </Grid>
                                                 </Border>
                                             </StackPanel>
@@ -5038,6 +5104,375 @@
                                 </StackPanel>
                             </Border>
                         </Grid>
+
+                        <!-- ==================== 模态弹窗 6：多声道 5.1 / 7.1 环绕声可视化配置与空间校准 ==================== -->
+                        <Grid x:Name="MultichannelModalOverlay" Grid.RowSpan="2" Visibility="Collapsed" Background="#88000000" Margin="-28,-24,-28,-24" Canvas.ZIndex="60">
+                            <Border
+                                Width="1040"
+                                MaxHeight="720"
+                                HorizontalAlignment="Center"
+                                VerticalAlignment="Center"
+                                Background="{ThemeResource SolidBackgroundFillColorBaseBrush}"
+                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                BorderThickness="1"
+                                CornerRadius="20"
+                                Padding="22,18">
+                                <Grid RowSpacing="12">
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="*" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+
+                                    <!-- 1. 顶部标题栏 -->
+                                    <Grid Grid.Row="0" Padding="0,0,0,8" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" BorderThickness="0,0,0,1">
+                                        <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                                            <Border Width="34" Height="34" CornerRadius="17" Background="#1810B981" VerticalAlignment="Center">
+                                                <FontIcon Glyph="&#xEC15;" FontSize="17" Foreground="{StaticResource BrandAccentBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                            </Border>
+                                            <StackPanel Spacing="1" VerticalAlignment="Center">
+                                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                                    <TextBlock Text="多声道环绕声空间配置与校准" FontSize="18" FontWeight="Bold" />
+                                                    <Border Background="#1A10B981" BorderBrush="#4010B981" BorderThickness="1" CornerRadius="4" Padding="6,1" VerticalAlignment="Center">
+                                                        <TextBlock Text="5.1 / 7.1 原生" FontSize="11" FontWeight="SemiBold" Foreground="{StaticResource BrandAccentBrush}" />
+                                                    </Border>
+                                                </StackPanel>
+                                                <TextBlock Text="硬件端点能力侦测 · 听音室皇帝位声场图 · 独立音箱微调增益与通道巡检" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                            </StackPanel>
+                                        </StackPanel>
+                                        <Button HorizontalAlignment="Right" Click="OnCloseMultichannelModalClick" Style="{StaticResource TransportIconButtonStyle}">
+                                            <FontIcon Glyph="&#xE711;" FontSize="13" />
+                                        </Button>
+                                    </Grid>
+
+                                    <!-- 2. 硬件检测状态条 (Device Detection Bar) -->
+                                    <Border Grid.Row="1" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="12" Padding="14,10">
+                                        <Grid ColumnSpacing="14">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+
+                                            <StackPanel Grid.Column="0" Spacing="5" VerticalAlignment="Center">
+                                                <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                                                    <FontIcon Glyph="&#xE7F4;" FontSize="14" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                                    <TextBlock x:Name="MultichannelDeviceNameText" Text="扬声器 (正在检测...)" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                                    <Border x:Name="MultichannelChannelBadgeBorder" Background="#2410B981" CornerRadius="4" Padding="6,1" VerticalAlignment="Center">
+                                                        <TextBlock x:Name="MultichannelChannelBadgeText" Text="5.1 环绕声 (6 声道)" FontSize="11" FontWeight="Bold" Foreground="{StaticResource BrandAccentBrush}" />
+                                                    </Border>
+                                                    <Border Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}" CornerRadius="4" Padding="6,1" VerticalAlignment="Center">
+                                                        <TextBlock x:Name="MultichannelSampleRateBadgeText" Text="48000 Hz, 32-bit Float" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                                    </Border>
+                                                </StackPanel>
+                                                <TextBlock x:Name="MultichannelDiagnosticText" Text="当前设备已启用原生 5.1 环绕声输出，音频流将以 WASAPI 点对点直通功放或多声道声卡。" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
+                                            </StackPanel>
+
+                                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                                                <Button Click="OnRefreshMultichannelDeviceClick" Style="{StaticResource TransportIconButtonStyle}" ToolTipService.ToolTip="重新检测硬件端点">
+                                                    <FontIcon Glyph="&#xE72C;" FontSize="13" />
+                                                </Button>
+                                                <Button Click="OnOpenWindowsSoundPanelClick" CornerRadius="8" Padding="10,5">
+                                                    <StackPanel Orientation="Horizontal" Spacing="6">
+                                                        <FontIcon Glyph="&#xE713;" FontSize="12" />
+                                                        <TextBlock Text="系统声音面板" FontSize="12" />
+                                                    </StackPanel>
+                                                </Button>
+                                            </StackPanel>
+                                        </Grid>
+                                    </Border>
+
+                                    <!-- 3. 中央双栏交互区：左侧皇帝位声场图，右侧各音箱精细化校准 -->
+                                    <Grid Grid.Row="2" ColumnSpacing="16">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="470" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+
+                                        <!-- 3A. 左栏：可视化听音室皇帝位布局 (Listening Room Canvas) -->
+                                        <Border Grid.Column="0" Background="#111115" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="16" Padding="14">
+                                            <Grid RowSpacing="10">
+                                                <Grid.RowDefinitions>
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="*" />
+                                                    <RowDefinition Height="Auto" />
+                                                </Grid.RowDefinitions>
+
+                                                <!-- 房间标题 -->
+                                                <Grid Grid.Row="0">
+                                                    <TextBlock Text="俯视听音室空间声场" FontSize="13" FontWeight="SemiBold" Foreground="White" VerticalAlignment="Center" />
+                                                    <TextBlock Text="点击单个音箱独立试音" FontSize="11" Foreground="#9CA3AF" HorizontalAlignment="Right" VerticalAlignment="Center" />
+                                                </Grid>
+
+                                                <!-- 空间画布 -->
+                                                <Canvas x:Name="SurroundRoomCanvas" Grid.Row="1" Width="440" Height="360" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                                    <!-- 同心声波定位圆弧圈 -->
+                                                    <Ellipse Width="340" Height="260" Canvas.Left="50" Canvas.Top="50" Stroke="#1E293B" StrokeThickness="1" StrokeDashArray="4 3" />
+                                                    <Ellipse Width="220" Height="170" Canvas.Left="110" Canvas.Top="95" Stroke="#1E293B" StrokeThickness="1" StrokeDashArray="3 2" />
+                                                    <Ellipse Width="110" Height="90" Canvas.Left="165" Canvas.Top="135" Stroke="#334155" StrokeThickness="1" />
+
+                                                    <!-- 中心皇帝位 (听者坐席) -->
+                                                    <Border Canvas.Left="190" Canvas.Top="145" Width="60" Height="60" CornerRadius="30" Background="#2510B981" BorderBrush="{StaticResource BrandAccentBrush}" BorderThickness="1.5">
+                                                        <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="2">
+                                                            <FontIcon Glyph="&#xE77B;" FontSize="17" Foreground="{StaticResource BrandAccentBrush}" />
+                                                            <TextBlock Text="皇帝位" FontSize="9" FontWeight="SemiBold" Foreground="White" HorizontalAlignment="Center" />
+                                                        </StackPanel>
+                                                    </Border>
+
+                                                    <!-- 音箱节点 1: 中置 (C - Center / 人声对白) (Top Center) -->
+                                                    <Button x:Name="SpeakerBtnCenter" Canvas.Left="175" Canvas.Top="10" Tag="2" Click="OnSpeakerNodeButtonClick" Style="{StaticResource TransportIconButtonStyle}" Padding="6,4" Background="#1E293B" BorderBrush="#334155" BorderThickness="1" CornerRadius="8" ToolTipService.ToolTip="中置声道 (Center) - 点击测试发声">
+                                                        <StackPanel Orientation="Horizontal" Spacing="5">
+                                                            <FontIcon Glyph="&#xE767;" FontSize="12" Foreground="#38BDF8" />
+                                                            <TextBlock Text="C 中置" FontSize="11" FontWeight="SemiBold" Foreground="White" />
+                                                            <TextBlock x:Name="SpeakerBadgeCenter" Text="0.0dB" FontSize="9" Foreground="#94A3B8" />
+                                                        </StackPanel>
+                                                    </Button>
+
+                                                    <!-- 音箱节点 2: 前置左 (FL - Front Left) (Top Left) -->
+                                                    <Button x:Name="SpeakerBtnFrontLeft" Canvas.Left="20" Canvas.Top="45" Tag="0" Click="OnSpeakerNodeButtonClick" Style="{StaticResource TransportIconButtonStyle}" Padding="6,4" Background="#1E293B" BorderBrush="#334155" BorderThickness="1" CornerRadius="8" ToolTipService.ToolTip="前置左声道 (Front Left) - 点击测试发声">
+                                                        <StackPanel Orientation="Horizontal" Spacing="5">
+                                                            <FontIcon Glyph="&#xE767;" FontSize="12" Foreground="#34D399" />
+                                                            <TextBlock Text="FL 前左" FontSize="11" FontWeight="SemiBold" Foreground="White" />
+                                                            <TextBlock x:Name="SpeakerBadgeFrontLeft" Text="0.0dB" FontSize="9" Foreground="#94A3B8" />
+                                                        </StackPanel>
+                                                    </Button>
+
+                                                    <!-- 音箱节点 3: 前置右 (FR - Front Right) (Top Right) -->
+                                                    <Button x:Name="SpeakerBtnFrontRight" Canvas.Left="330" Canvas.Top="45" Tag="1" Click="OnSpeakerNodeButtonClick" Style="{StaticResource TransportIconButtonStyle}" Padding="6,4" Background="#1E293B" BorderBrush="#334155" BorderThickness="1" CornerRadius="8" ToolTipService.ToolTip="前置右声道 (Front Right) - 点击测试发声">
+                                                        <StackPanel Orientation="Horizontal" Spacing="5">
+                                                            <FontIcon Glyph="&#xE767;" FontSize="12" Foreground="#34D399" />
+                                                            <TextBlock Text="FR 前右" FontSize="11" FontWeight="SemiBold" Foreground="White" />
+                                                            <TextBlock x:Name="SpeakerBadgeFrontRight" Text="0.0dB" FontSize="9" Foreground="#94A3B8" />
+                                                        </StackPanel>
+                                                    </Button>
+
+                                                    <!-- 音箱节点 4: 低音炮 (LFE / Subwoofer - 80Hz低音震撼) (Left Mid) -->
+                                                    <Button x:Name="SpeakerBtnSubwoofer" Canvas.Left="15" Canvas.Top="165" Tag="3" Click="OnSpeakerNodeButtonClick" Style="{StaticResource TransportIconButtonStyle}" Padding="6,4" Background="#1E293B" BorderBrush="#F59E0B" BorderThickness="1" CornerRadius="8" ToolTipService.ToolTip="超重低音炮 (LFE / Subwoofer 80Hz) - 点击测试发声">
+                                                        <StackPanel Orientation="Horizontal" Spacing="5">
+                                                            <FontIcon Glyph="&#xE995;" FontSize="13" Foreground="#F59E0B" />
+                                                            <TextBlock Text="LFE 低音炮" FontSize="11" FontWeight="SemiBold" Foreground="#F59E0B" />
+                                                            <TextBlock x:Name="SpeakerBadgeSubwoofer" Text="0.0dB" FontSize="9" Foreground="#FDE68A" />
+                                                        </StackPanel>
+                                                    </Button>
+
+                                                    <!-- 音箱节点 5: 环绕左 (SL - Surround Left) (Bottom Left) -->
+                                                    <Button x:Name="SpeakerBtnSurroundLeft" Canvas.Left="25" Canvas.Top="280" Tag="4" Click="OnSpeakerNodeButtonClick" Style="{StaticResource TransportIconButtonStyle}" Padding="6,4" Background="#1E293B" BorderBrush="#334155" BorderThickness="1" CornerRadius="8" ToolTipService.ToolTip="环绕左 / 后置左声道 (Surround Left) - 点击测试发声">
+                                                        <StackPanel Orientation="Horizontal" Spacing="5">
+                                                            <FontIcon Glyph="&#xE767;" FontSize="12" Foreground="#A78BFA" />
+                                                            <TextBlock Text="SL 环绕左" FontSize="11" FontWeight="SemiBold" Foreground="White" />
+                                                            <TextBlock x:Name="SpeakerBadgeSurroundLeft" Text="0.0dB" FontSize="9" Foreground="#94A3B8" />
+                                                        </StackPanel>
+                                                    </Button>
+
+                                                    <!-- 音箱节点 6: 环绕右 (SR - Surround Right) (Bottom Right) -->
+                                                    <Button x:Name="SpeakerBtnSurroundRight" Canvas.Left="325" Canvas.Top="280" Tag="5" Click="OnSpeakerNodeButtonClick" Style="{StaticResource TransportIconButtonStyle}" Padding="6,4" Background="#1E293B" BorderBrush="#334155" BorderThickness="1" CornerRadius="8" ToolTipService.ToolTip="环绕右 / 后置右声道 (Surround Right) - 点击测试发声">
+                                                        <StackPanel Orientation="Horizontal" Spacing="5">
+                                                            <FontIcon Glyph="&#xE767;" FontSize="12" Foreground="#A78BFA" />
+                                                            <TextBlock Text="SR 环绕右" FontSize="11" FontWeight="SemiBold" Foreground="White" />
+                                                            <TextBlock x:Name="SpeakerBadgeSurroundRight" Text="0.0dB" FontSize="9" Foreground="#94A3B8" />
+                                                        </StackPanel>
+                                                    </Button>
+
+                                                    <!-- 音箱节点 7: 后环绕左 (BL, 仅 7.1 显示) (Bottom Mid-Left) -->
+                                                    <Button x:Name="SpeakerBtnBackLeft" Canvas.Left="125" Canvas.Top="320" Tag="6" Click="OnSpeakerNodeButtonClick" Style="{StaticResource TransportIconButtonStyle}" Padding="5,3" Background="#1E293B" BorderBrush="#334155" BorderThickness="1" CornerRadius="8" Visibility="Collapsed" ToolTipService.ToolTip="后环绕左声道 (Back Left, 7.1) - 点击测试发声">
+                                                        <StackPanel Orientation="Horizontal" Spacing="4">
+                                                            <FontIcon Glyph="&#xE767;" FontSize="10" Foreground="#C084FC" />
+                                                            <TextBlock Text="BL 后左" FontSize="10" FontWeight="SemiBold" Foreground="White" />
+                                                            <TextBlock x:Name="SpeakerBadgeBackLeft" Text="0.0dB" FontSize="8" Foreground="#94A3B8" />
+                                                        </StackPanel>
+                                                    </Button>
+
+                                                    <!-- 音箱节点 8: 后环绕右 (BR, 仅 7.1 显示) (Bottom Mid-Right) -->
+                                                    <Button x:Name="SpeakerBtnBackRight" Canvas.Left="235" Canvas.Top="320" Tag="7" Click="OnSpeakerNodeButtonClick" Style="{StaticResource TransportIconButtonStyle}" Padding="5,3" Background="#1E293B" BorderBrush="#334155" BorderThickness="1" CornerRadius="8" Visibility="Collapsed" ToolTipService.ToolTip="后环绕右声道 (Back Right, 7.1) - 点击测试发声">
+                                                        <StackPanel Orientation="Horizontal" Spacing="4">
+                                                            <FontIcon Glyph="&#xE767;" FontSize="10" Foreground="#C084FC" />
+                                                            <TextBlock Text="BR 后右" FontSize="10" FontWeight="SemiBold" Foreground="White" />
+                                                            <TextBlock x:Name="SpeakerBadgeBackRight" Text="0.0dB" FontSize="8" Foreground="#94A3B8" />
+                                                        </StackPanel>
+                                                    </Button>
+                                                </Canvas>
+
+                                                <!-- 巡检测试按钮栏 -->
+                                                <Grid Grid.Row="2" ColumnSpacing="10">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <Button x:Name="RunSurroundTourBtn" Grid.Column="0" Click="OnRunSurroundTourClick" HorizontalAlignment="Stretch" Style="{StaticResource BrandPrimaryButtonStyle}" CornerRadius="8" Padding="12,6">
+                                                        <StackPanel Orientation="Horizontal" Spacing="6" HorizontalAlignment="Center">
+                                                            <FontIcon Glyph="&#xE768;" FontSize="12" />
+                                                            <TextBlock Text="🔊 依次巡检全声道测试" FontSize="12" FontWeight="SemiBold" />
+                                                        </StackPanel>
+                                                    </Button>
+                                                    <Button Click="OnStopSurroundTourClick" CornerRadius="8" Padding="12,6" ToolTipService.ToolTip="停止测试">
+                                                        <FontIcon Glyph="&#xE71A;" FontSize="12" />
+                                                    </Button>
+                                                </Grid>
+                                            </Grid>
+                                        </Border>
+
+                                        <!-- 3B. 右栏：各音箱细节调优面板 (Per-Speaker Detail Sliders & Mutes) -->
+                                        <Border Grid.Column="1" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="16" Padding="14,10">
+                                            <Grid RowSpacing="8">
+                                                <Grid.RowDefinitions>
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="*" />
+                                                </Grid.RowDefinitions>
+
+                                                <Grid Grid.Row="0" Padding="0,0,0,6" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" BorderThickness="0,0,0,1">
+                                                    <TextBlock Text="音箱通道微调 (Gain Trim)" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                                    <ToggleSwitch x:Name="MultichannelEnableToggle" HorizontalAlignment="Right" MinWidth="0" OffContent="已旁路" OnContent="已启用" Toggled="OnMultichannelEnableToggled" VerticalAlignment="Center" />
+                                                </Grid>
+
+                                                <ScrollViewer Grid.Row="1" MaxHeight="380" VerticalScrollBarVisibility="Auto">
+                                                    <StackPanel Spacing="6">
+                                                        <!-- 1. 前置左 FL -->
+                                                        <Border Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}" CornerRadius="10" Padding="10,6">
+                                                            <Grid ColumnSpacing="8">
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="85" />
+                                                                    <ColumnDefinition Width="*" />
+                                                                    <ColumnDefinition Width="42" />
+                                                                    <ColumnDefinition Width="Auto" />
+                                                                </Grid.ColumnDefinitions>
+                                                                <TextBlock Grid.Column="0" Text="FL 前置左" FontSize="12" FontWeight="Medium" VerticalAlignment="Center" />
+                                                                <Slider x:Name="GainSliderFL" Grid.Column="1" Minimum="-12" Maximum="12" StepFrequency="0.5" ValueChanged="OnChannelGainChanged" VerticalAlignment="Center" Margin="0,-4" />
+                                                                <TextBlock x:Name="GainLabelFL" Grid.Column="2" Text="0.0dB" FontSize="11" HorizontalAlignment="Right" VerticalAlignment="Center" />
+                                                                <ToggleSwitch x:Name="MuteToggleFL" Grid.Column="3" MinWidth="0" OffContent="静音" OnContent="已静音" Toggled="OnChannelMuteToggled" VerticalAlignment="Center" Margin="6,0,0,0" />
+                                                            </Grid>
+                                                        </Border>
+
+                                                        <!-- 2. 中置 C (人声对白) -->
+                                                        <Border Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}" CornerRadius="10" Padding="10,6">
+                                                            <Grid ColumnSpacing="8">
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="85" />
+                                                                    <ColumnDefinition Width="*" />
+                                                                    <ColumnDefinition Width="42" />
+                                                                    <ColumnDefinition Width="Auto" />
+                                                                </Grid.ColumnDefinitions>
+                                                                <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                                                    <TextBlock Text="C 中置人声" FontSize="12" FontWeight="SemiBold" Foreground="#38BDF8" />
+                                                                    <TextBlock Text="主歌词对白" FontSize="9" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                                                </StackPanel>
+                                                                <Slider x:Name="GainSliderC" Grid.Column="1" Minimum="-12" Maximum="12" StepFrequency="0.5" ValueChanged="OnChannelGainChanged" VerticalAlignment="Center" Margin="0,-4" />
+                                                                <TextBlock x:Name="GainLabelC" Grid.Column="2" Text="0.0dB" FontSize="11" HorizontalAlignment="Right" VerticalAlignment="Center" />
+                                                                <ToggleSwitch x:Name="MuteToggleC" Grid.Column="3" MinWidth="0" OffContent="静音" OnContent="已静音" Toggled="OnChannelMuteToggled" VerticalAlignment="Center" Margin="6,0,0,0" />
+                                                            </Grid>
+                                                        </Border>
+
+                                                        <!-- 3. 前置右 FR -->
+                                                        <Border Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}" CornerRadius="10" Padding="10,6">
+                                                            <Grid ColumnSpacing="8">
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="85" />
+                                                                    <ColumnDefinition Width="*" />
+                                                                    <ColumnDefinition Width="42" />
+                                                                    <ColumnDefinition Width="Auto" />
+                                                                </Grid.ColumnDefinitions>
+                                                                <TextBlock Grid.Column="0" Text="FR 前置右" FontSize="12" FontWeight="Medium" VerticalAlignment="Center" />
+                                                                <Slider x:Name="GainSliderFR" Grid.Column="1" Minimum="-12" Maximum="12" StepFrequency="0.5" ValueChanged="OnChannelGainChanged" VerticalAlignment="Center" Margin="0,-4" />
+                                                                <TextBlock x:Name="GainLabelFR" Grid.Column="2" Text="0.0dB" FontSize="11" HorizontalAlignment="Right" VerticalAlignment="Center" />
+                                                                <ToggleSwitch x:Name="MuteToggleFR" Grid.Column="3" MinWidth="0" OffContent="静音" OnContent="已静音" Toggled="OnChannelMuteToggled" VerticalAlignment="Center" Margin="6,0,0,0" />
+                                                            </Grid>
+                                                        </Border>
+
+                                                        <!-- 4. 超重低音炮 LFE (Subwoofer) -->
+                                                        <Border Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}" CornerRadius="10" Padding="10,6">
+                                                            <Grid ColumnSpacing="8">
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="85" />
+                                                                    <ColumnDefinition Width="*" />
+                                                                    <ColumnDefinition Width="42" />
+                                                                    <ColumnDefinition Width="Auto" />
+                                                                </Grid.ColumnDefinitions>
+                                                                <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                                                    <TextBlock Text="LFE 低音炮" FontSize="12" FontWeight="SemiBold" Foreground="#F59E0B" />
+                                                                    <TextBlock Text="80Hz超重低音" FontSize="9" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                                                </StackPanel>
+                                                                <Slider x:Name="GainSliderLFE" Grid.Column="1" Minimum="-12" Maximum="12" StepFrequency="0.5" ValueChanged="OnChannelGainChanged" VerticalAlignment="Center" Margin="0,-4" />
+                                                                <TextBlock x:Name="GainLabelLFE" Grid.Column="2" Text="0.0dB" FontSize="11" HorizontalAlignment="Right" VerticalAlignment="Center" />
+                                                                <ToggleSwitch x:Name="MuteToggleLFE" Grid.Column="3" MinWidth="0" OffContent="静音" OnContent="已静音" Toggled="OnChannelMuteToggled" VerticalAlignment="Center" Margin="6,0,0,0" />
+                                                            </Grid>
+                                                        </Border>
+
+                                                        <!-- 5. 环绕左 SL -->
+                                                        <Border Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}" CornerRadius="10" Padding="10,6">
+                                                            <Grid ColumnSpacing="8">
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="85" />
+                                                                    <ColumnDefinition Width="*" />
+                                                                    <ColumnDefinition Width="42" />
+                                                                    <ColumnDefinition Width="Auto" />
+                                                                </Grid.ColumnDefinitions>
+                                                                <TextBlock Grid.Column="0" Text="SL 环绕左" FontSize="12" FontWeight="Medium" VerticalAlignment="Center" />
+                                                                <Slider x:Name="GainSliderSL" Grid.Column="1" Minimum="-12" Maximum="12" StepFrequency="0.5" ValueChanged="OnChannelGainChanged" VerticalAlignment="Center" Margin="0,-4" />
+                                                                <TextBlock x:Name="GainLabelSL" Grid.Column="2" Text="0.0dB" FontSize="11" HorizontalAlignment="Right" VerticalAlignment="Center" />
+                                                                <ToggleSwitch x:Name="MuteToggleSL" Grid.Column="3" MinWidth="0" OffContent="静音" OnContent="已静音" Toggled="OnChannelMuteToggled" VerticalAlignment="Center" Margin="6,0,0,0" />
+                                                            </Grid>
+                                                        </Border>
+
+                                                        <!-- 6. 环绕右 SR -->
+                                                        <Border Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}" CornerRadius="10" Padding="10,6">
+                                                            <Grid ColumnSpacing="8">
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="85" />
+                                                                    <ColumnDefinition Width="*" />
+                                                                    <ColumnDefinition Width="42" />
+                                                                    <ColumnDefinition Width="Auto" />
+                                                                </Grid.ColumnDefinitions>
+                                                                <TextBlock Grid.Column="0" Text="SR 环绕右" FontSize="12" FontWeight="Medium" VerticalAlignment="Center" />
+                                                                <Slider x:Name="GainSliderSR" Grid.Column="1" Minimum="-12" Maximum="12" StepFrequency="0.5" ValueChanged="OnChannelGainChanged" VerticalAlignment="Center" Margin="0,-4" />
+                                                                <TextBlock x:Name="GainLabelSR" Grid.Column="2" Text="0.0dB" FontSize="11" HorizontalAlignment="Right" VerticalAlignment="Center" />
+                                                                <ToggleSwitch x:Name="MuteToggleSR" Grid.Column="3" MinWidth="0" OffContent="静音" OnContent="已静音" Toggled="OnChannelMuteToggled" VerticalAlignment="Center" Margin="6,0,0,0" />
+                                                            </Grid>
+                                                        </Border>
+
+                                                        <!-- 7. 后环绕左 BL (7.1) -->
+                                                        <Border x:Name="ChannelRowBL" Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}" CornerRadius="10" Padding="10,6" Visibility="Collapsed">
+                                                            <Grid ColumnSpacing="8">
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="85" />
+                                                                    <ColumnDefinition Width="*" />
+                                                                    <ColumnDefinition Width="42" />
+                                                                    <ColumnDefinition Width="Auto" />
+                                                                </Grid.ColumnDefinitions>
+                                                                <TextBlock Grid.Column="0" Text="BL 后左(7.1)" FontSize="12" FontWeight="Medium" VerticalAlignment="Center" />
+                                                                <Slider x:Name="GainSliderBL" Grid.Column="1" Minimum="-12" Maximum="12" StepFrequency="0.5" ValueChanged="OnChannelGainChanged" VerticalAlignment="Center" Margin="0,-4" />
+                                                                <TextBlock x:Name="GainLabelBL" Grid.Column="2" Text="0.0dB" FontSize="11" HorizontalAlignment="Right" VerticalAlignment="Center" />
+                                                                <ToggleSwitch x:Name="MuteToggleBL" Grid.Column="3" MinWidth="0" OffContent="静音" OnContent="已静音" Toggled="OnChannelMuteToggled" VerticalAlignment="Center" Margin="6,0,0,0" />
+                                                            </Grid>
+                                                        </Border>
+
+                                                        <!-- 8. 后环绕右 BR (7.1) -->
+                                                        <Border x:Name="ChannelRowBR" Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}" CornerRadius="10" Padding="10,6" Visibility="Collapsed">
+                                                            <Grid ColumnSpacing="8">
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="85" />
+                                                                    <ColumnDefinition Width="*" />
+                                                                    <ColumnDefinition Width="42" />
+                                                                    <ColumnDefinition Width="Auto" />
+                                                                </Grid.ColumnDefinitions>
+                                                                <TextBlock Grid.Column="0" Text="BR 后右(7.1)" FontSize="12" FontWeight="Medium" VerticalAlignment="Center" />
+                                                                <Slider x:Name="GainSliderBR" Grid.Column="1" Minimum="-12" Maximum="12" StepFrequency="0.5" ValueChanged="OnChannelGainChanged" VerticalAlignment="Center" Margin="0,-4" />
+                                                                <TextBlock x:Name="GainLabelBR" Grid.Column="2" Text="0.0dB" FontSize="11" HorizontalAlignment="Right" VerticalAlignment="Center" />
+                                                                <ToggleSwitch x:Name="MuteToggleBR" Grid.Column="3" MinWidth="0" OffContent="静音" OnContent="已静音" Toggled="OnChannelMuteToggled" VerticalAlignment="Center" Margin="6,0,0,0" />
+                                                            </Grid>
+                                                        </Border>
+                                                    </StackPanel>
+                                                </ScrollViewer>
+                                            </Grid>
+                                        </Border>
+                                    </Grid>
+
+                                    <!-- 4. 底部动作栏 -->
+                                    <Grid Grid.Row="3" Padding="0,4,0,0" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" BorderThickness="0,1,0,0">
+                                        <Button Content="恢复所有微调为 0 dB" Click="OnResetMultichannelCalibrationClick" CornerRadius="8" Padding="16,6" />
+                                        <Button Content="完成" Click="OnCloseMultichannelModalClick" Style="{StaticResource BrandPrimaryButtonStyle}" HorizontalAlignment="Right" CornerRadius="8" Padding="24,6" />
+                                    </Grid>
+                                </Grid>
+                            </Border>
+                        </Grid>
                     </Grid>
                 </Grid>
             </NavigationView>
@@ -5240,6 +5675,23 @@
                                                         Foreground="#6B7280"
                                                         Visibility="{x:Bind NotLikedVisibility, Mode=OneWay}" />
                                                 </Grid>
+                                            </Button>
+
+                                            <!-- 下载歌曲按钮 -->
+                                            <Button
+                                                Tag="{x:Bind}"
+                                                Click="OnSongDownloadButtonClick"
+                                                Width="28"
+                                                Height="28"
+                                                Padding="0"
+                                                CornerRadius="14"
+                                                Background="Transparent"
+                                                BorderThickness="0"
+                                                ToolTipService.ToolTip="下载歌曲">
+                                                <FontIcon
+                                                    Glyph="&#xE896;"
+                                                    FontSize="12"
+                                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                                             </Button>
 
                                             <!-- 播放/暂停圆形按钮 (song-item-operating-play) -->
@@ -5999,6 +6451,12 @@
                                     <MenuFlyoutItem Text="高清臻音" Tag="jyeffect" Click="OnPlayBarQualityMenuClick" />
                                     <MenuFlyoutItem Text="沉浸环绕声" Tag="sky" Click="OnPlayBarQualityMenuClick" />
                                     <MenuFlyoutItem Text="超清母带" Tag="jymaster" Click="OnPlayBarQualityMenuClick" />
+                                    <MenuFlyoutSeparator />
+                                    <MenuFlyoutItem Text="多声道环绕声空间配置 (5.1 / 7.1)..." Click="OnOpenMultichannelModalFromBadgeClick">
+                                        <MenuFlyoutItem.Icon>
+                                            <FontIcon Glyph="&#xEC15;" />
+                                        </MenuFlyoutItem.Icon>
+                                    </MenuFlyoutItem>
                                 </MenuFlyout>
                             </Button.Flyout>
                         </Button>
@@ -6408,6 +6866,12 @@
                                             <MenuFlyoutItem Text="高清臻音" Tag="jyeffect" Click="OnPlayBarQualityMenuClick" />
                                             <MenuFlyoutItem Text="沉浸环绕声" Tag="sky" Click="OnPlayBarQualityMenuClick" />
                                             <MenuFlyoutItem Text="超清母带" Tag="jymaster" Click="OnPlayBarQualityMenuClick" />
+                                            <MenuFlyoutSeparator />
+                                            <MenuFlyoutItem Text="多声道环绕声空间配置 (5.1 / 7.1)..." Click="OnOpenMultichannelModalFromBadgeClick">
+                                                <MenuFlyoutItem.Icon>
+                                                    <FontIcon Glyph="&#xEC15;" />
+                                                </MenuFlyoutItem.Icon>
+                                            </MenuFlyoutItem>
                                         </MenuFlyout>
                                     </Button.Flyout>
                                 </Button>
@@ -7088,6 +7552,89 @@
                     HorizontalAlignment="Stretch"
                     VerticalAlignment="Stretch" />
             </Grid>
+        </Grid>
+
+        <!-- ==================== 模态弹窗：选择下载音质与音源 ==================== -->
+        <Grid
+            x:Name="DownloadQualityModalOverlay"
+            Grid.Row="0"
+            Grid.RowSpan="3"
+            HorizontalAlignment="Stretch"
+            VerticalAlignment="Stretch"
+            Visibility="Collapsed"
+            Background="#99000000"
+            Canvas.ZIndex="120"
+            Tapped="OnDownloadQualityModalOverlayTapped">
+            <Border
+                x:Name="DlQualityModalCard"
+                Width="520"
+                MaxHeight="620"
+                HorizontalAlignment="Center"
+                VerticalAlignment="Center"
+                Background="{ThemeResource SolidBackgroundFillColorBaseBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1"
+                CornerRadius="16"
+                Padding="22,18"
+                Tapped="OnDownloadQualityModalCardTapped">
+                <Grid RowSpacing="14">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <!-- 顶部标题栏与关闭按钮 -->
+                    <Grid Grid.Row="0" Padding="0,0,0,10" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" BorderThickness="0,0,0,1">
+                        <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                            <FontIcon Glyph="&#xE896;" FontSize="16" Foreground="{StaticResource BrandAccentBrush}" />
+                            <TextBlock Text="选择下载音质与音源" FontSize="16" FontWeight="Bold" />
+                        </StackPanel>
+                        <Button HorizontalAlignment="Right" Click="OnCloseDownloadQualityModalClick" Style="{StaticResource TransportIconButtonStyle}">
+                            <FontIcon Glyph="&#xE711;" FontSize="13" />
+                        </Button>
+                    </Grid>
+
+                    <!-- 歌曲简略信息卡片 -->
+                    <Border Grid.Row="1" Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}" CornerRadius="10" Padding="12,10">
+                        <Grid ColumnSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="44" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Border Grid.Column="0" Width="44" Height="44" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}">
+                                <Image x:Name="DlQualitySongCover" Stretch="UniformToFill" />
+                            </Border>
+                            <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="3">
+                                <TextBlock x:Name="DlQualitySongTitle" FontSize="14" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" MaxLines="1" />
+                                <TextBlock x:Name="DlQualitySongArtist" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" MaxLines="1" />
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+
+                    <!-- 探测中加载指示器 -->
+                    <StackPanel x:Name="DlQualityLoadingPanel" Grid.Row="2" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="14" Padding="0,32" Visibility="Visible">
+                        <ProgressRing IsActive="True" Width="36" Height="36" Foreground="{StaticResource BrandAccentBrush}" />
+                        <TextBlock Text="正在并发扫描各音源可用音质，请稍候..." FontSize="13" Foreground="{ThemeResource TextFillColorSecondaryBrush}" HorizontalAlignment="Center" />
+                    </StackPanel>
+
+                    <!-- 音质列表面板 -->
+                    <ScrollViewer x:Name="DlQualityListPanel" Grid.Row="2" MaxHeight="340" VerticalScrollBarVisibility="Auto" Visibility="Collapsed">
+                        <StackPanel x:Name="DlQualityItemsContainer" Spacing="8">
+                            <!-- 动态注入各音源卡片 -->
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <!-- 底部提示信息 -->
+                    <Grid Grid.Row="3" Padding="0,10,0,0" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" BorderThickness="0,1,0,0">
+                        <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                            <FontIcon Glyph="&#xE946;" FontSize="12" Foreground="{StaticResource BrandAccentBrush}" VerticalAlignment="Center" />
+                            <TextBlock Text="提示：点击心仪音质即可直接下载，已自动支持内嵌元数据与高清封面" FontSize="12" Foreground="#94A3B8" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Grid>
+                </Grid>
+            </Border>
         </Grid>
     </Grid>
 </Window>

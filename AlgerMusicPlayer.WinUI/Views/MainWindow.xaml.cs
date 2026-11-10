@@ -3,7 +3,9 @@ using System.Numerics;
 using System.Runtime.InteropServices.WindowsRuntime;
 using AlgerMusicPlayer.WinUI.Helpers;
 using AlgerMusicPlayer.WinUI.Models;
+using AlgerMusicPlayer.WinUI.Services.Audio;
 using AlgerMusicPlayer.WinUI.ViewModels;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Input;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
@@ -65,10 +67,13 @@ public sealed partial class MainWindow : Window
     private readonly Stack<string> _sectionHistory = new();
     private string _activeSection = "Home";
     private bool _isNavigatingBack;
+    private readonly MultichannelManagerService _multichannelService;
+    private CancellationTokenSource? _surroundTourCts;
 
     public MainWindow(MainViewModel viewModel)
     {
         ViewModel = viewModel;
+        _multichannelService = App.Services.GetRequiredService<MultichannelManagerService>();
         InitializeComponent();
 
         _hWnd = WindowNative.GetWindowHandle(this);
@@ -236,6 +241,7 @@ public sealed partial class MainWindow : Window
         AudioFadeDurationLabel.Text = $"{s.AudioFadeDurationSeconds:F1}s";
         AudioFadeDurationPanel.Opacity = s.EnableAudioFade ? 1.0 : 0.4;
         AudioFadeDurationSlider.IsEnabled = s.EnableAudioFade;
+        RefreshMultichannelSummaryLabel();
         EmbedTagToggle.IsOn = s.EmbedCoverAndLyricOnDownload;
         AlwaysShowDownloadToggle.IsOn = s.AlwaysShowDownloadButton;
         AlwaysShowDownloadStateLabel.Text = s.AlwaysShowDownloadButton ? "显示" : "隐藏";
@@ -1912,12 +1918,11 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private async void OnContextMenuDownloadSongClick(object sender, RoutedEventArgs e)
+    private void OnContextMenuDownloadSongClick(object sender, RoutedEventArgs e)
     {
         SongContextMenuFlyout.Hide();
         if (_contextMenuSong == null) return;
-        ViewModel.StatusToast = $"已加入下载队列：《{_contextMenuSong.Name}》";
-        await ViewModel.Downloader.EnqueueDownloadAsync(_contextMenuSong);
+        OpenDownloadQualityModal(_contextMenuSong);
     }
 
     private async void OnContextMenuDownloadLyricClick(object sender, RoutedEventArgs e)
@@ -2756,20 +2761,18 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private async void OnSongDownloadButtonClick(object sender, RoutedEventArgs e)
+    private void OnSongDownloadButtonClick(object sender, RoutedEventArgs e)
     {
         if (sender is Button btn && btn.Tag is SongItem song)
         {
-            ViewModel.StatusToast = $"已加入下载队列：《{song.Name}》";
-            await ViewModel.Downloader.EnqueueDownloadAsync(song);
+            OpenDownloadQualityModal(song);
         }
     }
 
-    private async void OnDownloadCurrentSongClick(object sender, RoutedEventArgs e)
+    private void OnDownloadCurrentSongClick(object sender, RoutedEventArgs e)
     {
         if (ViewModel.Player.CurrentSong == null) return;
-        ViewModel.StatusToast = $"已加入下载队列：《{ViewModel.Player.CurrentSong.Name}》";
-        await ViewModel.Downloader.EnqueueDownloadAsync(ViewModel.Player.CurrentSong);
+        OpenDownloadQualityModal(ViewModel.Player.CurrentSong);
     }
 
     private void OnOpenDownloadFolderClick(object sender, RoutedEventArgs e)
@@ -5955,6 +5958,266 @@ public sealed partial class MainWindow : Window
         await ViewModel.Config.SaveSettingsAsync();
     }
 
+    // ==================== 5.1 / 7.1 多声道空间可视化配置与独立通道校准 ====================
+
+    private void OnOpenMultichannelModalClick(object sender, RoutedEventArgs e)
+    {
+        OpenMultichannelModal();
+    }
+
+    private void OnOpenMultichannelModalFromBadgeClick(object sender, RoutedEventArgs e)
+    {
+        OpenMultichannelModal();
+    }
+
+    private void OnCloseMultichannelModalClick(object sender, RoutedEventArgs e)
+    {
+        CloseMultichannelModal();
+    }
+
+    private void RefreshMultichannelSummaryLabel()
+    {
+        try
+        {
+            var info = _multichannelService.DetectCurrentDeviceInfo(ViewModel.Config.Settings.AudioOutputDeviceNumber);
+            MultichannelSummaryLabel.Text = $"当前检测到：{info.DeviceName}（{info.ChannelTypeName}）";
+        }
+        catch { }
+    }
+
+    private void OpenMultichannelModal()
+    {
+        RefreshMultichannelModalUi();
+        SyncMultichannelConfigToUi();
+        MultichannelModalOverlay.Visibility = Visibility.Visible;
+    }
+
+    private void CloseMultichannelModal()
+    {
+        _surroundTourCts?.Cancel();
+        _surroundTourCts = null;
+        _multichannelService.StopTestTone();
+        MultichannelModalOverlay.Visibility = Visibility.Collapsed;
+    }
+
+    private void OnRefreshMultichannelDeviceClick(object sender, RoutedEventArgs e)
+    {
+        RefreshMultichannelModalUi();
+        ViewModel.StatusToast = "已重新检测当前音频输出设备与声道能力";
+    }
+
+    private void OnOpenWindowsSoundPanelClick(object sender, RoutedEventArgs e)
+    {
+        MultichannelManagerService.OpenWindowsSoundControlPanel();
+    }
+
+    private void RefreshMultichannelModalUi()
+    {
+        var info = _multichannelService.DetectCurrentDeviceInfo(ViewModel.Config.Settings.AudioOutputDeviceNumber);
+        MultichannelDeviceNameText.Text = info.DeviceName;
+        MultichannelChannelBadgeText.Text = info.ChannelTypeName;
+        MultichannelSampleRateBadgeText.Text = $"{info.SampleRate} Hz, {info.BitsPerSample}-bit Float";
+        MultichannelDiagnosticText.Text = info.DiagnosticMessage;
+
+        bool is71 = info.Channels >= 8;
+        SpeakerBtnBackLeft.Visibility = is71 ? Visibility.Visible : Visibility.Collapsed;
+        SpeakerBtnBackRight.Visibility = is71 ? Visibility.Visible : Visibility.Collapsed;
+        ChannelRowBL.Visibility = is71 ? Visibility.Visible : Visibility.Collapsed;
+        ChannelRowBR.Visibility = is71 ? Visibility.Visible : Visibility.Collapsed;
+
+        if (info.Channels >= 6)
+        {
+            MultichannelChannelBadgeBorder.Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0x35, 0x10, 0xB9, 0x81));
+            MultichannelChannelBadgeText.Foreground = (Brush)Application.Current.Resources["BrandAccentBrush"];
+        }
+        else
+        {
+            MultichannelChannelBadgeBorder.Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0x35, 0xF5, 0x9E, 0x0B));
+            MultichannelChannelBadgeText.Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0xF5, 0x9E, 0x0B));
+        }
+
+        MultichannelSummaryLabel.Text = $"当前检测到：{info.DeviceName}（{info.ChannelTypeName}）";
+    }
+
+    private void SyncMultichannelConfigToUi()
+    {
+        var cfg = ViewModel.Config.Settings.Multichannel;
+        MultichannelEnableToggle.IsOn = cfg.IsEnabled;
+
+        GainSliderFL.Value = cfg.FrontLeftDb;
+        GainLabelFL.Text = FormatDb(cfg.FrontLeftDb);
+        MuteToggleFL.IsOn = cfg.MuteFrontLeft;
+        SpeakerBadgeFrontLeft.Text = FormatDb(cfg.FrontLeftDb);
+
+        GainSliderFR.Value = cfg.FrontRightDb;
+        GainLabelFR.Text = FormatDb(cfg.FrontRightDb);
+        MuteToggleFR.IsOn = cfg.MuteFrontRight;
+        SpeakerBadgeFrontRight.Text = FormatDb(cfg.FrontRightDb);
+
+        GainSliderC.Value = cfg.CenterDb;
+        GainLabelC.Text = FormatDb(cfg.CenterDb);
+        MuteToggleC.IsOn = cfg.MuteCenter;
+        SpeakerBadgeCenter.Text = FormatDb(cfg.CenterDb);
+
+        GainSliderLFE.Value = cfg.SubwooferDb;
+        GainLabelLFE.Text = FormatDb(cfg.SubwooferDb);
+        MuteToggleLFE.IsOn = cfg.MuteSubwoofer;
+        SpeakerBadgeSubwoofer.Text = FormatDb(cfg.SubwooferDb);
+
+        GainSliderSL.Value = cfg.SurroundLeftDb;
+        GainLabelSL.Text = FormatDb(cfg.SurroundLeftDb);
+        MuteToggleSL.IsOn = cfg.MuteSurroundLeft;
+        SpeakerBadgeSurroundLeft.Text = FormatDb(cfg.SurroundLeftDb);
+
+        GainSliderSR.Value = cfg.SurroundRightDb;
+        GainLabelSR.Text = FormatDb(cfg.SurroundRightDb);
+        MuteToggleSR.IsOn = cfg.MuteSurroundRight;
+        SpeakerBadgeSurroundRight.Text = FormatDb(cfg.SurroundRightDb);
+
+        GainSliderBL.Value = cfg.BackLeftDb;
+        GainLabelBL.Text = FormatDb(cfg.BackLeftDb);
+        MuteToggleBL.IsOn = cfg.MuteBackLeft;
+        SpeakerBadgeBackLeft.Text = FormatDb(cfg.BackLeftDb);
+
+        GainSliderBR.Value = cfg.BackRightDb;
+        GainLabelBR.Text = FormatDb(cfg.BackRightDb);
+        MuteToggleBR.IsOn = cfg.MuteBackRight;
+        SpeakerBadgeBackRight.Text = FormatDb(cfg.BackRightDb);
+    }
+
+    private static string FormatDb(float db) => $"{(db >= 0 ? "+" : "")}{db:F1}dB";
+
+    private async void OnSpeakerNodeButtonClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button btn || !int.TryParse(btn.Tag?.ToString(), out int channelIdx)) return;
+        await TriggerSpeakerVisualAndAudioTestAsync(channelIdx, btn);
+    }
+
+    private async Task TriggerSpeakerVisualAndAudioTestAsync(int channelIdx, Button? btn = null)
+    {
+        btn ??= channelIdx switch
+        {
+            0 => SpeakerBtnFrontLeft,
+            1 => SpeakerBtnFrontRight,
+            2 => SpeakerBtnCenter,
+            3 => SpeakerBtnSubwoofer,
+            4 => SpeakerBtnSurroundLeft,
+            5 => SpeakerBtnSurroundRight,
+            6 => SpeakerBtnBackLeft,
+            7 => SpeakerBtnBackRight,
+            _ => null
+        };
+
+        if (btn != null)
+        {
+            var origBg = btn.Background;
+            var origBorder = btn.BorderBrush;
+            btn.Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0x10, 0xB9, 0x81));
+            btn.BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0xFF, 0x34, 0xD3, 0x99));
+            _ = Task.Delay(550).ContinueWith(_ =>
+            {
+                DispatcherQueue.TryEnqueue(() =>
+                {
+                    btn.Background = origBg;
+                    btn.BorderBrush = origBorder;
+                });
+            });
+        }
+
+        var info = _multichannelService.DetectCurrentDeviceInfo(ViewModel.Config.Settings.AudioOutputDeviceNumber);
+        await _multichannelService.PlaySingleSpeakerTestAsync(channelIdx, info.Channels >= 8 ? 8 : 6);
+    }
+
+    private async void OnRunSurroundTourClick(object sender, RoutedEventArgs e)
+    {
+        _surroundTourCts?.Cancel();
+        _surroundTourCts = new CancellationTokenSource();
+        var ct = _surroundTourCts.Token;
+
+        var info = _multichannelService.DetectCurrentDeviceInfo(ViewModel.Config.Settings.AudioOutputDeviceNumber);
+        int[] speakerSequence = info.Channels >= 8
+            ? [0, 2, 1, 5, 7, 6, 4, 3]  // FL -> C -> FR -> SR -> BR -> BL -> SL -> LFE
+            : [0, 2, 1, 5, 4, 3];        // FL -> C -> FR -> SR -> SL -> LFE
+
+        try
+        {
+            RunSurroundTourBtn.IsEnabled = false;
+            foreach (int spk in speakerSequence)
+            {
+                if (ct.IsCancellationRequested) break;
+                await TriggerSpeakerVisualAndAudioTestAsync(spk);
+                await Task.Delay(650, ct);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        finally
+        {
+            RunSurroundTourBtn.IsEnabled = true;
+        }
+    }
+
+    private void OnStopSurroundTourClick(object sender, RoutedEventArgs e)
+    {
+        _surroundTourCts?.Cancel();
+        _surroundTourCts = null;
+        _multichannelService.StopTestTone();
+        RunSurroundTourBtn.IsEnabled = true;
+    }
+
+    private void OnMultichannelEnableToggled(object sender, RoutedEventArgs e)
+    {
+        if (!_isInitialized) return;
+        var cfg = ViewModel.Config.Settings.Multichannel;
+        cfg.IsEnabled = MultichannelEnableToggle.IsOn;
+        ViewModel.Player.UpdateMultichannelConfig(cfg);
+    }
+
+    private void OnChannelGainChanged(object sender, RangeBaseValueChangedEventArgs e)
+    {
+        if (!_isInitialized) return;
+        var cfg = ViewModel.Config.Settings.Multichannel;
+        float val = (float)(Math.Round(e.NewValue * 2) / 2.0); // 0.5dB 步进
+
+        if (ReferenceEquals(sender, GainSliderFL)) { cfg.FrontLeftDb = val; GainLabelFL.Text = FormatDb(val); SpeakerBadgeFrontLeft.Text = FormatDb(val); }
+        else if (ReferenceEquals(sender, GainSliderFR)) { cfg.FrontRightDb = val; GainLabelFR.Text = FormatDb(val); SpeakerBadgeFrontRight.Text = FormatDb(val); }
+        else if (ReferenceEquals(sender, GainSliderC)) { cfg.CenterDb = val; GainLabelC.Text = FormatDb(val); SpeakerBadgeCenter.Text = FormatDb(val); }
+        else if (ReferenceEquals(sender, GainSliderLFE)) { cfg.SubwooferDb = val; GainLabelLFE.Text = FormatDb(val); SpeakerBadgeSubwoofer.Text = FormatDb(val); }
+        else if (ReferenceEquals(sender, GainSliderSL)) { cfg.SurroundLeftDb = val; GainLabelSL.Text = FormatDb(val); SpeakerBadgeSurroundLeft.Text = FormatDb(val); }
+        else if (ReferenceEquals(sender, GainSliderSR)) { cfg.SurroundRightDb = val; GainLabelSR.Text = FormatDb(val); SpeakerBadgeSurroundRight.Text = FormatDb(val); }
+        else if (ReferenceEquals(sender, GainSliderBL)) { cfg.BackLeftDb = val; GainLabelBL.Text = FormatDb(val); SpeakerBadgeBackLeft.Text = FormatDb(val); }
+        else if (ReferenceEquals(sender, GainSliderBR)) { cfg.BackRightDb = val; GainLabelBR.Text = FormatDb(val); SpeakerBadgeBackRight.Text = FormatDb(val); }
+
+        ViewModel.Player.UpdateMultichannelConfig(cfg);
+    }
+
+    private void OnChannelMuteToggled(object sender, RoutedEventArgs e)
+    {
+        if (!_isInitialized) return;
+        var cfg = ViewModel.Config.Settings.Multichannel;
+
+        if (ReferenceEquals(sender, MuteToggleFL)) cfg.MuteFrontLeft = MuteToggleFL.IsOn;
+        else if (ReferenceEquals(sender, MuteToggleFR)) cfg.MuteFrontRight = MuteToggleFR.IsOn;
+        else if (ReferenceEquals(sender, MuteToggleC)) cfg.MuteCenter = MuteToggleC.IsOn;
+        else if (ReferenceEquals(sender, MuteToggleLFE)) cfg.MuteSubwoofer = MuteToggleLFE.IsOn;
+        else if (ReferenceEquals(sender, MuteToggleSL)) cfg.MuteSurroundLeft = MuteToggleSL.IsOn;
+        else if (ReferenceEquals(sender, MuteToggleSR)) cfg.MuteSurroundRight = MuteToggleSR.IsOn;
+        else if (ReferenceEquals(sender, MuteToggleBL)) cfg.MuteBackLeft = MuteToggleBL.IsOn;
+        else if (ReferenceEquals(sender, MuteToggleBR)) cfg.MuteBackRight = MuteToggleBR.IsOn;
+
+        ViewModel.Player.UpdateMultichannelConfig(cfg);
+    }
+
+    private void OnResetMultichannelCalibrationClick(object sender, RoutedEventArgs e)
+    {
+        var cfg = ViewModel.Config.Settings.Multichannel;
+        cfg.ResetToDefaults();
+        SyncMultichannelConfigToUi();
+        ViewModel.Player.UpdateMultichannelConfig(cfg);
+        ViewModel.StatusToast = "已恢复所有音箱微调为 0.0 dB";
+    }
+
     private async void OnMusicSourceCardTapped(object sender, TappedRoutedEventArgs e)
     {
         if (!_isInitialized || sender is not Border card || card.Tag is not string sourceKey) return;
@@ -7057,4 +7320,279 @@ public sealed partial class MainWindow : Window
                 break;
         }
     }
+
+    #region 下载音质与各音源选择模态弹窗 (方案 1)
+
+    private CancellationTokenSource? _dlQualityProbeCts;
+    private SongItem? _dlQualityTargetSong;
+
+    private async void OpenDownloadQualityModal(SongItem? song)
+    {
+        if (song == null) return;
+        _dlQualityTargetSong = song;
+
+        DlQualitySongTitle.Text = song.Name;
+        DlQualitySongArtist.Text = song.ArtistText;
+
+        if (!string.IsNullOrWhiteSpace(song.PicUrl))
+        {
+            var coverUrl = song.PicUrl.Contains("param=") ? song.PicUrl : $"{song.PicUrl}?param=120y120";
+            try
+            {
+                DlQualitySongCover.Source = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage(new Uri(coverUrl));
+            }
+            catch
+            {
+                DlQualitySongCover.Source = null;
+            }
+        }
+        else
+        {
+            DlQualitySongCover.Source = null;
+        }
+
+        DlQualityLoadingPanel.Visibility = Visibility.Visible;
+        DlQualityListPanel.Visibility = Visibility.Collapsed;
+        DlQualityItemsContainer.Children.Clear();
+
+        ViewModel.StatusToast = $"正在探查《{song.Name}》各音源音质...";
+
+        DownloadQualityModalOverlay.Opacity = 1;
+        DownloadQualityModalOverlay.Visibility = Visibility.Visible;
+        PlayEntranceAnimation(DlQualityModalCard, 0, 14, 220);
+
+        _dlQualityProbeCts?.Cancel();
+        _dlQualityProbeCts = new CancellationTokenSource();
+        var ct = _dlQualityProbeCts.Token;
+
+        try
+        {
+            var options = await ViewModel.Player.ProbeAllDownloadSourcesAsync(song, ct);
+            if (ct.IsCancellationRequested || _dlQualityTargetSong?.Id != song.Id) return;
+
+            DlQualityItemsContainer.Children.Clear();
+
+            if (options.Count == 0)
+            {
+                var emptyCard = new Border
+                {
+                    Background = new SolidColorBrush(Windows.UI.Color.FromArgb(20, 255, 255, 255)),
+                    CornerRadius = new CornerRadius(10),
+                    Padding = new Thickness(16, 14, 16, 14),
+                    HorizontalAlignment = HorizontalAlignment.Stretch
+                };
+                var emptySp = new StackPanel { Spacing = 8, HorizontalAlignment = HorizontalAlignment.Center };
+                emptySp.Children.Add(new TextBlock
+                {
+                    Text = "各音源探查均未能直接提供直链",
+                    FontSize = 13,
+                    FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                    HorizontalAlignment = HorizontalAlignment.Center
+                });
+                var fallbackBtn = new Button
+                {
+                    Content = "使用默认后台解析直接下载",
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    Style = (Style)Application.Current.Resources["BrandPrimaryButtonStyle"]
+                };
+                fallbackBtn.Click += async (_, _) =>
+                {
+                    DownloadQualityModalOverlay.Visibility = Visibility.Collapsed;
+                    ViewModel.StatusToast = $"已加入下载队列：《{song.Name}》";
+                    await ViewModel.Downloader.EnqueueDownloadAsync(song);
+                };
+                emptySp.Children.Add(fallbackBtn);
+                emptyCard.Child = emptySp;
+                DlQualityItemsContainer.Children.Add(emptyCard);
+            }
+            else
+            {
+                foreach (var opt in options)
+                {
+                    var card = CreateDownloadOptionCard(song, opt);
+                    DlQualityItemsContainer.Children.Add(card);
+                }
+            }
+
+            DlQualityLoadingPanel.Visibility = Visibility.Collapsed;
+            DlQualityListPanel.Visibility = Visibility.Visible;
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            ViewModel.StatusToast = $"探测音质失败：{ex.Message}";
+            DlQualityLoadingPanel.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    private Border CreateDownloadOptionCard(SongItem song, DownloadQualityOption opt)
+    {
+        var card = new Border
+        {
+            Background = new SolidColorBrush(Windows.UI.Color.FromArgb(16, 255, 255, 255)),
+            BorderBrush = opt.IsRecommended
+                ? new SolidColorBrush(Windows.UI.Color.FromArgb(90, 16, 185, 129))
+                : new SolidColorBrush(Windows.UI.Color.FromArgb(24, 255, 255, 255)),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(10),
+            Padding = new Thickness(14, 10, 14, 10),
+            HorizontalAlignment = HorizontalAlignment.Stretch
+        };
+
+        var grid = new Grid { ColumnSpacing = 12 };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        // 左侧主信息
+        var leftSp = new StackPanel { Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
+        var topRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+
+        // 平台徽标
+        var platBadge = new Border
+        {
+            Background = ParseHexColorBrush(opt.BrandColorHex, 36),
+            BorderBrush = ParseHexColorBrush(opt.BrandColorHex, 100),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(6, 1, 6, 1),
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        platBadge.Child = new TextBlock
+        {
+            Text = opt.PlatformName,
+            FontSize = 10,
+            FontWeight = Microsoft.UI.Text.FontWeights.Bold,
+            Foreground = ParseHexColorBrush(opt.BrandColorHex, 255)
+        };
+        topRow.Children.Add(platBadge);
+
+        // 音质标签
+        var qText = new TextBlock
+        {
+            Text = opt.QualityBadge,
+            FontSize = 13,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        topRow.Children.Add(qText);
+
+        // 推荐徽章
+        if (opt.IsRecommended)
+        {
+            var recBadge = new Border
+            {
+                Background = new SolidColorBrush(Windows.UI.Color.FromArgb(36, 16, 185, 129)),
+                BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(120, 16, 185, 129)),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(4),
+                Padding = new Thickness(5, 1, 5, 1),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            recBadge.Child = new TextBlock
+            {
+                Text = "最高推荐",
+                FontSize = 9,
+                FontWeight = Microsoft.UI.Text.FontWeights.Bold,
+                Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 16, 185, 129))
+            };
+            topRow.Children.Add(recBadge);
+        }
+
+        leftSp.Children.Add(topRow);
+
+        // 规格与文件大小小字
+        var specParts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(opt.Extension)) specParts.Add(opt.Extension.TrimStart('.').ToUpperInvariant());
+        if (opt.BitrateKbps > 0) specParts.Add($"{opt.BitrateKbps}kbps");
+        if (!string.IsNullOrWhiteSpace(opt.SizeText)) specParts.Add(opt.SizeText);
+
+        var specText = new TextBlock
+        {
+            Text = string.Join(" · ", specParts),
+            FontSize = 11,
+            Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 148, 163, 184))
+        };
+        leftSp.Children.Add(specText);
+
+        Grid.SetColumn(leftSp, 0);
+        grid.Children.Add(leftSp);
+
+        // 右侧下载按钮
+        var dlBtn = new Button
+        {
+            Content = "下载",
+            Style = opt.IsRecommended
+                ? (Style)Application.Current.Resources["BrandPrimaryButtonStyle"]
+                : (Style)Application.Current.Resources["SecondaryTabButtonStyle"],
+            CornerRadius = new CornerRadius(6),
+            Padding = new Thickness(14, 5, 14, 5),
+            VerticalAlignment = VerticalAlignment.Center
+        };
+
+        async void DoDownload()
+        {
+            DownloadQualityModalOverlay.Visibility = Visibility.Collapsed;
+            ViewModel.StatusToast = $"已加入下载队列：《{song.Name}》[{opt.PlatformName} - {opt.QualityBadge}]";
+            await ViewModel.Downloader.EnqueueDownloadWithSourceAsync(song, opt.DownloadUrl, opt.Extension, opt.QualityBadge);
+        }
+
+        dlBtn.Click += (_, _) => DoDownload();
+        card.Tapped += (_, e) =>
+        {
+            e.Handled = true;
+            DoDownload();
+        };
+
+        // 鼠标悬停动效
+        card.PointerEntered += (_, _) =>
+        {
+            card.Background = new SolidColorBrush(Windows.UI.Color.FromArgb(32, 255, 255, 255));
+        };
+        card.PointerExited += (_, _) =>
+        {
+            card.Background = new SolidColorBrush(Windows.UI.Color.FromArgb(16, 255, 255, 255));
+        };
+
+        Grid.SetColumn(dlBtn, 1);
+        grid.Children.Add(dlBtn);
+
+        card.Child = grid;
+        return card;
+    }
+
+    private static SolidColorBrush ParseHexColorBrush(string hex, byte alpha = 255)
+    {
+        try
+        {
+            hex = hex.TrimStart('#');
+            if (hex.Length == 6)
+            {
+                byte r = Convert.ToByte(hex.Substring(0, 2), 16);
+                byte g = Convert.ToByte(hex.Substring(2, 2), 16);
+                byte b = Convert.ToByte(hex.Substring(4, 2), 16);
+                return new SolidColorBrush(Windows.UI.Color.FromArgb(alpha, r, g, b));
+            }
+        }
+        catch { }
+        return new SolidColorBrush(Windows.UI.Color.FromArgb(alpha, 16, 185, 129));
+    }
+
+    private void OnCloseDownloadQualityModalClick(object sender, RoutedEventArgs e)
+    {
+        _dlQualityProbeCts?.Cancel();
+        DownloadQualityModalOverlay.Visibility = Visibility.Collapsed;
+    }
+
+    private void OnDownloadQualityModalOverlayTapped(object sender, Microsoft.UI.Xaml.Input.TappedRoutedEventArgs e)
+    {
+        _dlQualityProbeCts?.Cancel();
+        DownloadQualityModalOverlay.Visibility = Visibility.Collapsed;
+    }
+
+    private void OnDownloadQualityModalCardTapped(object sender, Microsoft.UI.Xaml.Input.TappedRoutedEventArgs e)
+    {
+        e.Handled = true;
+    }
+
+    #endregion
 }

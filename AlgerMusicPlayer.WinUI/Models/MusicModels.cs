@@ -577,6 +577,24 @@ public class LxScriptItem
 }
 
 /// <summary>
+/// 下载音质与音源选项（供用户选择下载特定音源的特定规格）
+/// </summary>
+public class DownloadQualityOption
+{
+    public string Platform { get; set; } = string.Empty;
+    public string PlatformName { get; set; } = string.Empty;
+    public string QualityBadge { get; set; } = string.Empty;
+    public string Extension { get; set; } = ".mp3";
+    public int BitrateKbps { get; set; }
+    public long SizeBytes { get; set; }
+    public string SizeText { get; set; } = string.Empty;
+    public string DownloadUrl { get; set; } = string.Empty;
+    public bool IsRecommended { get; set; }
+    public string BrandColorHex { get; set; } = "#10B981";
+    public int QualityRank { get; set; }
+}
+
+/// <summary>
 /// 捐赠者名单项（对应原 DonationList.vue）
 /// </summary>
 public class DonorItem

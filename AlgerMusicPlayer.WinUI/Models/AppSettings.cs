@@ -45,6 +45,55 @@ public class EqualizerConfig
 }
 
 /// <summary>
+/// 多声道 5.1 / 7.1 环绕声校准与各音箱独立细节配置
+/// </summary>
+public class MultichannelConfig
+{
+    public bool IsEnabled { get; set; } = true;
+
+    // 各声道微调增益 (dB, -12dB ~ +12dB, 默认 0dB)
+    public float FrontLeftDb { get; set; } = 0f;
+    public float FrontRightDb { get; set; } = 0f;
+    public float CenterDb { get; set; } = 0f;
+    public float SubwooferDb { get; set; } = 0f;
+    public float SurroundLeftDb { get; set; } = 0f;
+    public float SurroundRightDb { get; set; } = 0f;
+    public float BackLeftDb { get; set; } = 0f;
+    public float BackRightDb { get; set; } = 0f;
+
+    // 各声道静音控制
+    public bool MuteFrontLeft { get; set; } = false;
+    public bool MuteFrontRight { get; set; } = false;
+    public bool MuteCenter { get; set; } = false;
+    public bool MuteSubwoofer { get; set; } = false;
+    public bool MuteSurroundLeft { get; set; } = false;
+    public bool MuteSurroundRight { get; set; } = false;
+    public bool MuteBackLeft { get; set; } = false;
+    public bool MuteBackRight { get; set; } = false;
+
+    public void ResetToDefaults()
+    {
+        FrontLeftDb = 0f;
+        FrontRightDb = 0f;
+        CenterDb = 0f;
+        SubwooferDb = 0f;
+        SurroundLeftDb = 0f;
+        SurroundRightDb = 0f;
+        BackLeftDb = 0f;
+        BackRightDb = 0f;
+
+        MuteFrontLeft = false;
+        MuteFrontRight = false;
+        MuteCenter = false;
+        MuteSubwoofer = false;
+        MuteSurroundLeft = false;
+        MuteSurroundRight = false;
+        MuteBackLeft = false;
+        MuteBackRight = false;
+    }
+}
+
+/// <summary>
 /// 快捷键配置项（1:1 对齐 src/shared/shortcuts.ts 与 ShortcutSettings.vue）
 /// </summary>
 public partial class ShortcutItem : ObservableObject
@@ -187,6 +236,10 @@ public partial class DownloadTaskItem : ObservableObject
     public SongItem Song { get; set; } = new();
     public string FilePath { get; set; } = string.Empty;
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    public string? DirectSourceUrl { get; set; }
+    public string? DirectExtensionHint { get; set; }
+    public string? SelectedQualityBadge { get; set; }
 
     [JsonIgnore]
     public CancellationTokenSource? Cts { get; set; }
@@ -380,6 +433,7 @@ public class AppSettings
 
     // 子模块配置
     public EqualizerConfig Equalizer { get; set; } = new();
+    public MultichannelConfig Multichannel { get; set; } = new();
     public DesktopLyricConfig DesktopLyric { get; set; } = new();
     public ImmersiveLyricConfig ImmersiveLyric { get; set; } = new();
     public List<ShortcutItem> Shortcuts { get; set; } = GetDefaultShortcuts();

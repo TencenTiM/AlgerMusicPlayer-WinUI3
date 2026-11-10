@@ -40,6 +40,7 @@ public partial class App : Application
         services.AddSingleton<UnblockMusicService>();
         services.AddSingleton<BilibiliService>();
         services.AddSingleton<LyricService>();
+        services.AddSingleton<MultichannelManagerService>();
         services.AddSingleton<AudioPlayerService>();
         services.AddSingleton<DownloadManagerService>();
         services.AddSingleton<LocalMusicScannerService>();
