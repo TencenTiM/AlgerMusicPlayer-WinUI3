@@ -28,6 +28,16 @@ By completely eliminating the Electron (Chromium + Node.js) runtime overhead and
 
 ---
 
+## 📸 Screenshots
+
+| Dark Mica Theme | Light Theme |
+| :---: | :---: |
+| <img src="./docs/AlgerMusicPlayer%20WinUI%203%202.png" alt="Dark Mica Theme" width="100%" /> | <img src="./docs/AlgerMusicPlayer%20WinUI%203%201.png" alt="Light Theme" width="100%" /> |
+| **24-bit Master & Multi-Source Settings** | **Custom Single-File Native Installer** |
+| <img src="./docs/AlgerMusicPlayer%20WinUI%203%203.png" alt="Audio Source Settings" width="100%" /> | <img src="./docs/AlgerMusicPlayer%20WinUI%203%200.png" alt="Custom Native Installer" width="88%" /> |
+
+---
+
 ## ✨ Key Features
 
 - **🪟 True Native Windows 11 Experience**

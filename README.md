@@ -28,6 +28,16 @@
 
 ---
 
+## 📸 界面预览
+
+| 深色云母主题（Dark Mica） | 浅色主题（Light Theme） |
+| :---: | :---: |
+| <img src="./docs/AlgerMusicPlayer%20WinUI%203%202.png" alt="深色云母主题" width="100%" /> | <img src="./docs/AlgerMusicPlayer%20WinUI%203%201.png" alt="浅色主题" width="100%" /> |
+| **超清母带与多音源解灰设置** | **自研单文件安装程序** |
+| <img src="./docs/AlgerMusicPlayer%20WinUI%203%203.png" alt="音源与音质设置" width="100%" /> | <img src="./docs/AlgerMusicPlayer%20WinUI%203%200.png" alt="自研安装程序" width="88%" /> |
+
+---
+
 ## ✨ 核心特性
 
 - **🪟 纯原生 Windows 11 桌面体验**
