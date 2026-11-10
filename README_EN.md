@@ -8,6 +8,8 @@
   </p>
 
   <p>
+    <a href="https://github.com/TencenTiM/AlgerMusicPlayer-WinUI3/stargazers"><img src="https://img.shields.io/github/stars/TencenTiM/AlgerMusicPlayer-WinUI3?style=flat-square&logo=github&color=22C55E" alt="GitHub Stars" /></a>
+    <a href="https://github.com/TencenTiM/AlgerMusicPlayer-WinUI3/releases"><img src="https://img.shields.io/github/v/release/TencenTiM/AlgerMusicPlayer-WinUI3?style=flat-square&logo=github&color=0078D4" alt="GitHub Release" /></a>
     <img src="https://img.shields.io/badge/.NET-9.0-512BD4?style=flat-square&logo=dotnet&logoColor=white" alt=".NET 9.0" />
     <img src="https://img.shields.io/badge/WinUI-3.0-0078D4?style=flat-square&logo=windows11&logoColor=white" alt="WinUI 3" />
     <img src="https://img.shields.io/badge/Windows%20App%20SDK-1.6-00A4EF?style=flat-square&logo=windows&logoColor=white" alt="Windows App SDK 1.6" />
@@ -95,7 +97,7 @@ AlgerMusicPlayer-WinUI3/
 
 ```powershell
 git lfs install
-git clone <your-repo-url>
+git clone https://github.com/TencenTiM/AlgerMusicPlayer-WinUI3.git
 cd AlgerMusicPlayer-WinUI3
 ```
 

@@ -1554,17 +1554,17 @@ public class NeteaseApiClient
     {
         try
         {
-            var body = await _httpClient.GetStringAsync("https://api.github.com/repos/algerkong/AlgerMusicPlayer/releases/latest");
+            var body = await _httpClient.GetStringAsync("https://api.github.com/repos/TencenTiM/AlgerMusicPlayer-WinUI3/releases/latest");
             using var doc = JsonDocument.Parse(body);
             var tag = doc.RootElement.GetStringProp("tag_name").TrimStart('v', 'V');
-            var url = doc.RootElement.GetStringProp("html_url", "https://github.com/algerkong/AlgerMusicPlayer/releases");
+            var url = doc.RootElement.GetStringProp("html_url", "https://github.com/TencenTiM/AlgerMusicPlayer-WinUI3/releases");
             bool hasUpdate = !string.IsNullOrWhiteSpace(tag) &&
                              string.CompareOrdinal(tag, currentVersion.TrimStart('v', 'V')) > 0;
             return (hasUpdate, string.IsNullOrWhiteSpace(tag) ? currentVersion : tag, url);
         }
         catch
         {
-            return (false, currentVersion, "https://github.com/algerkong/AlgerMusicPlayer/releases");
+            return (false, currentVersion, "https://github.com/TencenTiM/AlgerMusicPlayer-WinUI3/releases");
         }
     }
 

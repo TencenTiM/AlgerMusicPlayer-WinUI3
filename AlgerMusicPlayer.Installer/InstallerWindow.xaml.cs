@@ -482,7 +482,8 @@ public partial class InstallerWindow : Window
 
             key.SetValue("DisplayName", AppDisplayName);
             key.SetValue("DisplayVersion", AppVersion);
-            key.SetValue("Publisher", AppId);
+            key.SetValue("Publisher", "TencenTiM");
+            key.SetValue("URLInfoAbout", "https://github.com/TencenTiM/AlgerMusicPlayer-WinUI3");
             key.SetValue("DisplayIcon", iconPath);
             key.SetValue("InstallLocation", installDir);
             key.SetValue("UninstallString", $"\"{uninstallExePath}\" --uninstall");
