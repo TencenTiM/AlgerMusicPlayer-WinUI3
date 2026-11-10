@@ -1,0 +1,622 @@
+<Window
+    x:Class="AlgerMusicPlayer.WinUI.Views.DesktopLyricWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="Alger 桌面歌词">
+
+    <Grid
+        x:Name="RootGrid"
+        Background="Transparent"
+        RequestedTheme="Dark"
+        PointerPressed="OnRootPointerPressed"
+        PointerMoved="OnRootPointerMoved"
+        PointerReleased="OnRootPointerReleased"
+        PointerCanceled="OnRootPointerReleased"
+        PointerCaptureLost="OnRootPointerCaptureLost"
+        PointerEntered="OnRootPointerEntered"
+        PointerExited="OnRootPointerExited">
+
+        <Grid.Resources>
+            <Style x:Key="LyricControlBarIconButtonStyle" TargetType="Button">
+                <Setter Property="Width" Value="30" />
+                <Setter Property="Height" Value="30" />
+                <Setter Property="Padding" Value="0" />
+                <Setter Property="CornerRadius" Value="15" />
+                <Setter Property="Background" Value="Transparent" />
+                <Setter Property="BorderBrush" Value="Transparent" />
+                <Setter Property="BorderThickness" Value="0" />
+                <Setter Property="Foreground" Value="#D9FFFFFF" />
+            </Style>
+        </Grid.Resources>
+
+        <!-- 悬停半透明毛玻璃背景层（未悬停或锁定时全透明） -->
+        <Border
+            x:Name="HoverBackgroundBorder"
+            CornerRadius="12"
+            Background="Transparent"
+            BorderBrush="Transparent"
+            BorderThickness="1"
+            IsHitTestVisible="False" />
+
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="40" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <!-- 顶部控制栏 (1:1 还原 src/renderer/views/lyric/index.vue .control-bar) -->
+            <Border
+                x:Name="ControlBarBorder"
+                Grid.Row="0"
+                Background="#38000000"
+                CornerRadius="12,12,0,0"
+                Padding="14,0"
+                Opacity="0">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <!-- 左侧：字体调节 [-][+] 与歌曲名 (.font-size-controls) -->
+                    <StackPanel
+                        Grid.Column="0"
+                        Orientation="Horizontal"
+                        VerticalAlignment="Center"
+                        Spacing="4">
+                        <Button
+                            Style="{StaticResource LyricControlBarIconButtonStyle}"
+                            Click="OnFontSmallerClick"
+                            ToolTipService.ToolTip="减小字号 (-2px)">
+                            <FontIcon Glyph="&#xE738;" FontSize="12" />
+                        </Button>
+                        <Button
+                            Style="{StaticResource LyricControlBarIconButtonStyle}"
+                            Click="OnFontLargerClick"
+                            ToolTipService.ToolTip="增大字号 (+2px)">
+                            <FontIcon Glyph="&#xE710;" FontSize="12" />
+                        </Button>
+                        <TextBlock
+                            x:Name="TopSongNameText"
+                            Text="Alger Music Player"
+                            FontSize="13"
+                            Foreground="#CCFFFFFF"
+                            VerticalAlignment="Center"
+                            Margin="6,0,10,0"
+                            MaxWidth="190"
+                            TextWrapping="NoWrap"
+                            TextTrimming="CharacterEllipsis" />
+                    </StackPanel>
+
+                    <!-- 中间：播放控制 (.play-controls) -->
+                    <StackPanel
+                        Grid.Column="1"
+                        Orientation="Horizontal"
+                        VerticalAlignment="Center"
+                        HorizontalAlignment="Center"
+                        Spacing="10">
+                        <Button
+                            Style="{StaticResource LyricControlBarIconButtonStyle}"
+                            Click="OnPrevClick"
+                            ToolTipService.ToolTip="上一首">
+                            <FontIcon Glyph="&#xE892;" FontSize="14" />
+                        </Button>
+                        <Button
+                            Style="{StaticResource LyricControlBarIconButtonStyle}"
+                            Width="34"
+                            Height="34"
+                            CornerRadius="17"
+                            Click="OnPlayPauseClick"
+                            ToolTipService.ToolTip="播放 / 暂停">
+                            <FontIcon x:Name="PlayPauseIcon" Glyph="&#xE768;" FontSize="17" />
+                        </Button>
+                        <Button
+                            Style="{StaticResource LyricControlBarIconButtonStyle}"
+                            Click="OnNextClick"
+                            ToolTipService.ToolTip="下一首">
+                            <FontIcon Glyph="&#xE893;" FontSize="14" />
+                        </Button>
+                    </StackPanel>
+
+                    <!-- 右侧：功能按钮组 (.control-buttons: 明暗主题 / 主题色面板 / 翻译 / 显示模式 / 锁定 / 关闭) -->
+                    <StackPanel
+                        Grid.Column="2"
+                        Orientation="Horizontal"
+                        VerticalAlignment="Center"
+                        HorizontalAlignment="Right"
+                        Spacing="4">
+                        <Button
+                            x:Name="ThemeToggleBtn"
+                            Style="{StaticResource LyricControlBarIconButtonStyle}"
+                            Click="OnToggleThemeClick"
+                            ToolTipService.ToolTip="切换桌面歌词明/暗主题">
+                            <FontIcon x:Name="ThemeToggleIcon" Glyph="&#xE708;" FontSize="14" />
+                        </Button>
+                        <Button
+                            x:Name="ThemeColorPanelBtn"
+                            Style="{StaticResource LyricControlBarIconButtonStyle}"
+                            Click="OnToggleThemeColorPanelClick"
+                            ToolTipService.ToolTip="自定义歌词主题色">
+                            <FontIcon x:Name="ThemeColorPanelIcon" Glyph="&#xE790;" FontSize="14" />
+                        </Button>
+                        <Button
+                            x:Name="TranslationToggleBtn"
+                            Style="{StaticResource LyricControlBarIconButtonStyle}"
+                            Click="OnToggleTranslationClick"
+                            ToolTipService.ToolTip="显示 / 隐藏歌词翻译">
+                            <TextBlock
+                                x:Name="TranslationToggleText"
+                                Text="译"
+                                FontSize="13"
+                                FontWeight="SemiBold"
+                                VerticalAlignment="Center"
+                                HorizontalAlignment="Center" />
+                        </Button>
+                        <Button
+                            x:Name="DisplayModeToggleBtn"
+                            Style="{StaticResource LyricControlBarIconButtonStyle}"
+                            Click="OnCycleDisplayModeClick"
+                            ToolTipService.ToolTip="切换显示模式（滚动 / 单行 / 双行）">
+                            <FontIcon x:Name="DisplayModeToggleIcon" Glyph="&#xE8FD;" FontSize="14" />
+                        </Button>
+                        <Button
+                            x:Name="LockBtn"
+                            Style="{StaticResource LyricControlBarIconButtonStyle}"
+                            Click="OnToggleLockClick"
+                            ToolTipService.ToolTip="锁定桌面歌词（鼠标穿透）">
+                            <FontIcon x:Name="LockIcon" Glyph="&#xE785;" FontSize="14" />
+                        </Button>
+                        <Button
+                            Style="{StaticResource LyricControlBarIconButtonStyle}"
+                            Click="OnCloseClick"
+                            ToolTipService.ToolTip="关闭桌面歌词">
+                            <FontIcon Glyph="&#xE711;" FontSize="13" />
+                        </Button>
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- 锁定状态下鼠标移入显示的独立解锁按钮 (#lyric-lock, margin-right: 60px) -->
+            <Button
+                x:Name="LockedUnlockFloatingBtn"
+                Grid.Row="0"
+                Visibility="Collapsed"
+                HorizontalAlignment="Right"
+                VerticalAlignment="Center"
+                Margin="0,0,64,0"
+                Width="34"
+                Height="34"
+                Padding="0"
+                CornerRadius="17"
+                Background="#B818181B"
+                BorderBrush="#40FFFFFF"
+                BorderThickness="1"
+                Foreground="#FFFFFF"
+                Click="OnToggleLockClick"
+                ToolTipService.ToolTip="点击解锁桌面歌词">
+                <FontIcon Glyph="&#xE72E;" FontSize="15" />
+            </Button>
+
+            <!-- 歌词主体展示区 (支持滚动三行 / 单行 / 双行 + 实时卡拉OK逐字渐变画刷 + 自适应防裁切 Viewbox) -->
+            <Grid
+                x:Name="LyricContentWrapper"
+                Grid.Row="1"
+                Padding="18,6,18,12"
+                VerticalAlignment="Stretch"
+                HorizontalAlignment="Stretch">
+
+                <Viewbox
+                    Stretch="Uniform"
+                    StretchDirection="DownOnly"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center">
+                    <Grid Width="760">
+                        <!-- 1. 滚动模式 (scroll: 上一句 / 当前句+翻译 / 下一句) -->
+                        <StackPanel
+                            x:Name="ScrollModePanel"
+                            VerticalAlignment="Center"
+                            HorizontalAlignment="Center"
+                            Spacing="4">
+                            <Grid HorizontalAlignment="Center" Padding="0,2">
+                                <TextBlock
+                                    x:Name="ScrollPrevShadowText"
+                                    Text=""
+                                    FontSize="17"
+                                    Foreground="#D9000000"
+                                    Margin="1.5,1.5,0,0"
+                                    Padding="0,2"
+                                    TextAlignment="Center"
+                                    TextWrapping="NoWrap"
+                                    TextTrimming="CharacterEllipsis"
+                                    IsHitTestVisible="False" />
+                                <TextBlock
+                                    x:Name="ScrollPrevLineText"
+                                    Text=""
+                                    FontSize="17"
+                                    Opacity="0.68"
+                                    Padding="0,2"
+                                    TextAlignment="Center"
+                                    TextWrapping="NoWrap"
+                                    TextTrimming="CharacterEllipsis" />
+                            </Grid>
+
+                            <!-- 当前播放高亮行 (带卡拉OK渐变前景) -->
+                            <StackPanel Spacing="2" HorizontalAlignment="Center">
+                                <Grid HorizontalAlignment="Center" Padding="0,2">
+                                    <TextBlock
+                                        x:Name="ScrollCurrentShadowText"
+                                        Text="Alger Music Player"
+                                        FontSize="26"
+                                        FontWeight="Bold"
+                                        Foreground="#E6000000"
+                                        Margin="2,2,0,0"
+                                        Padding="0,2"
+                                        TextAlignment="Center"
+                                        TextWrapping="NoWrap"
+                                        TextTrimming="CharacterEllipsis"
+                                        IsHitTestVisible="False" />
+                                    <TextBlock
+                                        x:Name="ScrollCurrentLineText"
+                                        Text="Alger Music Player"
+                                        FontSize="26"
+                                        FontWeight="Bold"
+                                        Padding="0,2"
+                                        TextAlignment="Center"
+                                        TextWrapping="NoWrap"
+                                        TextTrimming="CharacterEllipsis" />
+                                </Grid>
+                                <Grid x:Name="ScrollCurrentTransGroup" HorizontalAlignment="Center" Padding="0,1">
+                                    <TextBlock
+                                        x:Name="ScrollCurrentTransShadowText"
+                                        Text=""
+                                        FontSize="15"
+                                        Foreground="#D9000000"
+                                        Margin="1.5,1.5,0,0"
+                                        Padding="0,1"
+                                        TextAlignment="Center"
+                                        TextWrapping="NoWrap"
+                                        TextTrimming="CharacterEllipsis"
+                                        IsHitTestVisible="False" />
+                                    <TextBlock
+                                        x:Name="ScrollCurrentTransText"
+                                        Text=""
+                                        FontSize="15"
+                                        Opacity="0.88"
+                                        Padding="0,1"
+                                        TextAlignment="Center"
+                                        TextWrapping="NoWrap"
+                                        TextTrimming="CharacterEllipsis" />
+                                </Grid>
+                            </StackPanel>
+
+                            <Grid HorizontalAlignment="Center" Padding="0,2">
+                                <TextBlock
+                                    x:Name="ScrollNextShadowText"
+                                    Text=""
+                                    FontSize="17"
+                                    Foreground="#D9000000"
+                                    Margin="1.5,1.5,0,0"
+                                    Padding="0,2"
+                                    TextAlignment="Center"
+                                    TextWrapping="NoWrap"
+                                    TextTrimming="CharacterEllipsis"
+                                    IsHitTestVisible="False" />
+                                <TextBlock
+                                    x:Name="ScrollNextLineText"
+                                    Text=""
+                                    FontSize="17"
+                                    Opacity="0.68"
+                                    Padding="0,2"
+                                    TextAlignment="Center"
+                                    TextWrapping="NoWrap"
+                                    TextTrimming="CharacterEllipsis" />
+                            </Grid>
+                        </StackPanel>
+
+                        <!-- 2. 单行模式 (single: 仅显示当前歌词 + 翻译) -->
+                        <StackPanel
+                            x:Name="SingleModePanel"
+                            Visibility="Collapsed"
+                            VerticalAlignment="Center"
+                            HorizontalAlignment="Center"
+                            Spacing="4">
+                            <Grid HorizontalAlignment="Center" Padding="0,2">
+                                <TextBlock
+                                    x:Name="SingleCurrentShadowText"
+                                    Text="Alger Music Player"
+                                    FontSize="28"
+                                    FontWeight="Bold"
+                                    Foreground="#E6000000"
+                                    Margin="2,2,0,0"
+                                    Padding="0,2"
+                                    TextAlignment="Center"
+                                    TextWrapping="NoWrap"
+                                    TextTrimming="CharacterEllipsis"
+                                    IsHitTestVisible="False" />
+                                <TextBlock
+                                    x:Name="SingleCurrentLineText"
+                                    Text="Alger Music Player"
+                                    FontSize="28"
+                                    FontWeight="Bold"
+                                    Padding="0,2"
+                                    TextAlignment="Center"
+                                    TextWrapping="NoWrap"
+                                    TextTrimming="CharacterEllipsis" />
+                            </Grid>
+                            <Grid x:Name="SingleCurrentTransGroup" HorizontalAlignment="Center" Padding="0,1">
+                                <TextBlock
+                                    x:Name="SingleCurrentTransShadowText"
+                                    Text=""
+                                    FontSize="16"
+                                    Foreground="#D9000000"
+                                    Margin="1.5,1.5,0,0"
+                                    Padding="0,1"
+                                    TextAlignment="Center"
+                                    TextWrapping="NoWrap"
+                                    TextTrimming="CharacterEllipsis"
+                                    IsHitTestVisible="False" />
+                                <TextBlock
+                                    x:Name="SingleCurrentTransText"
+                                    Text=""
+                                    FontSize="16"
+                                    Opacity="0.88"
+                                    Padding="0,1"
+                                    TextAlignment="Center"
+                                    TextWrapping="NoWrap"
+                                    TextTrimming="CharacterEllipsis" />
+                            </Grid>
+                        </StackPanel>
+
+                        <!-- 3. 双行模式 (double: 固定两行分组交替显示) -->
+                        <StackPanel
+                            x:Name="DoubleModePanel"
+                            Visibility="Collapsed"
+                            VerticalAlignment="Center"
+                            HorizontalAlignment="Stretch"
+                            Spacing="6">
+                            <!-- 第一行 (左对齐偏中) -->
+                            <StackPanel x:Name="DoubleLine1Group" HorizontalAlignment="Left" Margin="16,0,0,0" Spacing="2">
+                                <Grid HorizontalAlignment="Left" Padding="0,2">
+                                    <TextBlock
+                                        x:Name="DoubleLine1ShadowText"
+                                        Text=""
+                                        FontSize="24"
+                                        FontWeight="Bold"
+                                        Foreground="#E6000000"
+                                        Margin="2,2,0,0"
+                                        Padding="0,2"
+                                        TextWrapping="NoWrap"
+                                        TextTrimming="CharacterEllipsis"
+                                        IsHitTestVisible="False" />
+                                    <TextBlock
+                                        x:Name="DoubleLine1Text"
+                                        Text=""
+                                        FontSize="24"
+                                        FontWeight="Bold"
+                                        Padding="0,2"
+                                        TextWrapping="NoWrap"
+                                        TextTrimming="CharacterEllipsis" />
+                                </Grid>
+                                <TextBlock
+                                    x:Name="DoubleLine1TransText"
+                                    Text=""
+                                    FontSize="14"
+                                    Opacity="0.85"
+                                    Padding="0,1"
+                                    TextWrapping="NoWrap"
+                                    TextTrimming="CharacterEllipsis" />
+                            </StackPanel>
+
+                            <!-- 第二行 (右对齐偏中) -->
+                            <StackPanel x:Name="DoubleLine2Group" HorizontalAlignment="Right" Margin="0,0,16,0" Spacing="2">
+                                <Grid HorizontalAlignment="Right" Padding="0,2">
+                                    <TextBlock
+                                        x:Name="DoubleLine2ShadowText"
+                                        Text=""
+                                        FontSize="24"
+                                        FontWeight="Bold"
+                                        Foreground="#E6000000"
+                                        Margin="2,2,0,0"
+                                        Padding="0,2"
+                                        TextWrapping="NoWrap"
+                                        TextTrimming="CharacterEllipsis"
+                                        IsHitTestVisible="False" />
+                                    <TextBlock
+                                        x:Name="DoubleLine2Text"
+                                        Text=""
+                                        FontSize="24"
+                                        FontWeight="Bold"
+                                        Padding="0,2"
+                                        TextWrapping="NoWrap"
+                                        TextTrimming="CharacterEllipsis" />
+                                </Grid>
+                                <TextBlock
+                                    x:Name="DoubleLine2TransText"
+                                    Text=""
+                                    FontSize="14"
+                                    Opacity="0.85"
+                                    Padding="0,1"
+                                    HorizontalAlignment="Right"
+                                    TextWrapping="NoWrap"
+                                    TextTrimming="CharacterEllipsis" />
+                            </StackPanel>
+                        </StackPanel>
+                    </Grid>
+                </Viewbox>
+            </Grid>
+
+            <!-- 悬浮歌词主题色面板 (1:1 还原 src/renderer/components/lyric/ThemeColorPanel.vue) -->
+            <Border
+                x:Name="ThemeColorPopupBorder"
+                Grid.Row="1"
+                Visibility="Collapsed"
+                VerticalAlignment="Top"
+                HorizontalAlignment="Center"
+                Margin="0,2,0,0"
+                Background="#F2202024"
+                BorderBrush="#28FFFFFF"
+                BorderThickness="1"
+                CornerRadius="12"
+                Padding="14,10">
+                <StackPanel Spacing="10">
+                    <!-- 面板头部 -->
+                    <Grid>
+                        <TextBlock
+                            Text="歌词主题色"
+                            FontSize="13"
+                            FontWeight="SemiBold"
+                            Foreground="#E6FFFFFF"
+                            VerticalAlignment="Center" />
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="6">
+                            <Button
+                                Content="恢复默认"
+                                Click="OnResetThemeColorClick"
+                                Padding="8,3"
+                                FontSize="11"
+                                CornerRadius="6"
+                                Background="#1AFFFFFF"
+                                BorderThickness="0"
+                                Foreground="#CCFFFFFF" />
+                            <Button
+                                Click="OnCloseThemeColorPanelClick"
+                                Width="22"
+                                Height="22"
+                                Padding="0"
+                                CornerRadius="11"
+                                Background="Transparent"
+                                BorderThickness="0"
+                                Foreground="#99FFFFFF">
+                                <FontIcon Glyph="&#xE711;" FontSize="11" />
+                            </Button>
+                        </StackPanel>
+                    </Grid>
+
+                    <!-- 横向紧凑内容区：预设颜色 + 自定义颜色 + 效果预览 -->
+                    <StackPanel Orientation="Horizontal" Spacing="16" VerticalAlignment="Center">
+                        <!-- 1. 预设颜色 (6 种 PRESET_LYRIC_COLORS) -->
+                        <StackPanel Spacing="6">
+                            <TextBlock Text="预设颜色" FontSize="11" Foreground="#99FFFFFF" />
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <Button
+                                    x:Name="PresetColorBtn0"
+                                    Tag="#1ed760"
+                                    Click="OnPresetColorClick"
+                                    Width="24"
+                                    Height="24"
+                                    Padding="0"
+                                    CornerRadius="12"
+                                    Background="#1ed760"
+                                    BorderBrush="#4DFFFFFF"
+                                    BorderThickness="2"
+                                    ToolTipService.ToolTip="Spotify 绿" />
+                                <Button
+                                    x:Name="PresetColorBtn1"
+                                    Tag="#0a84ff"
+                                    Click="OnPresetColorClick"
+                                    Width="24"
+                                    Height="24"
+                                    Padding="0"
+                                    CornerRadius="12"
+                                    Background="#0a84ff"
+                                    BorderBrush="#4DFFFFFF"
+                                    BorderThickness="2"
+                                    ToolTipService.ToolTip="苹果蓝" />
+                                <Button
+                                    x:Name="PresetColorBtn2"
+                                    Tag="#ff4444"
+                                    Click="OnPresetColorClick"
+                                    Width="24"
+                                    Height="24"
+                                    Padding="0"
+                                    CornerRadius="12"
+                                    Background="#ff4444"
+                                    BorderBrush="#4DFFFFFF"
+                                    BorderThickness="2"
+                                    ToolTipService.ToolTip="活力红" />
+                                <Button
+                                    x:Name="PresetColorBtn3"
+                                    Tag="#ff8c42"
+                                    Click="OnPresetColorClick"
+                                    Width="24"
+                                    Height="24"
+                                    Padding="0"
+                                    CornerRadius="12"
+                                    Background="#ff8c42"
+                                    BorderBrush="#4DFFFFFF"
+                                    BorderThickness="2"
+                                    ToolTipService.ToolTip="活力橙" />
+                                <Button
+                                    x:Name="PresetColorBtn4"
+                                    Tag="#a78bfa"
+                                    Click="OnPresetColorClick"
+                                    Width="24"
+                                    Height="24"
+                                    Padding="0"
+                                    CornerRadius="12"
+                                    Background="#a78bfa"
+                                    BorderBrush="#4DFFFFFF"
+                                    BorderThickness="2"
+                                    ToolTipService.ToolTip="梦幻紫" />
+                                <Button
+                                    x:Name="PresetColorBtn5"
+                                    Tag="#f472b6"
+                                    Click="OnPresetColorClick"
+                                    Width="24"
+                                    Height="24"
+                                    Padding="0"
+                                    CornerRadius="12"
+                                    Background="#f472b6"
+                                    BorderBrush="#4DFFFFFF"
+                                    BorderThickness="2"
+                                    ToolTipService.ToolTip="樱花粉" />
+                            </StackPanel>
+                        </StackPanel>
+
+                        <Border Width="1" Height="36" Background="#1FFFFFFF" />
+
+                        <!-- 2. 自定义颜色输入 -->
+                        <StackPanel Spacing="6">
+                            <TextBlock Text="自定义" FontSize="11" Foreground="#99FFFFFF" />
+                            <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                                <Border
+                                    x:Name="CustomColorSwatchBorder"
+                                    Width="24"
+                                    Height="24"
+                                    CornerRadius="6"
+                                    Background="#1ed760"
+                                    BorderBrush="#4DFFFFFF"
+                                    BorderThickness="1" />
+                                <TextBox
+                                    x:Name="CustomColorHexBox"
+                                    Width="86"
+                                    Height="28"
+                                    Padding="6,3"
+                                    FontSize="12"
+                                    PlaceholderText="#1ed760"
+                                    TextChanged="OnCustomColorHexTextChanged" />
+                            </StackPanel>
+                        </StackPanel>
+
+                        <Border Width="1" Height="36" Background="#1FFFFFFF" />
+
+                        <!-- 3. 效果预览 (60% 卡拉OK渐变预览) -->
+                        <StackPanel Spacing="6">
+                            <TextBlock Text="效果预览" FontSize="11" Foreground="#99FFFFFF" />
+                            <Border
+                                Background="#4D000000"
+                                CornerRadius="6"
+                                Padding="10,4">
+                                <TextBlock
+                                    x:Name="ThemeColorPreviewText"
+                                    Text="这是一段歌词预览"
+                                    FontSize="13"
+                                    FontWeight="Bold" />
+                            </Border>
+                        </StackPanel>
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+        </Grid>
+    </Grid>
+</Window>

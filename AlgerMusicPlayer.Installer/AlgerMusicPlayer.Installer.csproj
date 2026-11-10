@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <RootNamespace>AlgerMusicPlayer.Installer</RootNamespace>
+    <AssemblyName>AlgerMusicPlayer-Setup-x64</AssemblyName>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationIcon>..\AlgerMusicPlayer.WinUI\Assets\icon.ico</ApplicationIcon>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <DebugType>embedded</DebugType>
+    <Version>5.1.0</Version>
+    <Product>AlgerMusicPlayer Setup</Product>
+    <Company>AlgerMusicPlayer</Company>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Resource Include="..\AlgerMusicPlayer.WinUI\Assets\icon.png" Link="Assets\icon.png" />
+    <EmbeddedResource Include="payload.zip" LogicalName="AlgerMusicPlayer.Payload.zip" Condition="Exists('payload.zip')" />
+  </ItemGroup>
+</Project>

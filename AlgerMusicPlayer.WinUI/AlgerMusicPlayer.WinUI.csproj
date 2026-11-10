@@ -1,0 +1,71 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <RootNamespace>AlgerMusicPlayer.WinUI</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\icon.ico</ApplicationIcon>
+    <Platforms>x64;ARM64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <UseWinUI>true</UseWinUI>
+    <EnableCoreMrtTooling>false</EnableCoreMrtTooling>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.6.250205002" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.1742" GeneratePathProperty="true" />
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="9.0.2" />
+    <PackageReference Include="NAudio" Version="2.2.1" />
+    <PackageReference Include="TagLibSharp" Version="2.3.0" />
+    <PackageReference Include="QRCoder" Version="1.6.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="Assets\icon.ico" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets\icon.png" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="mpv\win-x64\*.*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!-- 在未安装完整 Visual Studio UWP 组件的纯 .NET CLI 环境下，使用 Windows SDK BuildTools 的 makepri.exe 自动合并生成 resources.pri -->
+  <Target Name="GenerateWinUIPriFile" AfterTargets="Build">
+    <PropertyGroup>
+      <MakePriExe>$(PkgMicrosoft_Windows_SDK_BuildTools)\bin\10.0.26100.0\x64\makepri.exe</MakePriExe>
+      <PriStagingDir>$(IntermediateOutputPath)PriStaging</PriStagingDir>
+      <PriConfigXml>$(IntermediateOutputPath)priconfig.xml</PriConfigXml>
+    </PropertyGroup>
+    <RemoveDir Directories="$(PriStagingDir)" />
+    <MakeDir Directories="$(PriStagingDir);$(PriStagingDir)\Views" />
+    <Copy SourceFiles="$(TargetDir)Microsoft.UI.Xaml.Controls.pri;$(TargetDir)App.xbf" DestinationFolder="$(PriStagingDir)" SkipUnchangedFiles="true" />
+    <ItemGroup>
+      <_ViewXbfFiles Include="$(TargetDir)Views\*.xbf" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_ViewXbfFiles)" DestinationFolder="$(PriStagingDir)\Views" SkipUnchangedFiles="true" />
+    <Exec Command="&quot;$(MakePriExe)&quot; createconfig /cf &quot;$(PriConfigXml)&quot; /dq zh-CN /o /pv 10.0.0" Condition="Exists('$(MakePriExe)')" />
+    <Exec Command="&quot;$(MakePriExe)&quot; new /pr &quot;$(PriStagingDir)&quot; /cf &quot;$(PriConfigXml)&quot; /of &quot;$(TargetDir)resources.pri&quot; /o" Condition="Exists('$(MakePriExe)')" />
+  </Target>
+
+  <!-- Publish 时同步复制合并后的 resources.pri 与 XBF 视图字节码到发布目录 -->
+  <Target Name="CopyWinUIPriToPublishDir" AfterTargets="Publish" DependsOnTargets="GenerateWinUIPriFile">
+    <MakeDir Directories="$(PublishDir)Views;$(PublishDir)Assets;$(PublishDir)mpv\win-x64" />
+    <ItemGroup>
+      <_PublishViewXbfFiles Include="$(TargetDir)Views\*.xbf" />
+      <_PublishAssetFiles Include="$(ProjectDir)Assets\*.*" />
+      <_PublishMpvFiles Include="$(ProjectDir)mpv\win-x64\*.*" />
+    </ItemGroup>
+    <Copy SourceFiles="$(TargetDir)resources.pri" DestinationFolder="$(PublishDir)" Condition="Exists('$(TargetDir)resources.pri')" />
+    <Copy SourceFiles="$(TargetDir)App.xbf" DestinationFolder="$(PublishDir)" Condition="Exists('$(TargetDir)App.xbf')" />
+    <Copy SourceFiles="@(_PublishViewXbfFiles)" DestinationFolder="$(PublishDir)Views" />
+    <Copy SourceFiles="@(_PublishAssetFiles)" DestinationFolder="$(PublishDir)Assets" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(_PublishMpvFiles)" DestinationFolder="$(PublishDir)mpv\win-x64" SkipUnchangedFiles="true" />
+  </Target>
+</Project>

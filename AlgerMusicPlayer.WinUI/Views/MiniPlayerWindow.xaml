@@ -1,0 +1,317 @@
+<Window
+    x:Class="AlgerMusicPlayer.WinUI.Views.MiniPlayerWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="Alger Mini Player">
+
+    <Grid
+        x:Name="RootGrid"
+        Background="{ThemeResource SolidBackgroundFillColorBaseBrush}"
+        PointerPressed="OnRootPointerPressed"
+        PointerMoved="OnRootPointerMoved"
+        PointerReleased="OnRootPointerReleased"
+        PointerCanceled="OnRootPointerReleased"
+        PointerCaptureLost="OnRootPointerCaptureLost"
+        PointerWheelChanged="OnMiniBarPointerWheelChanged">
+
+        <Grid.Resources>
+            <Style x:Key="MiniCircleActionButtonStyle" TargetType="Button">
+                <Setter Property="Width" Value="28" />
+                <Setter Property="Height" Value="28" />
+                <Setter Property="Padding" Value="0" />
+                <Setter Property="CornerRadius" Value="14" />
+                <Setter Property="Background" Value="Transparent" />
+                <Setter Property="BorderBrush" Value="Transparent" />
+                <Setter Property="BorderThickness" Value="0" />
+            </Style>
+        </Grid.Resources>
+
+        <Grid.RowDefinitions>
+            <RowDefinition Height="64" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- 顶部 64px 迷你播放控制栏 (1:1 还原 src/renderer/components/player/MiniPlayBar.vue) -->
+        <Grid
+            x:Name="MiniBarContainer"
+            Grid.Row="0"
+            Height="64"
+            Background="{ThemeResource LayerOnMicaBaseAltFillColorDefaultBrush}">
+
+            <Grid Padding="12,0,10,2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <!-- 左侧：36x36 圆角封面 + 歌名/歌手（点击还原主窗口并展开播放详情页） -->
+                <Button
+                    Grid.Column="0"
+                    Click="OnOpenMusicFullFromMiniClick"
+                    Background="Transparent"
+                    BorderBrush="Transparent"
+                    BorderThickness="0"
+                    Padding="2"
+                    CornerRadius="6"
+                    HorizontalAlignment="Stretch"
+                    HorizontalContentAlignment="Left"
+                    ToolTipService.ToolTip="点击展开播放详情页">
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="36" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+
+                        <Border
+                            Grid.Column="0"
+                            Width="36"
+                            Height="36"
+                            CornerRadius="6"
+                            Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}">
+                            <Image x:Name="CoverImg" Stretch="UniformToFill" />
+                        </Border>
+
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="1">
+                            <TextBlock
+                                x:Name="SongTitleText"
+                                Text="未在播放"
+                                FontSize="12"
+                                FontWeight="Medium"
+                                TextWrapping="NoWrap"
+                                TextTrimming="CharacterEllipsis" />
+                            <TextBlock
+                                x:Name="ArtistText"
+                                Text="Alger Music"
+                                FontSize="11"
+                                Opacity="0.62"
+                                TextWrapping="NoWrap"
+                                TextTrimming="CharacterEllipsis" />
+                        </StackPanel>
+                    </Grid>
+                </Button>
+
+                <!-- 中间：播放控制 (上一首 / 28x28 绿色圆形播放暂停 / 下一首) -->
+                <StackPanel
+                    Grid.Column="1"
+                    Orientation="Horizontal"
+                    VerticalAlignment="Center"
+                    Spacing="4"
+                    Margin="6,0">
+                    <Button
+                        Style="{StaticResource MiniCircleActionButtonStyle}"
+                        Click="OnPrevClick"
+                        ToolTipService.ToolTip="上一首">
+                        <FontIcon Glyph="&#xE892;" FontSize="11" />
+                    </Button>
+                    <Button
+                        x:Name="PlayPauseBtn"
+                        Style="{StaticResource AccentCirclePlayButtonStyle}"
+                        Width="28"
+                        Height="28"
+                        CornerRadius="14"
+                        Padding="0"
+                        Click="OnPlayPauseClick"
+                        ToolTipService.ToolTip="播放 / 暂停">
+                        <FontIcon x:Name="PlayPauseIcon" Glyph="&#xE768;" FontSize="11" Foreground="#FFFFFF" />
+                    </Button>
+                    <Button
+                        Style="{StaticResource MiniCircleActionButtonStyle}"
+                        Click="OnNextClick"
+                        ToolTipService.ToolTip="下一首">
+                        <FontIcon Glyph="&#xE893;" FontSize="11" />
+                    </Button>
+                </StackPanel>
+
+                <!-- 右侧：收藏红心 / 展开播放列表 / 还原主窗口 -->
+                <StackPanel
+                    Grid.Column="2"
+                    Orientation="Horizontal"
+                    VerticalAlignment="Center"
+                    Spacing="2">
+                    <Button
+                        x:Name="LikeBtn"
+                        Style="{StaticResource MiniCircleActionButtonStyle}"
+                        Click="OnToggleLikeCurrentClick"
+                        ToolTipService.ToolTip="喜欢 / 取消喜欢">
+                        <FontIcon x:Name="LikeIcon" Glyph="&#xEB51;" FontSize="12" />
+                    </Button>
+                    <Button
+                        x:Name="TogglePlaylistBtn"
+                        Style="{StaticResource MiniCircleActionButtonStyle}"
+                        Click="OnTogglePlaylistClick"
+                        ToolTipService.ToolTip="展开 / 收起播放列表">
+                        <FontIcon x:Name="TogglePlaylistIcon" Glyph="&#xE90B;" FontSize="12" />
+                    </Button>
+                    <Button
+                        Style="{StaticResource MiniCircleActionButtonStyle}"
+                        Click="OnRestoreClick"
+                        ToolTipService.ToolTip="还原主窗口">
+                        <FontIcon Glyph="&#xE711;" FontSize="11" />
+                    </Button>
+                </StackPanel>
+            </Grid>
+
+            <!-- 底部 3px 可拖拽/点击跳转进度条 (.mini-progress-bar) -->
+            <Grid
+                x:Name="ProgressBarTrackGrid"
+                VerticalAlignment="Bottom"
+                HorizontalAlignment="Stretch"
+                Height="8"
+                Background="Transparent"
+                PointerPressed="OnProgressBarPointerPressed"
+                PointerEntered="OnProgressBarPointerEntered"
+                PointerExited="OnProgressBarPointerExited">
+                <Border
+                    x:Name="ProgressTrackBgBorder"
+                    VerticalAlignment="Bottom"
+                    Height="2.5"
+                    Background="#1F888888" />
+                <Border
+                    x:Name="ProgressFillBorder"
+                    VerticalAlignment="Bottom"
+                    HorizontalAlignment="Left"
+                    Height="2.5"
+                    Width="0"
+                    CornerRadius="0,1.5,1.5,0"
+                    Background="#10B981" />
+            </Grid>
+        </Grid>
+
+        <!-- 展开式 330px 迷你播放列表面板 (1:1 还原 MiniPlayBar.vue .playlist-container + MiniSongItem.vue) -->
+        <Border
+            x:Name="PlaylistPanelBorder"
+            Grid.Row="1"
+            Height="330"
+            Visibility="Collapsed"
+            Background="{ThemeResource SolidBackgroundFillColorBaseBrush}"
+            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+            BorderThickness="0,1,0,0">
+            <Grid>
+                <ListView
+                    x:Name="MiniQueueListView"
+                    SelectionMode="None"
+                    CanReorderItems="True"
+                    AllowDrop="True"
+                    IsItemClickEnabled="True"
+                    ItemClick="OnMiniQueueItemClick"
+                    Padding="8,6">
+                    <ListView.ItemContainerStyle>
+                        <Style TargetType="ListViewItem">
+                            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                            <Setter Property="Padding" Value="2,2" />
+                            <Setter Property="MinHeight" Value="52" />
+                        </Style>
+                    </ListView.ItemContainerStyle>
+                    <ListView.ItemTemplate>
+                        <DataTemplate>
+                            <Border
+                                CornerRadius="10"
+                                Padding="6,5"
+                                Background="Transparent">
+                                <Grid ColumnSpacing="8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="40" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+
+                                    <!-- 40x40 圆角封面 -->
+                                    <Border
+                                        Grid.Column="0"
+                                        Width="40"
+                                        Height="40"
+                                        CornerRadius="8"
+                                        Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}">
+                                        <Image Source="{Binding CoverThumbnailUrl}" Stretch="UniformToFill" />
+                                    </Border>
+
+                                    <!-- 歌曲标题与歌手 -->
+                                    <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
+                                        <TextBlock
+                                            Text="{Binding Name}"
+                                            FontSize="12"
+                                            FontWeight="Medium"
+                                            TextWrapping="NoWrap"
+                                            TextTrimming="CharacterEllipsis" />
+                                        <TextBlock
+                                            Text="{Binding ArtistText}"
+                                            FontSize="11"
+                                            Opacity="0.6"
+                                            TextWrapping="NoWrap"
+                                            TextTrimming="CharacterEllipsis" />
+                                    </StackPanel>
+
+                                    <!-- 胶囊控制区 (喜欢红心 + 24x24 圆形播放按钮) -->
+                                    <Border
+                                        Grid.Column="2"
+                                        VerticalAlignment="Center"
+                                        CornerRadius="14"
+                                        Padding="6,2"
+                                        Background="{ThemeResource SubtleFillColorSecondaryBrush}"
+                                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                        BorderThickness="1">
+                                        <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                                            <Button
+                                                Tag="{Binding}"
+                                                Click="OnQueueItemLikeClick"
+                                                Width="24"
+                                                Height="24"
+                                                Padding="0"
+                                                CornerRadius="12"
+                                                Background="Transparent"
+                                                BorderThickness="0"
+                                                ToolTipService.ToolTip="喜欢">
+                                                <FontIcon Glyph="&#xEB51;" FontSize="11" />
+                                            </Button>
+                                            <Button
+                                                Tag="{Binding}"
+                                                Click="OnQueueItemPlayClick"
+                                                Width="24"
+                                                Height="24"
+                                                Padding="0"
+                                                CornerRadius="12"
+                                                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                                BorderThickness="1"
+                                                ToolTipService.ToolTip="播放 / 暂停">
+                                                <FontIcon Glyph="&#xE768;" FontSize="10" />
+                                            </Button>
+                                        </StackPanel>
+                                    </Border>
+
+                                    <!-- 从列表中移除按钮 -->
+                                    <Button
+                                        Grid.Column="3"
+                                        Tag="{Binding}"
+                                        Click="OnQueueItemRemoveClick"
+                                        Width="26"
+                                        Height="26"
+                                        Padding="0"
+                                        CornerRadius="13"
+                                        VerticalAlignment="Center"
+                                        Background="Transparent"
+                                        BorderThickness="0"
+                                        Opacity="0.65"
+                                        ToolTipService.ToolTip="从播放列表中移除">
+                                        <FontIcon Glyph="&#xE74D;" FontSize="11" />
+                                    </Button>
+                                </Grid>
+                            </Border>
+                        </DataTemplate>
+                    </ListView.ItemTemplate>
+                </ListView>
+
+                <TextBlock
+                    x:Name="MiniQueueEmptyText"
+                    Text="播放列表为空"
+                    Visibility="Collapsed"
+                    FontSize="12"
+                    Opacity="0.5"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center" />
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

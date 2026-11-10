@@ -1,0 +1,18 @@
+mpv for Windows x64
+
+Bundled build:
+mpv v0.41.0-744-g304426c39, built 2026-06-10 by shinchiro/mpv-winbuild-cmake
+
+Binary archive:
+https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20260610/mpv-x86_64-20260610-git-304426c.7z
+SHA-256: facac536baa73c7b925771af5e39a3c9cb16b8d75b59a6e9800de89799dffca7
+
+Build scripts and corresponding source references:
+https://github.com/shinchiro/mpv-winbuild-cmake/tree/20260610
+https://github.com/mpv-player/mpv/commit/304426c39
+https://github.com/FFmpeg/FFmpeg/commit/2576e0943
+
+mpv is GPLv2 or later by default. The accompanying LICENSE.GPL and Copyright
+files are copied from the corresponding mpv source revision. The Windows build
+also contains third-party components; their source and license selections are
+recorded by the pinned build scripts above.
