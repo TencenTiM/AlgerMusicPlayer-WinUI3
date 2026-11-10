@@ -34,6 +34,8 @@
     <Content Include="Assets\icon.ico" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\icon.png" CopyToOutputDirectory="PreserveNewest" />
     <None Include="mpv\win-x64\*.*" CopyToOutputDirectory="PreserveNewest" />
+    <!-- 落雪音源 JS 脚本宿主页与 Worker 沙箱 -->
+    <Content Include="LxHost\*.*" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <!-- 在未安装完整 Visual Studio UWP 组件的纯 .NET CLI 环境下，使用 Windows SDK BuildTools 的 makepri.exe 自动合并生成 resources.pri -->

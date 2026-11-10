@@ -26,6 +26,7 @@ public class AudioPlayerService : IDisposable
     private readonly UnblockMusicService _unblockService;
     private readonly BilibiliService _bilibiliService;
     private readonly LyricService _lyricService;
+    private readonly LxScriptHostService _lxHost;
 
     private IWavePlayer? _outputDevice;
     private WaveStream? _waveReader;
@@ -81,7 +82,8 @@ public class AudioPlayerService : IDisposable
         QqMusicService qqMusicService,
         UnblockMusicService unblockService,
         BilibiliService bilibiliService,
-        LyricService lyricService)
+        LyricService lyricService,
+        LxScriptHostService lxHost)
     {
         _configService = configService;
         _apiClient = apiClient;
@@ -89,6 +91,7 @@ public class AudioPlayerService : IDisposable
         _unblockService = unblockService;
         _bilibiliService = bilibiliService;
         _lyricService = lyricService;
+        _lxHost = lxHost;
 
         _suppressQueueAutoSave = true;
         foreach (var s in _configService.SavedQueue)
@@ -604,19 +607,18 @@ public class AudioPlayerService : IDisposable
     }
 
     /// <summary>
-    /// 并发探测所有可用音源（网易云官方及启用的第三方解灰音源），获取各平台可用的最高音质直链列表供用户选择
+    /// 流式并发探测所有可用音源（带单个音源 2.5 秒快速超时），每探查到一个可用音质立即通过 onOptionFound 回调实时上屏
     /// </summary>
-    public async Task<List<DownloadQualityOption>> ProbeAllDownloadSourcesAsync(SongItem song, CancellationToken ct = default)
+    public async Task ProbeAllDownloadSourcesStreamAsync(SongItem song, Action<DownloadQualityOption> onOptionFound, CancellationToken ct = default)
     {
-        var results = new List<DownloadQualityOption>();
-        if (song == null) return results;
+        if (song == null) return;
 
-        // 本地或 SMB 歌曲直接返回本地文件选项
+        // 本地或 SMB 歌曲直接回调本地文件选项
         if (!string.IsNullOrWhiteSpace(song.LocalFilePath) && File.Exists(song.LocalFilePath))
         {
             var ext = Path.GetExtension(song.LocalFilePath).ToLowerInvariant();
             var fi = new FileInfo(song.LocalFilePath);
-            results.Add(new DownloadQualityOption
+            onOptionFound(new DownloadQualityOption
             {
                 Platform = "local",
                 PlatformName = "本地文件",
@@ -629,12 +631,22 @@ public class AudioPlayerService : IDisposable
                 BrandColorHex = "#10B981",
                 QualityRank = ext == ".flac" ? 100 : 50
             });
-            return results;
+            return;
         }
 
-        var tasks = new List<Task<DownloadQualityOption?>>();
+        var seenKeys = new global::System.Collections.Concurrent.ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
 
-        // 1. 若当前歌曲正在播放中且已成功解析出直链，立即作为已验证选项加入
+        void TryDispatchOption(DownloadQualityOption opt)
+        {
+            if (opt == null || string.IsNullOrWhiteSpace(opt.DownloadUrl)) return;
+            var key = $"{opt.Platform}_{opt.QualityBadge}_{opt.BitrateKbps}";
+            if (seenKeys.TryAdd(key, 0) && seenKeys.TryAdd(opt.DownloadUrl, 0))
+            {
+                onOptionFound(opt);
+            }
+        }
+
+        // 1. 若当前歌曲正在播放中且已成功解析出直链，0 毫秒立即直出！
         if (CurrentSong != null && CurrentSong.Id == song.Id &&
             !string.IsNullOrWhiteSpace(CurrentSong.PlayMusicUrl) &&
             CurrentSong.PlayMusicUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase))
@@ -656,13 +668,17 @@ public class AudioPlayerService : IDisposable
                 _ => curPlat.ToUpperInvariant()
             };
 
-            results.Add(new DownloadQualityOption
+            var curBytes = TryEstimateOrGetFileSize(curUrl, song, isFlac, isFlac ? 999 : 320);
+
+            TryDispatchOption(new DownloadQualityOption
             {
                 Platform = curPlat,
                 PlatformName = $"{curPlatName} (当前播放)",
                 QualityBadge = curBadge,
                 Extension = isFlac ? ".flac" : ".mp3",
                 BitrateKbps = isFlac ? 999 : 320,
+                SizeBytes = curBytes,
+                SizeText = curBytes > 0 ? FormatFileSizeText(curBytes) : "",
                 DownloadUrl = curUrl,
                 IsRecommended = isFlac,
                 BrandColorHex = "#10B981",
@@ -670,15 +686,20 @@ public class AudioPlayerService : IDisposable
             });
         }
 
-        // 2. 网易云官方音源探测（请求最高超清母带 / 无损接口）
+        var tasks = new List<Task>();
+
+        // 2. 网易云官方音源探测（不设短超时，给足 20 秒网络安全保护上限）
         if (song.NumericId > 0)
         {
             tasks.Add(Task.Run(async () =>
             {
                 try
                 {
+                    using var officialCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    officialCts.CancelAfter(TimeSpan.FromSeconds(20));
+
                     var (url, type, size, br, isTrial) = await _apiClient.GetSongDownloadUrlAsync(song.NumericId, MusicQualityLevel.Jymaster);
-                    if (string.IsNullOrWhiteSpace(url) || isTrial) return null;
+                    if (string.IsNullOrWhiteSpace(url) || isTrial) return;
 
                     bool isFlac = string.Equals(type, "flac", StringComparison.OrdinalIgnoreCase) ||
                                   url.Contains(".flac", StringComparison.OrdinalIgnoreCase) ||
@@ -688,7 +709,12 @@ public class AudioPlayerService : IDisposable
                         ? (kbps > 1000 ? "超清母带 / Hi-Res" : "无损品质 (FLAC)")
                         : (kbps >= 300 ? "极高品质 (320k)" : "标准品质 (128k)");
 
-                    return new DownloadQualityOption
+                    if (size <= 0)
+                    {
+                        size = await TryProbeFileSizeAsync(url, song, isFlac, kbps, ct);
+                    }
+
+                    TryDispatchOption(new DownloadQualityOption
                     {
                         Platform = "netease",
                         PlatformName = "网易云官方",
@@ -700,134 +726,194 @@ public class AudioPlayerService : IDisposable
                         DownloadUrl = url,
                         BrandColorHex = "#EC4141",
                         QualityRank = isFlac ? (kbps > 1000 ? 99 : 92) : (kbps >= 300 ? 50 : 20)
-                    };
+                    });
                 }
-                catch { return null; }
+                catch { }
             }, ct));
         }
 
-        // 3. QQ 音乐音源
+        // 3. QQ 音乐音源（若歌曲源为 QQ 音乐，给足 20 秒）
         if (song.Source == "qq" && !string.IsNullOrWhiteSpace(song.QqSongMid))
         {
             tasks.Add(Task.Run(async () =>
             {
                 try
                 {
-                    var qqUrl = await _qqMusicService.GetSongPlayUrlAsync(song.QqSongMid, ct, preferLossless: true);
-                    if (string.IsNullOrWhiteSpace(qqUrl)) return null;
+                    using var qqCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    qqCts.CancelAfter(TimeSpan.FromSeconds(20));
+
+                    var qqUrl = await _qqMusicService.GetSongPlayUrlAsync(song.QqSongMid, qqCts.Token, preferLossless: true);
+                    if (string.IsNullOrWhiteSpace(qqUrl)) return;
                     bool isFlac = qqUrl.Contains(".flac", StringComparison.OrdinalIgnoreCase);
-                    return new DownloadQualityOption
+                    int kbps = isFlac ? 999 : 320;
+                    long qqSize = await TryProbeFileSizeAsync(qqUrl, song, isFlac, kbps, ct);
+
+                    TryDispatchOption(new DownloadQualityOption
                     {
                         Platform = "qq",
                         PlatformName = "QQ 音乐",
                         QualityBadge = isFlac ? "无损品质 (FLAC)" : "高品质 (HQ 320k)",
                         Extension = isFlac ? ".flac" : ".mp3",
-                        BitrateKbps = isFlac ? 999 : 320,
+                        BitrateKbps = kbps,
+                        SizeBytes = qqSize,
+                        SizeText = qqSize > 0 ? FormatFileSizeText(qqSize) : "",
                         DownloadUrl = qqUrl,
                         BrandColorHex = "#10B981",
                         QualityRank = isFlac ? 91 : 48
-                    };
+                    });
                 }
-                catch { return null; }
+                catch { }
             }, ct));
         }
 
-        // 4. 并发探测已启用的第三方解灰音源
-        if (_configService.Settings.EnableMusicUnblock)
-        {
-            var platforms = _configService.Settings.EnabledMusicSources.Count > 0
-                ? _configService.Settings.EnabledMusicSources.ToList()
-                : UnblockMusicService.AllPlatforms.ToList();
+        // 4. 并发探测全部音源（不设 2.5 秒封顶，放宽至 20 秒，让所有源充分加载供选择）
+        var allSupportedPlatforms = new[] { "kuwo", "kugou", "migu", "qq", "pyncmd", "gdmusic", "joox" };
+        var platforms = _configService.Settings.EnabledMusicSources.Count > 0
+            ? _configService.Settings.EnabledMusicSources.Union(allSupportedPlatforms, StringComparer.OrdinalIgnoreCase).ToList()
+            : allSupportedPlatforms.ToList();
+        // 落雪脚本单独按脚本逐个探测（见下方第 5 步）
+        platforms.RemoveAll(p => p.Equals("lxmusic", StringComparison.OrdinalIgnoreCase));
 
-            foreach (var platform in platforms)
+        // 5. 并发运行全部已导入的落雪 JS 脚本，每个脚本单独一行
+        foreach (var lxScript in _configService.Settings.LxMusicScripts.ToList())
+        {
+            var script = lxScript;
+            tasks.Add(Task.Run(async () =>
             {
-                var platId = platform.ToLowerInvariant();
-                tasks.Add(Task.Run(async () =>
+                try
                 {
-                    try
+                    using var lxCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    lxCts.CancelAfter(TimeSpan.FromSeconds(30));
+
+                    var (url, quality) = await _lxHost.GetMusicUrlAsync(script, song, "flac24bit", lxCts.Token);
+                    if (string.IsNullOrWhiteSpace(url)) return;
+
+                    int kbps = UnblockMusicService.LxQualityToKbps(quality);
+                    bool isFlac = quality.StartsWith("flac", StringComparison.OrdinalIgnoreCase) ||
+                                  url.Contains(".flac", StringComparison.OrdinalIgnoreCase);
+                    if (kbps == 0) kbps = isFlac ? 999 : 320;
+
+                    string badge = quality switch
                     {
-                        var (url, p) = await _unblockService.MatchAudioUrlAsync(song, [platId], ct, preferLossless: true);
-                        if (string.IsNullOrWhiteSpace(url)) return null;
+                        "flac24bit" => "24bit Hi-Res (FLAC)",
+                        "flac" => "无损音质 (FLAC)",
+                        _ => $"{kbps}k MP3"
+                    };
 
-                        bool isFlac = url.Contains(".flac", StringComparison.OrdinalIgnoreCase) ||
-                                      _unblockService.LastResolvedBitrateKbps > 400;
-                        int kbps = _unblockService.LastResolvedBitrateKbps > 0
-                            ? _unblockService.LastResolvedBitrateKbps
-                            : (isFlac ? 999 : 320);
+                    long size = await TryProbeFileSizeAsync(url, song, isFlac, kbps, ct);
 
-                        string platName = platId switch
-                        {
-                            "gdmusic" => "GD 音乐台",
-                            "pyncmd" => "Pyncmd 引擎",
-                            "kuwo" => "酷我音乐",
-                            "kugou" => "酷狗音乐",
-                            "migu" => "咪咕音乐",
-                            "qq" => "QQ 音乐",
-                            "lxmusic" => "落雪音源",
-                            "custom" => "自定义 API",
-                            _ => platId.ToUpperInvariant()
-                        };
-
-                        string brandColor = platId switch
-                        {
-                            "gdmusic" => "#3B82F6",
-                            "pyncmd" => "#8B5CF6",
-                            "kuwo" => "#F59E0B",
-                            "kugou" => "#06B6D4",
-                            "migu" => "#EC4899",
-                            "qq" => "#10B981",
-                            "lxmusic" => "#22C55E",
-                            _ => "#6366F1"
-                        };
-
-                        string badge = isFlac
-                            ? (kbps > 1000 ? "24bit Hi-Res (FLAC)" : "无损音质 (FLAC)")
-                            : $"{kbps}k MP3";
-
-                        long size = _unblockService.LastResolvedSizeBytes;
-
-                        return new DownloadQualityOption
-                        {
-                            Platform = platId,
-                            PlatformName = platName,
-                            QualityBadge = badge,
-                            Extension = isFlac ? ".flac" : ".mp3",
-                            BitrateKbps = kbps,
-                            SizeBytes = size,
-                            SizeText = size > 0 ? FormatFileSizeText(size) : "",
-                            DownloadUrl = url,
-                            BrandColorHex = brandColor,
-                            QualityRank = isFlac ? (kbps > 1000 ? 98 : 89) : (kbps >= 300 ? 46 : 18)
-                        };
-                    }
-                    catch { return null; }
-                }, ct));
-            }
-        }
-
-        var completed = await Task.WhenAll(tasks);
-        foreach (var opt in completed)
-        {
-            if (opt != null && !string.IsNullOrWhiteSpace(opt.DownloadUrl))
-            {
-                // 去重（同一个直链或同一平台去重）
-                if (!results.Any(r => r.DownloadUrl == opt.DownloadUrl || (r.Platform == opt.Platform && r.QualityBadge == opt.QualityBadge)))
-                {
-                    results.Add(opt);
+                    TryDispatchOption(new DownloadQualityOption
+                    {
+                        Platform = $"lx_{script.Id}",
+                        PlatformName = $"落雪·{script.Name}",
+                        QualityBadge = badge,
+                        Extension = isFlac ? ".flac" : ".mp3",
+                        BitrateKbps = kbps,
+                        SizeBytes = size,
+                        SizeText = size > 0 ? FormatFileSizeText(size) : "",
+                        DownloadUrl = url,
+                        BrandColorHex = "#22C55E",
+                        QualityRank = isFlac ? (kbps > 1000 ? 97 : 88) : (kbps >= 300 ? 45 : 17)
+                    });
                 }
-            }
+                catch { }
+            }, ct));
         }
 
-        // 按音质等级降序排序
-        results.Sort((a, b) => b.QualityRank.CompareTo(a.QualityRank));
-
-        // 标记第一项为推荐
-        for (int i = 0; i < results.Count; i++)
+        foreach (var platform in platforms)
         {
-            results[i].IsRecommended = (i == 0);
+            var platId = platform.ToLowerInvariant();
+            tasks.Add(Task.Run(async () =>
+            {
+                try
+                {
+                    using var singleCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    singleCts.CancelAfter(TimeSpan.FromSeconds(20));
+
+                    var (url, p) = await _unblockService.MatchAudioUrlAsync(song, [platId], singleCts.Token, preferLossless: true);
+                    if (string.IsNullOrWhiteSpace(url)) return;
+
+                    bool isFlac = url.Contains(".flac", StringComparison.OrdinalIgnoreCase) ||
+                                  _unblockService.LastResolvedBitrateKbps > 400;
+                    int kbps = _unblockService.LastResolvedBitrateKbps > 0
+                        ? _unblockService.LastResolvedBitrateKbps
+                        : (isFlac ? 999 : 320);
+
+                    string platName = platId switch
+                    {
+                        "gdmusic" => "GD 音乐台",
+                        "pyncmd" => "Pyncmd 引擎",
+                        "kuwo" => "酷我音乐",
+                        "kugou" => "酷狗音乐",
+                        "migu" => "咪咕音乐",
+                        "qq" => "QQ 音乐",
+                        "joox" => "JOOX 音乐",
+                        "lxmusic" => "落雪音源",
+                        "custom" => "自定义 API",
+                        _ => platId.ToUpperInvariant()
+                    };
+
+                    string brandColor = platId switch
+                    {
+                        "gdmusic" => "#3B82F6",
+                        "pyncmd" => "#8B5CF6",
+                        "kuwo" => "#F59E0B",
+                        "kugou" => "#06B6D4",
+                        "migu" => "#EC4899",
+                        "qq" => "#10B981",
+                        "joox" => "#10B981",
+                        "lxmusic" => "#22C55E",
+                        _ => "#6366F1"
+                    };
+
+                    string badge = isFlac
+                        ? (kbps > 1000 ? "24bit Hi-Res (FLAC)" : "无损音质 (FLAC)")
+                        : $"{kbps}k MP3";
+
+                    long size = _unblockService.LastResolvedSizeBytes;
+                    if (size <= 0)
+                    {
+                        size = await TryProbeFileSizeAsync(url, song, isFlac, kbps, ct);
+                    }
+
+                    TryDispatchOption(new DownloadQualityOption
+                    {
+                        Platform = platId,
+                        PlatformName = platName,
+                        QualityBadge = badge,
+                        Extension = isFlac ? ".flac" : ".mp3",
+                        BitrateKbps = kbps,
+                        SizeBytes = size,
+                        SizeText = size > 0 ? FormatFileSizeText(size) : "",
+                        DownloadUrl = url,
+                        BrandColorHex = brandColor,
+                        QualityRank = isFlac ? (kbps > 1000 ? 98 : 89) : (kbps >= 300 ? 46 : 18)
+                    });
+                }
+                catch { }
+            }, ct));
         }
 
-        return results;
+        try
+        {
+            await Task.WhenAll(tasks);
+        }
+        catch { }
+    }
+
+    /// <summary>
+    /// 并发探测所有可用音源（网易云官方及启用的第三方解灰音源），获取各平台可用的最高音质直链列表供用户选择
+    /// </summary>
+    public async Task<List<DownloadQualityOption>> ProbeAllDownloadSourcesAsync(SongItem song, CancellationToken ct = default)
+    {
+        var list = new List<DownloadQualityOption>();
+        await ProbeAllDownloadSourcesStreamAsync(song, opt =>
+        {
+            lock (list) { list.Add(opt); }
+        }, ct);
+        list.Sort((a, b) => b.QualityRank.CompareTo(a.QualityRank));
+        if (list.Count > 0) list[0].IsRecommended = true;
+        return list;
     }
 
     private static string FormatFileSizeText(long bytes)
@@ -840,6 +926,67 @@ public class AudioPlayerService : IDisposable
         if (bytes >= 1024)
             return $"约 {(double)bytes / 1024:F0} KB";
         return $"{bytes} B";
+    }
+
+    private static readonly HttpClient s_probeHttpClient = new()
+    {
+        Timeout = TimeSpan.FromSeconds(3)
+    };
+
+    private static long TryEstimateOrGetFileSize(string url, SongItem song, bool isFlac, int kbps)
+    {
+        if (File.Exists(url))
+        {
+            try { return new FileInfo(url).Length; } catch { }
+        }
+        if (song.DurationMs > 3000)
+        {
+            double effectiveKbps = isFlac ? (kbps > 1000 ? 1400 : 880) : (kbps > 0 ? kbps : 320);
+            return (long)((song.DurationMs / 1000.0) * (effectiveKbps * 125));
+        }
+        return 0;
+    }
+
+    private static async Task<long> TryProbeFileSizeAsync(string url, SongItem song, bool isFlac, int kbps, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return 0;
+
+        if (File.Exists(url))
+        {
+            try { return new FileInfo(url).Length; } catch { }
+        }
+
+        if (url.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                using var probeCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                probeCts.CancelAfter(TimeSpan.FromMilliseconds(1200));
+
+                using var req = new HttpRequestMessage(HttpMethod.Get, url);
+                req.Headers.Range = new global::System.Net.Http.Headers.RangeHeaderValue(0, 0);
+                using var resp = await s_probeHttpClient.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, probeCts.Token);
+
+                if (resp.Content.Headers.ContentRange?.Length.HasValue == true && resp.Content.Headers.ContentRange.Length.Value > 1024)
+                {
+                    return resp.Content.Headers.ContentRange.Length.Value;
+                }
+                if (resp.Content.Headers.ContentLength.HasValue && resp.Content.Headers.ContentLength.Value > 1024)
+                {
+                    return resp.Content.Headers.ContentLength.Value;
+                }
+            }
+            catch { }
+        }
+
+        // 网络请求头未返回时，根据时长与码率估算体积
+        if (song.DurationMs > 3000)
+        {
+            double effectiveKbps = isFlac ? (kbps > 1000 ? 1400 : 880) : (kbps > 0 ? kbps : 320);
+            return (long)((song.DurationMs / 1000.0) * (effectiveKbps * 125));
+        }
+
+        return 0;
     }
 
     /// <summary>

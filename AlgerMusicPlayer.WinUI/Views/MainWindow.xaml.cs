@@ -76,6 +76,10 @@ public sealed partial class MainWindow : Window
         _multichannelService = App.Services.GetRequiredService<MultichannelManagerService>();
         InitializeComponent();
 
+        // 挂载落雪音源 JS 脚本隐藏宿主
+        LxHostWebView.Loaded += async (_, _) =>
+            await App.Services.GetRequiredService<AlgerMusicPlayer.WinUI.Services.Unblock.LxScriptHostService>().AttachAsync(LxHostWebView);
+
         _hWnd = WindowNative.GetWindowHandle(this);
         var windowId = Microsoft.UI.Win32Interop.GetWindowIdFromWindow(_hWnd);
         _appWindow = AppWindow.GetFromWindowId(windowId);
@@ -7353,6 +7357,7 @@ public sealed partial class MainWindow : Window
 
         DlQualityLoadingPanel.Visibility = Visibility.Visible;
         DlQualityListPanel.Visibility = Visibility.Collapsed;
+        DlQualityBackgroundProgress.Visibility = Visibility.Collapsed;
         DlQualityItemsContainer.Children.Clear();
 
         ViewModel.StatusToast = $"正在探查《{song.Name}》各音源音质...";
@@ -7365,15 +7370,51 @@ public sealed partial class MainWindow : Window
         _dlQualityProbeCts = new CancellationTokenSource();
         var ct = _dlQualityProbeCts.Token;
 
+        var discoveredOptions = new List<DownloadQualityOption>();
+
         try
         {
-            var options = await ViewModel.Player.ProbeAllDownloadSourcesAsync(song, ct);
+            await ViewModel.Player.ProbeAllDownloadSourcesStreamAsync(song, opt =>
+            {
+                DispatcherQueue.TryEnqueue(() =>
+                {
+                    if (ct.IsCancellationRequested || _dlQualityTargetSong?.Id != song.Id) return;
+
+                    // 去重：同一平台且音质完全一致则跳过
+                    if (discoveredOptions.Any(o => o.Platform == opt.Platform && o.QualityBadge == opt.QualityBadge))
+                        return;
+
+                    discoveredOptions.Add(opt);
+                    // 按 QualityRank 降序排序，排在首位且为最高音质的设为推荐
+                    discoveredOptions.Sort((a, b) => b.QualityRank.CompareTo(a.QualityRank));
+                    for (int i = 0; i < discoveredOptions.Count; i++)
+                    {
+                        discoveredOptions[i].IsRecommended = (i == 0);
+                    }
+
+                    // 实时刷新卡片列表
+                    DlQualityItemsContainer.Children.Clear();
+                    foreach (var item in discoveredOptions)
+                    {
+                        DlQualityItemsContainer.Children.Add(CreateDownloadOptionCard(song, item));
+                    }
+
+                    // 首个或新结果到达时：立刻切换展示列表，并显示后台细微流光进度条指示仍在继续探查
+                    DlQualityLoadingPanel.Visibility = Visibility.Collapsed;
+                    DlQualityListPanel.Visibility = Visibility.Visible;
+                    DlQualityBackgroundProgress.Visibility = Visibility.Visible;
+                });
+            }, ct);
+
             if (ct.IsCancellationRequested || _dlQualityTargetSong?.Id != song.Id) return;
 
-            DlQualityItemsContainer.Children.Clear();
+            // 全部源探查完毕（或者短超时触发完成），隐藏后台流光条
+            DlQualityBackgroundProgress.Visibility = Visibility.Collapsed;
 
-            if (options.Count == 0)
+            // 如果全部探查完毕后依然没有获取到任何直链，展示兜底卡片
+            if (discoveredOptions.Count == 0)
             {
+                DlQualityItemsContainer.Children.Clear();
                 var emptyCard = new Border
                 {
                     Background = new SolidColorBrush(Windows.UI.Color.FromArgb(20, 255, 255, 255)),
@@ -7397,6 +7438,7 @@ public sealed partial class MainWindow : Window
                 };
                 fallbackBtn.Click += async (_, _) =>
                 {
+                    _dlQualityProbeCts?.Cancel();
                     DownloadQualityModalOverlay.Visibility = Visibility.Collapsed;
                     ViewModel.StatusToast = $"已加入下载队列：《{song.Name}》";
                     await ViewModel.Downloader.EnqueueDownloadAsync(song);
@@ -7404,24 +7446,17 @@ public sealed partial class MainWindow : Window
                 emptySp.Children.Add(fallbackBtn);
                 emptyCard.Child = emptySp;
                 DlQualityItemsContainer.Children.Add(emptyCard);
-            }
-            else
-            {
-                foreach (var opt in options)
-                {
-                    var card = CreateDownloadOptionCard(song, opt);
-                    DlQualityItemsContainer.Children.Add(card);
-                }
-            }
 
-            DlQualityLoadingPanel.Visibility = Visibility.Collapsed;
-            DlQualityListPanel.Visibility = Visibility.Visible;
+                DlQualityLoadingPanel.Visibility = Visibility.Collapsed;
+                DlQualityListPanel.Visibility = Visibility.Visible;
+            }
         }
         catch (OperationCanceledException) { }
         catch (Exception ex)
         {
             ViewModel.StatusToast = $"探测音质失败：{ex.Message}";
             DlQualityLoadingPanel.Visibility = Visibility.Collapsed;
+            DlQualityBackgroundProgress.Visibility = Visibility.Collapsed;
         }
     }
 
@@ -7435,16 +7470,13 @@ public sealed partial class MainWindow : Window
                 : new SolidColorBrush(Windows.UI.Color.FromArgb(24, 255, 255, 255)),
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(10),
-            Padding = new Thickness(14, 10, 14, 10),
+            Padding = new Thickness(16, 12, 16, 12),
             HorizontalAlignment = HorizontalAlignment.Stretch
         };
+        SetProtectedCursorSafe(card, Microsoft.UI.Input.InputSystemCursorShape.Hand);
 
-        var grid = new Grid { ColumnSpacing = 12 };
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-
-        // 左侧主信息
-        var leftSp = new StackPanel { Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
+        // 主信息区（纯净选项卡片，无任何右侧按钮或图标，点击整张卡片即直接下载）
+        var contentSp = new StackPanel { Spacing = 4, VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Stretch };
         var topRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
 
         // 平台徽标
@@ -7498,7 +7530,7 @@ public sealed partial class MainWindow : Window
             topRow.Children.Add(recBadge);
         }
 
-        leftSp.Children.Add(topRow);
+        contentSp.Children.Add(topRow);
 
         // 规格与文件大小小字
         var specParts = new List<string>();
@@ -7512,38 +7544,23 @@ public sealed partial class MainWindow : Window
             FontSize = 11,
             Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 148, 163, 184))
         };
-        leftSp.Children.Add(specText);
-
-        Grid.SetColumn(leftSp, 0);
-        grid.Children.Add(leftSp);
-
-        // 右侧下载按钮
-        var dlBtn = new Button
-        {
-            Content = "下载",
-            Style = opt.IsRecommended
-                ? (Style)Application.Current.Resources["BrandPrimaryButtonStyle"]
-                : (Style)Application.Current.Resources["SecondaryTabButtonStyle"],
-            CornerRadius = new CornerRadius(6),
-            Padding = new Thickness(14, 5, 14, 5),
-            VerticalAlignment = VerticalAlignment.Center
-        };
+        contentSp.Children.Add(specText);
 
         async void DoDownload()
         {
+            _dlQualityProbeCts?.Cancel();
             DownloadQualityModalOverlay.Visibility = Visibility.Collapsed;
             ViewModel.StatusToast = $"已加入下载队列：《{song.Name}》[{opt.PlatformName} - {opt.QualityBadge}]";
             await ViewModel.Downloader.EnqueueDownloadWithSourceAsync(song, opt.DownloadUrl, opt.Extension, opt.QualityBadge);
         }
 
-        dlBtn.Click += (_, _) => DoDownload();
         card.Tapped += (_, e) =>
         {
             e.Handled = true;
             DoDownload();
         };
 
-        // 鼠标悬停动效
+        // 鼠标悬停动效与手型反馈
         card.PointerEntered += (_, _) =>
         {
             card.Background = new SolidColorBrush(Windows.UI.Color.FromArgb(32, 255, 255, 255));
@@ -7553,10 +7570,7 @@ public sealed partial class MainWindow : Window
             card.Background = new SolidColorBrush(Windows.UI.Color.FromArgb(16, 255, 255, 255));
         };
 
-        Grid.SetColumn(dlBtn, 1);
-        grid.Children.Add(dlBtn);
-
-        card.Child = grid;
+        card.Child = contentSp;
         return card;
     }
 

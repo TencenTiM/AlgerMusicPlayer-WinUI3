@@ -83,9 +83,12 @@ public class UnblockMusicService
         6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21
     ];
 
-    public UnblockMusicService(ConfigService configService)
+    private readonly LxScriptHostService _lxHost;
+
+    public UnblockMusicService(ConfigService configService, LxScriptHostService lxHost)
     {
         _configService = configService;
+        _lxHost = lxHost;
         _httpClient = new HttpClient
         {
             Timeout = TimeSpan.FromSeconds(10)
@@ -148,6 +151,7 @@ public class UnblockMusicService
                     "qq" => await TryGdStudioSourceAsync(song, "tencent", preferLossless, cancellationToken),
                     "joox" => await TryGdStudioSourceAsync(song, "joox", preferLossless, cancellationToken),
                     "gdmusic" => await TryGdMusicMultiSourceAsync(song, preferLossless, cancellationToken),
+                    "lxmusic" => await TryLxMusicAsync(song, preferLossless, cancellationToken),
                     _ => null
                 };
 
@@ -478,6 +482,34 @@ public class UnblockMusicService
 
         return null;
     }
+
+    /// <summary>
+    /// 落雪音源：使用当前激活的 JS 脚本解析直链
+    /// </summary>
+    private async Task<string?> TryLxMusicAsync(SongItem song, bool preferLossless, CancellationToken ct)
+    {
+        var s = _configService.Settings;
+        var script = s.LxMusicScripts.FirstOrDefault(x => x.Id == s.ActiveLxMusicApiId) ?? s.LxMusicScripts.FirstOrDefault();
+        if (script == null) return null;
+
+        var (url, quality) = await _lxHost.GetMusicUrlAsync(script, song, preferLossless ? "flac24bit" : "320k", ct);
+        if (string.IsNullOrWhiteSpace(url)) return null;
+
+        LastResolvedBitrateKbps = LxQualityToKbps(quality);
+        return url;
+    }
+
+    /// <summary>
+    /// 落雪音质标识换算为码率（flac24bit 视为 Hi-Res）
+    /// </summary>
+    public static int LxQualityToKbps(string quality) => quality switch
+    {
+        "flac24bit" => 2000,
+        "flac" => 999,
+        "320k" => 320,
+        "128k" => 128,
+        _ => 0
+    };
 
     /// <summary>
     /// GD 音乐台全网自动换源接口 (types=autosource&br=999)

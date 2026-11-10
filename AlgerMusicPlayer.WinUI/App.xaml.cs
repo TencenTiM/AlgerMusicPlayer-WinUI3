@@ -37,6 +37,7 @@ public partial class App : Application
         services.AddSingleton<I18nService>();
         services.AddSingleton<NeteaseApiClient>();
         services.AddSingleton<QqMusicService>();
+        services.AddSingleton<LxScriptHostService>();
         services.AddSingleton<UnblockMusicService>();
         services.AddSingleton<BilibiliService>();
         services.AddSingleton<LyricService>();

@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>LxHost</title></head>
+<body>
+<script>
+  // 落雪音源脚本宿主页：每个脚本运行在独立 Worker 中，消息经 chrome.webview 与 C# 双向桥接
+  const workers = {};
+
+  function toHost(scriptId, data) {
+    try {
+      chrome.webview.postMessage(Object.assign({ scriptId: scriptId }, data));
+    } catch (e) {
+      chrome.webview.postMessage({ scriptId: scriptId, type: 'script-error', message: String(e) });
+    }
+  }
+
+  function getWorker(scriptId) {
+    let w = workers[scriptId];
+    if (w) return w;
+    w = new Worker('lx-worker.js');
+    w.onmessage = (e) => toHost(scriptId, e.data);
+    w.onerror = (e) => toHost(scriptId, { type: 'script-error', message: e.message || '脚本 Worker 运行错误' });
+    workers[scriptId] = w;
+    return w;
+  }
+
+  chrome.webview.addEventListener('message', (e) => {
+    const m = e.data;
+    if (!m || !m.scriptId) return;
+    switch (m.cmd) {
+      case 'init':
+        if (workers[m.scriptId]) { workers[m.scriptId].terminate(); delete workers[m.scriptId]; }
+        getWorker(m.scriptId).postMessage({ type: 'initialize', script: m.script, scriptInfo: m.scriptInfo });
+        break;
+      case 'invoke':
+        getWorker(m.scriptId).postMessage({ type: 'invoke-request', callId: m.callId, payload: m.payload });
+        break;
+      case 'http-response':
+        getWorker(m.scriptId).postMessage({ type: 'http-response', requestId: m.requestId, response: m.response, body: m.body, error: m.error || undefined });
+        break;
+      case 'dispose':
+        if (workers[m.scriptId]) { workers[m.scriptId].terminate(); delete workers[m.scriptId]; }
+        break;
+    }
+  });
+
+  chrome.webview.postMessage({ scriptId: '__host__', type: 'host-ready' });
+</script>
+</body>
+</html>

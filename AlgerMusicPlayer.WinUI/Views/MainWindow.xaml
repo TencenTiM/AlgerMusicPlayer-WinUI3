@@ -7613,18 +7613,29 @@
                         </Grid>
                     </Border>
 
-                    <!-- 探测中加载指示器 -->
-                    <StackPanel x:Name="DlQualityLoadingPanel" Grid.Row="2" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="14" Padding="0,32" Visibility="Visible">
-                        <ProgressRing IsActive="True" Width="36" Height="36" Foreground="{StaticResource BrandAccentBrush}" />
-                        <TextBlock Text="正在并发扫描各音源可用音质，请稍候..." FontSize="13" Foreground="{ThemeResource TextFillColorSecondaryBrush}" HorizontalAlignment="Center" />
-                    </StackPanel>
+                    <!-- 列表与微型后台探查进度条容器 -->
+                    <Grid Grid.Row="2" MinHeight="140" MaxHeight="360">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
 
-                    <!-- 音质列表面板 -->
-                    <ScrollViewer x:Name="DlQualityListPanel" Grid.Row="2" MaxHeight="340" VerticalScrollBarVisibility="Auto" Visibility="Collapsed">
-                        <StackPanel x:Name="DlQualityItemsContainer" Spacing="8">
-                            <!-- 动态注入各音源卡片 -->
+                        <!-- 后台探查细微进度条 (当有首批结果上屏但仍在扫描其余音源时显示) -->
+                        <ProgressBar x:Name="DlQualityBackgroundProgress" Grid.Row="0" IsIndeterminate="True" Height="2" Margin="0,0,0,6" Foreground="{StaticResource BrandAccentBrush}" Visibility="Collapsed" />
+
+                        <!-- 全局居中初始加载面板（仅在一条结果都还没出来前的毫秒级过渡期显示） -->
+                        <StackPanel x:Name="DlQualityLoadingPanel" Grid.Row="1" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="12" Padding="0,28" Visibility="Visible">
+                            <ProgressRing IsActive="True" Width="32" Height="32" Foreground="{StaticResource BrandAccentBrush}" />
+                            <TextBlock Text="正在并发秒测各音源可用音质..." FontSize="13" Foreground="#94A3B8" HorizontalAlignment="Center" />
                         </StackPanel>
-                    </ScrollViewer>
+
+                        <!-- 音质列表面板 -->
+                        <ScrollViewer x:Name="DlQualityListPanel" Grid.Row="1" VerticalScrollBarVisibility="Auto" Visibility="Collapsed">
+                            <StackPanel x:Name="DlQualityItemsContainer" Spacing="8">
+                                <!-- 动态注入各音源卡片 -->
+                            </StackPanel>
+                        </ScrollViewer>
+                    </Grid>
 
                     <!-- 底部提示信息 -->
                     <Grid Grid.Row="3" Padding="0,10,0,0" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" BorderThickness="0,1,0,0">
@@ -7636,5 +7647,9 @@
                 </Grid>
             </Border>
         </Grid>
+
+        <!-- 落雪音源 JS 脚本隐藏宿主（1x1 透明，不参与交互） -->
+        <WebView2 x:Name="LxHostWebView" Grid.Row="0" Width="1" Height="1" Opacity="0"
+                  IsHitTestVisible="False" HorizontalAlignment="Left" VerticalAlignment="Top" />
     </Grid>
 </Window>
