@@ -2246,13 +2246,24 @@ public class AudioPlayerService : IDisposable
     /// <summary>
     /// 实时更新 5.1 / 7.1 各声道微调增益与静音配置并持久化保存
     /// </summary>
+    private CancellationTokenSource? _multichannelApplyCts;
+
     public void UpdateMultichannelConfig(MultichannelConfig config)
     {
         _configService.Settings.Multichannel = config;
+        // NAudio 后端仅更新增益数组，实时生效且不会卡顿
         _multichannelGainProvider?.ApplyConfig(config);
-        // 本地/SMB 文件走 mpv 后端，同步应用各音箱增益
+        // mpv 后端通过 af-command 实时修改各声道 volume，不重建音频链
         _ = _mpvService.SetChannelGainsAsync(MultichannelGainSampleProvider.ComputeGains(config));
-        _ = _configService.SaveSettingsAsync();
+
+        // 拖动滑块时防抖保存配置，避免频繁写盘
+        _multichannelApplyCts?.Cancel();
+        var cts = _multichannelApplyCts = new CancellationTokenSource();
+        _ = Task.Delay(400, cts.Token).ContinueWith(t =>
+        {
+            if (t.IsCanceled) return;
+            _ = _configService.SaveSettingsAsync();
+        }, TaskScheduler.Default);
     }
 
     private void StopInternal()

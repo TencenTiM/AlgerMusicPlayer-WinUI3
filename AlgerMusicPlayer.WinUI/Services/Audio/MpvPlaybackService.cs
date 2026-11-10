@@ -539,11 +539,12 @@ public sealed class MpvPlaybackService : IDisposable
                 break;
             case "audio-params":
                 int? prevChannels = _inputAudio?.ChannelCount;
+                string? prevLayout = _inputAudio?.Channels;
                 _inputAudio = ParseAudioParams(data);
                 InputAudioParamsChanged?.Invoke(_inputAudio);
                 CheckChannelLayout();
-                // 声道数变化后按实际声道数重建多声道增益滤镜
-                if (_inputAudio?.ChannelCount != prevChannels && BuildChannelGainFilter(_channelGains) != null)
+                // 声道布局变化后按实际布局重建多声道增益滤镜图
+                if (_inputAudio != null && (_inputAudio.ChannelCount != prevChannels || _inputAudio.Channels != prevLayout))
                 {
                     _ = ApplyEqAsync(_lastLoadRequest?.EqEnabled ?? false, _lastLoadRequest?.EqBandGains ?? []);
                 }
@@ -659,23 +660,38 @@ public sealed class MpvPlaybackService : IDisposable
     private Task ApplyEqAsync(bool enabled, float[] bandGains)
     {
         var parts = new List<string>(2);
-        if (enabled) parts.Add(BuildEqFilter(bandGains));
+        // 声道增益放在 EQ 之前，使 EQ 末端的 alimiter 能兜住正增益造成的削波
         string? channelFilter = BuildChannelGainFilter(_channelGains);
         if (channelFilter != null) parts.Add(channelFilter);
+        if (enabled) parts.Add(BuildEqFilter(bandGains));
         return SendCommandAsync(["af", "set", string.Join(',', parts)]);
     }
 
     // 多声道各音箱独立线性增益 (索引顺序：FL FR C LFE SL SR BL BR)
     private float[] _channelGains = [1f, 1f, 1f, 1f, 1f, 1f, 1f, 1f];
 
+    // 当前已装载的"按声道拆分 + volume + 合并"滤镜图的声道数，0 表示未装载（此时只能整链重建）
+    private int _splitGraphChannels;
+
     /// <summary>
-    /// 实时更新 mpv 后端的多声道各音箱增益与静音
+    /// 实时更新 mpv 后端的多声道各音箱增益与静音。
+    /// 已装载拆分滤镜图时通过 af-command 直接修改各声道 volume，不重建音频链、不卡顿。
     /// </summary>
     public async Task SetChannelGainsAsync(float[] gains)
     {
         _channelGains = (float[])gains.Clone();
         try
         {
+            int n = _splitGraphChannels;
+            if (n > 0 && n == (_inputAudio?.ChannelCount ?? 0))
+            {
+                for (int i = 0; i < n && i < _channelGains.Length; i++)
+                {
+                    string v = _channelGains[i].ToString("0.#####", CultureInfo.InvariantCulture);
+                    await SendCommandAsync(["af-command", "mcg", "volume", v, $"volume@v{i}"]);
+                }
+                return;
+            }
             await ApplyEqAsync(_lastLoadRequest?.EqEnabled ?? false, _lastLoadRequest?.EqBandGains ?? []);
         }
         catch
@@ -686,12 +702,39 @@ public sealed class MpvPlaybackService : IDisposable
 
     private string? BuildChannelGainFilter(float[] gains)
     {
+        _splitGraphChannels = 0;
+        int channels = _inputAudio?.ChannelCount ?? 0;
+        string? layout = _inputAudio?.Channels;
+
+        // 已知合法声道布局时，装载可实时调节的拆分滤镜图：channelsplit → 每声道 volume@vN → join
+        if (channels >= 1 && channels <= gains.Length && IsSafeLayoutName(layout))
+        {
+            var sb = new StringBuilder();
+            sb.Append("@mcg:lavfi=[channelsplit=channel_layout=").Append(layout);
+            for (int i = 0; i < channels; i++) sb.Append($"[c{i}]");
+            for (int i = 0; i < channels; i++)
+            {
+                string v = gains[i].ToString("0.#####", CultureInfo.InvariantCulture);
+                sb.Append($";[c{i}]volume@v{i}={v}[o{i}]");
+            }
+            sb.Append(';');
+            for (int i = 0; i < channels; i++) sb.Append($"[o{i}]");
+            sb.Append($"join=inputs={channels}:channel_layout={layout}]");
+            _splitGraphChannels = channels;
+            return sb.ToString();
+        }
+
+        // 布局未知时回退为 aeval（修改时需整链重建）
         if (gains.All(g => Math.Abs(g - 1f) < 0.0001f)) return null;
-        // 表达式数量与实际输入声道数一致，aeval 按声道逐路乘以增益，c=same 保持原声道布局
-        int channels = Math.Clamp(_inputAudio?.ChannelCount ?? 2, 1, gains.Length);
-        var exprs = gains.Take(channels).Select((g, i) => string.Create(CultureInfo.InvariantCulture, $"val({i})*{g:0.#####}"));
+        int n = Math.Clamp(channels > 0 ? channels : 2, 1, gains.Length);
+        var exprs = gains.Take(n).Select((g, i) => string.Create(CultureInfo.InvariantCulture, $"val({i})*{g:0.#####}"));
         return $"lavfi=[aeval=exprs='{string.Join('|', exprs)}':c=same]";
     }
+
+    private static bool IsSafeLayoutName(string? layout) =>
+        !string.IsNullOrEmpty(layout)
+        && !layout.StartsWith("unknown", StringComparison.OrdinalIgnoreCase)
+        && layout.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '(' or ')' or '-');
 
     private static string BuildEqFilter(float[] bandGains)
     {
