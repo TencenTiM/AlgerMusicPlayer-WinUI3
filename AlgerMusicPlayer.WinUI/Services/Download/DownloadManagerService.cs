@@ -105,7 +105,7 @@ public class DownloadManagerService
         Tasks.Insert(0, taskItem);
         NotifyStateChanged();
 
-        _ = ProcessQueueAsync();
+        ProcessQueue();
         return Task.CompletedTask;
     }
 
@@ -135,7 +135,7 @@ public class DownloadManagerService
         Tasks.Insert(0, taskItem);
         NotifyStateChanged();
 
-        _ = ProcessQueueAsync();
+        ProcessQueue();
         return Task.CompletedTask;
     }
 
@@ -166,7 +166,7 @@ public class DownloadManagerService
         task.Status = "等待下载";
         task.ErrorMessage = null;
         NotifyStateChanged();
-        _ = ProcessQueueAsync();
+        ProcessQueue();
     }
 
     public void CancelTask(string taskId)
@@ -201,10 +201,10 @@ public class DownloadManagerService
             }
         }
 
-        _ = ProcessQueueAsync();
+        ProcessQueue();
     }
 
-    private async Task ProcessQueueAsync()
+    private void ProcessQueue()
     {
         while (true)
         {
@@ -247,7 +247,7 @@ public class DownloadManagerService
                 _activeCount = Math.Max(0, _activeCount - 1);
             }
             NotifyStateChanged();
-            _ = ProcessQueueAsync();
+            ProcessQueue();
         }
     }
 
