@@ -142,6 +142,7 @@ public sealed partial class MainWindow : Window
         ConfigureTitleBarButtonsTheme();
 
         ViewModel.PropertyChanged += OnViewModelPropertyChanged;
+        UpdateTaskbarTitle();
         _ = ViewModel.InitializeAsync();
         _isInitialized = true;
         PlayEntranceAnimation(HomeView, 0, 22, 340);
@@ -454,12 +455,14 @@ public sealed partial class MainWindow : Window
                     ImmersiveHiddenCoverTitle.Text = ViewModel.CurrentSongName;
                     LyricOffsetBadgeText.Text = $"{ViewModel.Player.LyricOffsetMs / 1000.0:+0.0;-0.0;0.0}s";
                     UpdateSystemTrayTooltip();
+                    UpdateTaskbarTitle();
                     break;
                 case nameof(MainViewModel.CurrentArtistName):
                     BottomArtistText.Text = ViewModel.CurrentArtistName;
                     ImmersiveSongArtist.Text = ViewModel.CurrentArtistName;
                     ImmersiveHiddenCoverArtist.Text = ViewModel.CurrentArtistName;
                     UpdateSystemTrayTooltip();
+                    UpdateTaskbarTitle();
                     break;
                 case nameof(MainViewModel.CurrentCoverUrl):
                     UpdateCoverImages(ViewModel.CurrentCoverUrl);
@@ -5618,6 +5621,39 @@ public sealed partial class MainWindow : Window
                 szTip = tip
             };
             _ = Win32Interop.Shell_NotifyIconW(Win32Interop.NIM_MODIFY, ref nid);
+        }
+        catch
+        {
+        }
+    }
+
+    /// <summary>
+    /// 实时更新任务栏与窗口标题，播放时显示“歌曲名 - 歌手 - Alger Music Player”，未播放时复原为“Alger Music Player”
+    /// </summary>
+    private void UpdateTaskbarTitle()
+    {
+        try
+        {
+            string titleText = "Alger Music Player";
+            if (!string.IsNullOrWhiteSpace(ViewModel.CurrentSongName) &&
+                ViewModel.CurrentSongName != "未播放音乐" &&
+                ViewModel.CurrentSongName != "Alger Music Player")
+            {
+                var artist = ViewModel.CurrentArtistName;
+                titleText = string.IsNullOrWhiteSpace(artist)
+                    ? $"{ViewModel.CurrentSongName} - Alger Music Player"
+                    : $"{ViewModel.CurrentSongName} - {artist} - Alger Music Player";
+            }
+
+            this.Title = titleText;
+            if (_appWindow != null)
+            {
+                _appWindow.Title = titleText;
+            }
+            if (_hWnd != IntPtr.Zero)
+            {
+                Win32Interop.SetWindowText(_hWnd, titleText);
+            }
         }
         catch
         {
