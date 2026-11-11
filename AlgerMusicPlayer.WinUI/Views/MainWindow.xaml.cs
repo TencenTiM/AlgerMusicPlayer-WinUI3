@@ -7355,10 +7355,10 @@ public sealed partial class MainWindow : Window
     private async void OnCheckUpdateClick(object sender, RoutedEventArgs e)
     {
         AboutVersionStatusText.Text = "正在连接 GitHub 检查最新版本...";
-        var (hasUpdate, latestVersion, _) = await ViewModel.Api.CheckGitHubUpdateAsync("v5.1.0");
+        var (hasUpdate, latestVersion, _) = await ViewModel.Api.CheckGitHubUpdateAsync("v5.1.1");
         AboutVersionStatusText.Text = hasUpdate
-            ? $"发现新版本：{latestVersion}（当前 5.1.0，可点击右侧前往更新）"
-            : $"5.1.0 (已是最新版本: {latestVersion})";
+            ? $"发现新版本：{latestVersion}（当前 5.1.1，可点击右侧前往更新）"
+            : $"5.1.1 (已是最新版本: {latestVersion})";
         ViewModel.StatusToast = AboutVersionStatusText.Text;
     }
 

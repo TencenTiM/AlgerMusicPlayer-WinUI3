@@ -1550,7 +1550,7 @@ public class NeteaseApiClient
     /// <summary>
     /// 检查 GitHub 最新版本更新（对应原 AboutTab.vue checkUpdate）
     /// </summary>
-    public async Task<(bool HasUpdate, string LatestVersion, string ReleaseUrl)> CheckGitHubUpdateAsync(string currentVersion = "5.1.0")
+    public async Task<(bool HasUpdate, string LatestVersion, string ReleaseUrl)> CheckGitHubUpdateAsync(string currentVersion = "5.1.1")
     {
         try
         {
