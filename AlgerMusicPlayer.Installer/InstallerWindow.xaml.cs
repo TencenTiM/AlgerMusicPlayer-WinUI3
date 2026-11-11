@@ -30,16 +30,16 @@ public partial class InstallerWindow : Window
         InitializeComponent();
 
         var defaultDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "Programs",
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
             "AlgerMusicPlayer");
 
-        // 若之前已安装过，优先读取上次安装的目录方便覆盖升级
+        // 若之前已安装过且不是历史用户目录(AppData)，优先读取上次安装的目录方便覆盖升级
         try
         {
             using var regKey = Registry.CurrentUser.OpenSubKey(UninstallRegKeyPath, false);
             var previousDir = regKey?.GetValue("InstallLocation") as string;
-            if (!string.IsNullOrWhiteSpace(previousDir))
+            if (!string.IsNullOrWhiteSpace(previousDir) &&
+                !previousDir.Contains("AppData", StringComparison.OrdinalIgnoreCase))
             {
                 defaultDir = previousDir;
             }

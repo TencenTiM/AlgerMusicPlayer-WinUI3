@@ -18,6 +18,7 @@
     <Version>5.1.1</Version>
     <Product>AlgerMusicPlayer Setup</Product>
     <Company>AlgerMusicPlayer</Company>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
 
   <ItemGroup>
