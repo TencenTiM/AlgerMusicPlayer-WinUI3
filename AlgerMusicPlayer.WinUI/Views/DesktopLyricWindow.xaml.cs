@@ -123,6 +123,7 @@ public sealed partial class DesktopLyricWindow : Window
         }
 
         _vm.PropertyChanged += OnViewModelPropertyChanged;
+        _vm.Theme.ThemeApplied += OnThemeApplied;
         _vm.Player.PlayStateChanged += OnPlayStateChanged;
         _vm.Player.SongChanged += OnSongChanged;
         _vm.Player.LyricLoaded += OnLyricLoaded;
@@ -137,12 +138,18 @@ public sealed partial class DesktopLyricWindow : Window
     {
         _lockedCursorPollTimer.Stop();
         _vm.PropertyChanged -= OnViewModelPropertyChanged;
+        _vm.Theme.ThemeApplied -= OnThemeApplied;
         _vm.Player.PlayStateChanged -= OnPlayStateChanged;
         _vm.Player.SongChanged -= OnSongChanged;
         _vm.Player.LyricLoaded -= OnLyricLoaded;
         _vm.Player.LyricLineChanged -= OnLyricLineChanged;
         _vm.Player.PositionChanged -= OnPositionChanged;
         _appWindow.Changed -= OnAppWindowChanged;
+    }
+
+    private void OnThemeApplied(CustomThemeProfile profile)
+    {
+        DispatcherQueue.TryEnqueue(ApplyConfigToVisuals);
     }
 
     private void OnAppWindowChanged(AppWindow sender, AppWindowChangedEventArgs args)
@@ -203,6 +210,18 @@ public sealed partial class DesktopLyricWindow : Window
 
     private Windows.UI.Color GetActiveHighlightColor()
     {
+        var themeProfile = _vm.Theme.GetEffectiveTheme();
+        if (themeProfile.SyncDesktopLyric)
+        {
+            var themeHex = !string.IsNullOrWhiteSpace(themeProfile.LyricHighlightColorHex)
+                ? themeProfile.LyricHighlightColorHex
+                : themeProfile.AccentColorHex;
+            if (TryParseHexColor(themeHex, out var themeColor))
+            {
+                return themeColor;
+            }
+        }
+
         var cfg = _vm.Config.Settings.DesktopLyric;
         var hex = !string.IsNullOrWhiteSpace(cfg.HighlightColorHex)
             ? cfg.HighlightColorHex

@@ -4,6 +4,7 @@ using System.Runtime.InteropServices.WindowsRuntime;
 using AlgerMusicPlayer.WinUI.Helpers;
 using AlgerMusicPlayer.WinUI.Models;
 using AlgerMusicPlayer.WinUI.Services.Audio;
+using AlgerMusicPlayer.WinUI.Services.System;
 using AlgerMusicPlayer.WinUI.ViewModels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Input;
@@ -155,6 +156,16 @@ public sealed partial class MainWindow : Window
         titleBar.ButtonBackgroundColor = Microsoft.UI.Colors.Transparent;
         titleBar.ButtonInactiveBackgroundColor = Microsoft.UI.Colors.Transparent;
         bool isOverlayOpen = ImmersiveLyricOverlay != null && ImmersiveLyricOverlay.Visibility == Visibility.Visible;
+
+        var activeProfile = ViewModel.Theme.GetEffectiveTheme();
+        if (!isOverlayOpen && activeProfile.EnableCustomTitleBar && ThemeService.TryParseColor(activeProfile.TitleBarTextHex, out var customBtnFg))
+        {
+            titleBar.ButtonForegroundColor = customBtnFg;
+            titleBar.ButtonHoverForegroundColor = customBtnFg;
+            titleBar.ButtonHoverBackgroundColor = Windows.UI.Color.FromArgb(28, customBtnFg.R, customBtnFg.G, customBtnFg.B);
+            return;
+        }
+
         bool isLight = isOverlayOpen ? !_isMusicFullLightText : (RootLayout.ActualTheme == ElementTheme.Light);
         titleBar.ButtonForegroundColor = isLight ? Microsoft.UI.Colors.Black : Microsoft.UI.Colors.White;
         titleBar.ButtonHoverForegroundColor = isLight ? Microsoft.UI.Colors.Black : Microsoft.UI.Colors.White;
@@ -229,6 +240,7 @@ public sealed partial class MainWindow : Window
             ? ElementTheme.Default
             : (s.ManualTheme == "Light" ? ElementTheme.Light : ElementTheme.Dark);
         AutoThemeToggle.IsOn = s.AutoTheme;
+        InitializeThemeCenterEngine();
         SyncThemeSettingsUi();
 
         _isInternalVolumeUpdate = true;
@@ -478,6 +490,7 @@ public sealed partial class MainWindow : Window
                     var playGlyph = ViewModel.IsPlaying ? "\uE769" : "\uE768";
                     PlayPauseMainIcon.Glyph = playGlyph;
                     SimplePlayBarPlayIcon.Glyph = playGlyph;
+                    UpdateDynamicEnginePowerState();
                     break;
                 case nameof(MainViewModel.IsCurrentSongLiked):
                     BottomLikeIcon.Glyph = ViewModel.IsCurrentSongLiked ? "\uEB52" : "\uEB51";
@@ -1140,6 +1153,10 @@ public sealed partial class MainWindow : Window
             AddElementRect(TopBackButton);
             AddElementRect(TopSearchBox);
             AddElementRect(TitleBarRightToolbar);
+            if (ThemeCenterModalOverlay?.Visibility == Visibility.Visible)
+            {
+                AddElementRect(ThemeCenterModalCard);
+            }
 
             if (rects.Count > 0)
             {
@@ -1388,6 +1405,7 @@ public sealed partial class MainWindow : Window
     private void SwitchSettingsTab(string tab)
     {
         SettingsBasicPanel.Visibility = tab == "Basic" ? Visibility.Visible : Visibility.Collapsed;
+        SettingsThemePanel.Visibility = tab == "Theme" ? Visibility.Visible : Visibility.Collapsed;
         SettingsPlaybackPanel.Visibility = tab == "Playback" ? Visibility.Visible : Visibility.Collapsed;
         SettingsApplicationPanel.Visibility = tab == "Application" ? Visibility.Visible : Visibility.Collapsed;
         SettingsNetworkPanel.Visibility = tab == "Network" ? Visibility.Visible : Visibility.Collapsed;
@@ -1395,15 +1413,22 @@ public sealed partial class MainWindow : Window
         SettingsAboutPanel.Visibility = tab == "About" ? Visibility.Visible : Visibility.Collapsed;
 
         ApplyDynamicAccentButtonState(SettingsTabBasicBtn, tab == "Basic");
+        ApplyDynamicAccentButtonState(SettingsTabThemeBtn, tab == "Theme");
         ApplyDynamicAccentButtonState(SettingsTabPlaybackBtn, tab == "Playback");
         ApplyDynamicAccentButtonState(SettingsTabApplicationBtn, tab == "Application");
         ApplyDynamicAccentButtonState(SettingsTabNetworkBtn, tab == "Network");
         ApplyDynamicAccentButtonState(SettingsTabSystemBtn, tab == "System");
         ApplyDynamicAccentButtonState(SettingsTabAboutBtn, tab == "About");
 
+        if (tab == "Theme")
+        {
+            PrepareInlineSettingsThemeTab();
+        }
+
         UIElement? active = tab switch
         {
             "Basic" => SettingsBasicPanel,
+            "Theme" => SettingsThemePanel,
             "Playback" => SettingsPlaybackPanel,
             "Application" => SettingsApplicationPanel,
             "Network" => SettingsNetworkPanel,
@@ -4927,9 +4952,23 @@ public sealed partial class MainWindow : Window
         var primaryBrush = _isMusicFullLightText
             ? new SolidColorBrush(Windows.UI.Color.FromArgb(205, 255, 255, 255))
             : new SolidColorBrush(Windows.UI.Color.FromArgb(205, 17, 24, 39));
-        var activeBrush = _isMusicFullLightText
-            ? new SolidColorBrush(Windows.UI.Color.FromArgb(255, 255, 255, 255))
-            : new SolidColorBrush(Windows.UI.Color.FromArgb(255, 0, 0, 0));
+
+        Brush activeBrush;
+        var themeProfile = ViewModel.Theme.GetEffectiveTheme();
+        if (themeProfile.SyncImmersiveLyricHighlight)
+        {
+            string highlightHex = !string.IsNullOrWhiteSpace(themeProfile.LyricHighlightColorHex)
+                ? themeProfile.LyricHighlightColorHex
+                : themeProfile.AccentColorHex;
+            var highlightCol = ThemeService.ParseColorOrDefault(highlightHex, Windows.UI.Color.FromArgb(255, 16, 185, 129));
+            activeBrush = new SolidColorBrush(highlightCol);
+        }
+        else
+        {
+            activeBrush = _isMusicFullLightText
+                ? new SolidColorBrush(Windows.UI.Color.FromArgb(255, 255, 255, 255))
+                : new SolidColorBrush(Windows.UI.Color.FromArgb(255, 0, 0, 0));
+        }
 
         foreach (var line in ViewModel.LyricLines)
         {
@@ -5012,6 +5051,8 @@ public sealed partial class MainWindow : Window
             ApplyMusicFullThemeAndBackground();
             SyncLyricLinesTypographyAndEmptyState();
         });
+
+        await ApplyDynamicCoverAccentIfEnabledAsync(coverUrl);
     }
 
     private void ApplyMusicFullThemeAndBackground()
@@ -5856,12 +5897,21 @@ public sealed partial class MainWindow : Window
     {
         if (!_isInitialized) return;
         ViewModel.Config.Settings.AutoTheme = AutoThemeToggle.IsOn;
-        RootLayout.RequestedTheme = AutoThemeToggle.IsOn
-            ? ElementTheme.Default
-            : (ViewModel.Config.Settings.ManualTheme == "Light" ? ElementTheme.Light : ElementTheme.Dark);
-        SyncThemeSettingsUi();
-        ConfigureTitleBarButtonsTheme();
-        await ViewModel.Config.SaveSettingsAsync();
+        var active = ViewModel.Theme.GetSavedActiveTheme();
+        if (!active.IsBuiltIn)
+        {
+            active.BaseMode = AutoThemeToggle.IsOn ? "System" : (ViewModel.Config.Settings.ManualTheme == "Light" ? "Light" : "Dark");
+            await ViewModel.Theme.SaveCustomThemeAsync(active);
+        }
+        else
+        {
+            RootLayout.RequestedTheme = AutoThemeToggle.IsOn
+                ? ElementTheme.Default
+                : (ViewModel.Config.Settings.ManualTheme == "Light" ? ElementTheme.Light : ElementTheme.Dark);
+            SyncThemeSettingsUi();
+            ConfigureTitleBarButtonsTheme();
+            await ViewModel.Config.SaveSettingsAsync();
+        }
     }
 
     private async void OnToggleThemeClick(object sender, RoutedEventArgs e)
@@ -5870,11 +5920,29 @@ public sealed partial class MainWindow : Window
         ViewModel.Config.Settings.AutoTheme = false;
         var isLight = RootLayout.RequestedTheme == ElementTheme.Light ||
                       (RootLayout.RequestedTheme == ElementTheme.Default && Application.Current.RequestedTheme == ApplicationTheme.Light);
-        RootLayout.RequestedTheme = isLight ? ElementTheme.Dark : ElementTheme.Light;
-        ViewModel.Config.Settings.ManualTheme = isLight ? "Dark" : "Light";
-        SyncThemeSettingsUi();
-        ConfigureTitleBarButtonsTheme();
-        await ViewModel.Config.SaveSettingsAsync();
+        string nextMode = isLight ? "Dark" : "Light";
+        ViewModel.Config.Settings.ManualTheme = nextMode;
+
+        var active = ViewModel.Theme.GetSavedActiveTheme();
+        if (active.Id is "builtin-emerald-dark" or "builtin-emerald-light")
+        {
+            var nextPreset = CustomThemeProfile.GetBuiltInPresets()
+                .First(x => x.Id == (nextMode == "Light" ? "builtin-emerald-light" : "builtin-emerald-dark"));
+            await ViewModel.Theme.ApplyThemeAsync(nextPreset, saveToDisk: true);
+        }
+        else if (!active.IsBuiltIn)
+        {
+            active.BaseMode = nextMode;
+            await ViewModel.Theme.SaveCustomThemeAsync(active);
+        }
+        else
+        {
+            var switched = active.Clone();
+            switched.BaseMode = nextMode;
+            RootLayout.RequestedTheme = nextMode == "Light" ? ElementTheme.Light : ElementTheme.Dark;
+            await ApplyThemeProfileToMainWindowAsync(switched);
+            await ViewModel.Config.SaveSettingsAsync();
+        }
     }
 
     private async void OnLanguageSelectionChanged(object sender, SelectionChangedEventArgs e)

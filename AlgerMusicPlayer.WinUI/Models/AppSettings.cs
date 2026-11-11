@@ -432,6 +432,7 @@ public class AppSettings
     public bool IsWindowMaximized { get; set; } = false;
 
     // 子模块配置
+    public ThemeCenterConfig ThemeCenter { get; set; } = new();
     public EqualizerConfig Equalizer { get; set; } = new();
     public MultichannelConfig Multichannel { get; set; } = new();
     public DesktopLyricConfig DesktopLyric { get; set; } = new();

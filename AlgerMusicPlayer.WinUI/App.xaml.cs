@@ -34,6 +34,7 @@ public partial class App : Application
 
         // 核心服务单例注册
         services.AddSingleton<ConfigService>();
+        services.AddSingleton<ThemeService>();
         services.AddSingleton<I18nService>();
         services.AddSingleton<NeteaseApiClient>();
         services.AddSingleton<QqMusicService>();

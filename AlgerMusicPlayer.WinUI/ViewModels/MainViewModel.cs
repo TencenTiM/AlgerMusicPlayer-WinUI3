@@ -18,6 +18,7 @@ namespace AlgerMusicPlayer.WinUI.ViewModels;
 public partial class MainViewModel : ObservableObject
 {
     public ConfigService Config { get; }
+    public ThemeService Theme { get; }
     public I18nService I18n { get; }
     public NeteaseApiClient Api { get; }
     public QqMusicService QqMusic { get; }
@@ -588,6 +589,7 @@ public partial class MainViewModel : ObservableObject
 
     public MainViewModel(
         ConfigService config,
+        ThemeService theme,
         I18nService i18n,
         NeteaseApiClient api,
         QqMusicService qqMusic,
@@ -601,6 +603,7 @@ public partial class MainViewModel : ObservableObject
         GlobalHotkeyService hotkeys)
     {
         Config = config;
+        Theme = theme;
         I18n = i18n;
         Api = api;
         QqMusic = qqMusic;

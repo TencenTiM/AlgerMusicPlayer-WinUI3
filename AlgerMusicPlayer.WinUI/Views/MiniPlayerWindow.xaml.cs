@@ -2,6 +2,7 @@ using System.Collections.Specialized;
 using System.ComponentModel;
 using AlgerMusicPlayer.WinUI.Helpers;
 using AlgerMusicPlayer.WinUI.Models;
+using AlgerMusicPlayer.WinUI.Services.System;
 using AlgerMusicPlayer.WinUI.ViewModels;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
@@ -69,16 +70,15 @@ public sealed partial class MiniPlayerWindow : Window
         // 移除 Windows 11 顶部 7px 白色非客户区边框并启用圆角阴影
         Win32Interop.MakeFramelessOverlayWindow(_hWnd, roundCorners: true, toolWindow: false);
 
-        // 同步明暗主题
-        RootGrid.RequestedTheme = _vm.Config.Settings.AutoTheme
-            ? ElementTheme.Default
-            : (_vm.Config.Settings.ManualTheme == "Light" ? ElementTheme.Light : ElementTheme.Dark);
+        // 同步主题中心明暗与自定义背景
+        ApplyThemeProfile(_vm.Theme.GetEffectiveTheme());
 
         MiniQueueListView.ItemsSource = _vm.Player.Queue;
         UpdateQueueEmptyState();
         SyncFromViewModel();
 
         _vm.PropertyChanged += OnVmPropertyChanged;
+        _vm.Theme.ThemeApplied += OnThemeApplied;
         _vm.Player.PlayStateChanged += OnPlayStateChanged;
         _vm.Player.SongChanged += OnSongChanged;
         _vm.Player.PositionChanged += OnPositionChanged;
@@ -91,10 +91,56 @@ public sealed partial class MiniPlayerWindow : Window
     private void OnWindowClosed(object sender, WindowEventArgs args)
     {
         _vm.PropertyChanged -= OnVmPropertyChanged;
+        _vm.Theme.ThemeApplied -= OnThemeApplied;
         _vm.Player.PlayStateChanged -= OnPlayStateChanged;
         _vm.Player.SongChanged -= OnSongChanged;
         _vm.Player.PositionChanged -= OnPositionChanged;
         _vm.Player.Queue.CollectionChanged -= OnQueueCollectionChanged;
+    }
+
+    private void OnThemeApplied(CustomThemeProfile profile)
+    {
+        DispatcherQueue.TryEnqueue(() => ApplyThemeProfile(profile));
+    }
+
+    public void ApplyThemeProfile(CustomThemeProfile profile)
+    {
+        if (!profile.SyncMiniPlayer)
+        {
+            RootGrid.RequestedTheme = _vm.Config.Settings.AutoTheme
+                ? ElementTheme.Default
+                : (_vm.Config.Settings.ManualTheme == "Light" ? ElementTheme.Light : ElementTheme.Dark);
+            MiniBarContainer.ClearValue(Grid.BackgroundProperty);
+            PlaylistPanelBorder.ClearValue(Border.BackgroundProperty);
+            return;
+        }
+
+        RootGrid.RequestedTheme = profile.BaseMode switch
+        {
+            "Light" => ElementTheme.Light,
+            "System" => ElementTheme.Default,
+            _ => ElementTheme.Dark
+        };
+
+        if (profile.EnableCustomMiniPlayerBg)
+        {
+            var baseCol = ThemeService.ParseColorOrDefault(profile.MiniPlayerBgHex, Windows.UI.Color.FromArgb(255, 17, 24, 39));
+            var bgBrush = new SolidColorBrush(ThemeService.WithOpacity(baseCol, profile.MiniPlayerOpacity));
+            MiniBarContainer.Background = bgBrush;
+            PlaylistPanelBorder.Background = bgBrush;
+            RootGrid.Background = bgBrush;
+        }
+        else
+        {
+            MiniBarContainer.ClearValue(Grid.BackgroundProperty);
+            PlaylistPanelBorder.ClearValue(Border.BackgroundProperty);
+            RootGrid.ClearValue(Grid.BackgroundProperty);
+        }
+
+        if (_isPlaylistOpen)
+        {
+            TogglePlaylistIcon.Foreground = (Brush)Application.Current.Resources["BrandAccentBrush"];
+        }
     }
 
     private void OnVmPropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -324,7 +370,7 @@ public sealed partial class MiniPlayerWindow : Window
         _isPlaylistOpen = !_isPlaylistOpen;
         PlaylistPanelBorder.Visibility = _isPlaylistOpen ? Visibility.Visible : Visibility.Collapsed;
         TogglePlaylistIcon.Foreground = _isPlaylistOpen
-            ? new SolidColorBrush(Windows.UI.Color.FromArgb(255, 16, 185, 129))
+            ? (Brush)Application.Current.Resources["BrandAccentBrush"]
             : (Brush)Application.Current.Resources["TextFillColorPrimaryBrush"];
 
         int targetHeight = _isPlaylistOpen ? MiniExpandedHeight : MiniCollapsedHeight;
