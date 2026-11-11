@@ -295,19 +295,23 @@ public class ThemeService
             adapted.TitleBarGradientEndHex = MapSurfaceToLight(adapted.TitleBarGradientEndHex, 0.925);
             adapted.TitleBarTextHex = MapTextToLight(adapted.TitleBarTextHex, 0.16);
 
-            adapted.NavPaneBgHex = MapSurfaceToLight(adapted.NavPaneBgHex, 0.942);
-            adapted.NavPaneGradientEndHex = MapSurfaceToLight(adapted.NavPaneGradientEndHex, 0.925);
+            adapted.NavPaneBgHex = MapSurfaceToLight(adapted.NavPaneBgHex, 0.965);
+            adapted.NavPaneGradientEndHex = MapSurfaceToLight(adapted.NavPaneGradientEndHex, 0.945);
+            adapted.NavPaneOpacity = Math.Min(adapted.NavPaneOpacity, 46);
             adapted.NavPaneTextHex = MapTextToLight(adapted.NavPaneTextHex, 0.18);
 
-            adapted.ContentBgHex = MapSurfaceToLight(adapted.ContentBgHex, 0.968);
-            adapted.CardBgHex = MapSurfaceToLight(adapted.CardBgHex, 0.994, 0.30);
-            adapted.CardBorderHex = MapSurfaceToLight(adapted.CardBorderHex, 0.875, 1.15);
+            adapted.ContentBgHex = MapSurfaceToLight(adapted.ContentBgHex, 0.975);
+            adapted.ContentOpacity = Math.Min(adapted.ContentOpacity, 12);
+            adapted.CardBgHex = MapSurfaceToLight(adapted.CardBgHex, 0.992, 0.28);
+            adapted.CardOpacity = Math.Min(adapted.CardOpacity, 44);
+            adapted.CardBorderHex = "#FFFFFF";
             adapted.PrimaryTextHex = MapTextToLight(adapted.PrimaryTextHex, 0.14);
-            adapted.SecondaryTextHex = MapTextToLight(adapted.SecondaryTextHex, 0.42);
+            adapted.SecondaryTextHex = MapTextToLight(adapted.SecondaryTextHex, 0.40);
 
-            adapted.PlayBarBgHex = MapSurfaceToLight(adapted.PlayBarBgHex, 0.982, 0.55);
-            adapted.PlayBarGradientEndHex = MapSurfaceToLight(adapted.PlayBarGradientEndHex, 0.958, 0.75);
-            adapted.PlayBarBorderHex = MapSurfaceToLight(adapted.PlayBarBorderHex, 0.86, 1.15);
+            adapted.PlayBarBgHex = MapSurfaceToLight(adapted.PlayBarBgHex, 0.985, 0.45);
+            adapted.PlayBarGradientEndHex = MapSurfaceToLight(adapted.PlayBarGradientEndHex, 0.962, 0.65);
+            adapted.PlayBarOpacity = Math.Min(adapted.PlayBarOpacity, 50);
+            adapted.PlayBarBorderHex = "#FFFFFF";
             adapted.PlayBarTextHex = MapTextToLight(adapted.PlayBarTextHex, 0.15);
 
             adapted.MiniPlayerBgHex = MapSurfaceToLight(adapted.MiniPlayerBgHex, 0.975, 0.55);
@@ -521,14 +525,49 @@ public class ThemeService
         };
     }
 
-    public static Brush CreateSectionBrush(Color primaryColor, bool enableGradient, string? gradientEndHex, double opacityPercent, double angleDegrees)
+    /// <summary>
+    /// 生成混入极淡主题色相的冰透微光白，避免浅色毛玻璃发死白或冷灰
+    /// </summary>
+    public static Color CreateTintedIceWhite(Color accent, double accentWeight = 0.055)
     {
-        var c1 = WithOpacity(primaryColor, opacityPercent);
+        double w = Math.Clamp(accentWeight, 0.0, 0.25);
+        byte r = (byte)Math.Round(255 * (1 - w) + accent.R * w);
+        byte g = (byte)Math.Round(255 * (1 - w) + accent.G * w);
+        byte b = (byte)Math.Round(255 * (1 - w) + accent.B * w);
+        return Color.FromArgb(255, r, g, b);
+    }
+
+    /// <summary>
+    /// 构建应用内实时高斯模糊亚克力毛玻璃画刷（透出底层浅色/深色动态极光与粒子虚化光晕，失焦回退仍保持半透明不泛死白）
+    /// </summary>
+    public static AcrylicBrush CreateFrostedGlassBrush(Color tintColor, double tintOpacity, double luminosityOpacity, byte fallbackAlpha = 115)
+    {
+        return new AcrylicBrush
+        {
+            TintColor = Color.FromArgb(255, tintColor.R, tintColor.G, tintColor.B),
+            TintOpacity = Math.Clamp(tintOpacity, 0.08, 0.92),
+            TintLuminosityOpacity = Math.Clamp(luminosityOpacity, 0.15, 0.92),
+            FallbackColor = Color.FromArgb(fallbackAlpha, tintColor.R, tintColor.G, tintColor.B)
+        };
+    }
+
+    public static Brush CreateSectionBrush(Color primaryColor, bool enableGradient, string? gradientEndHex, double opacityPercent, double angleDegrees, bool useAcrylicBlur = false)
+    {
         if (!enableGradient || !TryParseColor(gradientEndHex, out var rawEnd))
         {
-            return new SolidColorBrush(c1);
+            if (useAcrylicBlur && opacityPercent < 96)
+            {
+                double normOp = Math.Clamp(opacityPercent / 100.0, 0.12, 0.88);
+                double tintOp = Math.Clamp(normOp * 0.78, 0.18, 0.72);
+                double lumOp = Math.Clamp(normOp * 0.92 + 0.12, 0.35, 0.82);
+                byte fbAlpha = (byte)Math.Round(Math.Clamp(normOp * 0.82, 0.25, 0.75) * 255);
+                return CreateFrostedGlassBrush(primaryColor, tintOp, lumOp, fbAlpha);
+            }
+
+            return new SolidColorBrush(WithOpacity(primaryColor, opacityPercent));
         }
 
+        var c1 = WithOpacity(primaryColor, opacityPercent);
         var c2 = WithOpacity(rawEnd, opacityPercent);
         var (start, end) = GetGradientEndpoints(angleDegrees);
         var lgb = new LinearGradientBrush { StartPoint = start, EndPoint = end };

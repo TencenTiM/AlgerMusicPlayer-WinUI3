@@ -263,11 +263,41 @@ public sealed partial class MainWindow
         navRes["NavigationViewSelectionIndicatorForeground"] = new SolidColorBrush(accent);
 
         bool isCustomLayer = profile.BackdropType is "Image" or "Solid" or "Aurora" or "CoverFlow" or "Video";
+        Color iceWhite = ThemeService.CreateTintedIceWhite(accent, 0.06);
+
+        // 同步让顶栏搜索框在动态玻璃背景下呈现轻盈半透明雾面，消除生硬纯白条
+        if (TopSearchBox != null)
+        {
+            var sbRes = TopSearchBox.Resources;
+            if (isCustomLayer)
+            {
+                var boxBg = new SolidColorBrush(isLight
+                    ? Color.FromArgb(115, 255, 255, 255)
+                    : Color.FromArgb(95, 15, 23, 42));
+                var boxFocusBg = new SolidColorBrush(isLight
+                    ? Color.FromArgb(175, 255, 255, 255)
+                    : Color.FromArgb(145, 15, 23, 42));
+                var boxBorder = new SolidColorBrush(isLight
+                    ? Color.FromArgb(155, 255, 255, 255)
+                    : Color.FromArgb(55, 255, 255, 255));
+                sbRes["TextControlBackground"] = boxBg;
+                sbRes["TextControlBackgroundPointerOver"] = boxFocusBg;
+                sbRes["TextControlBackgroundFocused"] = boxFocusBg;
+                sbRes["TextControlBorderBrush"] = boxBorder;
+            }
+            else
+            {
+                sbRes.Remove("TextControlBackground");
+                sbRes.Remove("TextControlBackgroundPointerOver");
+                sbRes.Remove("TextControlBackgroundFocused");
+                sbRes.Remove("TextControlBorderBrush");
+            }
+        }
 
         if (profile.EnableCustomNavPane)
         {
-            var paneCol = ThemeService.ParseColorOrDefault(profile.NavPaneBgHex, isLight ? Color.FromArgb(255, 241, 245, 249) : Color.FromArgb(255, 15, 23, 42));
-            var paneBrush = ThemeService.CreateSectionBrush(paneCol, profile.EnableNavPaneGradient, profile.NavPaneGradientEndHex, profile.NavPaneOpacity, profile.GradientAngle);
+            var paneCol = ThemeService.ParseColorOrDefault(profile.NavPaneBgHex, isLight ? iceWhite : Color.FromArgb(255, 15, 23, 42));
+            var paneBrush = ThemeService.CreateSectionBrush(paneCol, profile.EnableNavPaneGradient, profile.NavPaneGradientEndHex, profile.NavPaneOpacity, profile.GradientAngle, useAcrylicBlur: true);
             navRes["NavigationViewDefaultPaneBackground"] = paneBrush;
             navRes["NavigationViewExpandedPaneBackground"] = paneBrush;
             navRes["NavigationViewTopPaneBackground"] = paneBrush;
@@ -287,11 +317,12 @@ public sealed partial class MainWindow
         {
             if (isCustomLayer)
             {
-                var glassPane = new SolidColorBrush(isLight
-                    ? Color.FromArgb(208, 255, 255, 255)
-                    : Color.FromArgb(115, 15, 23, 42));
+                Brush glassPane = isLight
+                    ? ThemeService.CreateFrostedGlassBrush(iceWhite, tintOpacity: 0.36, luminosityOpacity: 0.58, fallbackAlpha: 112)
+                    : ThemeService.CreateFrostedGlassBrush(Color.FromArgb(255, 15, 23, 42), tintOpacity: 0.52, luminosityOpacity: 0.68, fallbackAlpha: 125);
                 navRes["NavigationViewDefaultPaneBackground"] = glassPane;
                 navRes["NavigationViewExpandedPaneBackground"] = glassPane;
+                navRes["NavigationViewTopPaneBackground"] = glassPane;
             }
             else
             {
@@ -337,17 +368,30 @@ public sealed partial class MainWindow
 
         if (profile.EnableCustomContent)
         {
+            var accent = ThemeService.ParseColorOrDefault(profile.AccentColorHex, Color.FromArgb(255, 16, 185, 129));
+            var iceWhite = ThemeService.CreateTintedIceWhite(accent, 0.055);
+
             var contentBg = ThemeService.ParseColorOrDefault(profile.ContentBgHex, isLight ? Color.FromArgb(255, 248, 250, 252) : Color.FromArgb(255, 11, 17, 32));
-            MainContentWorkspaceGrid.Background = new SolidColorBrush(ThemeService.WithOpacity(contentBg, profile.ContentOpacity));
+            double effContentOp = (isLight && isCustomLayer) ? Math.Min(profile.ContentOpacity, 10) : profile.ContentOpacity;
+            MainContentWorkspaceGrid.Background = new SolidColorBrush(ThemeService.WithOpacity(contentBg, effContentOp));
 
-            var cardBg = ThemeService.ParseColorOrDefault(profile.CardBgHex, isLight ? Color.FromArgb(255, 255, 255, 255) : Color.FromArgb(255, 30, 41, 59));
-            var cardPrimaryBrush = new SolidColorBrush(ThemeService.WithOpacity(cardBg, profile.CardOpacity));
-            var secondaryCardCol = ThemeService.AdjustLightness(cardBg, isLight ? -0.04 : 0.04);
-            var cardSecondaryBrush = new SolidColorBrush(ThemeService.WithOpacity(secondaryCardCol, Math.Clamp(profile.CardOpacity - 8, 12, 100)));
+            var cardBg = ThemeService.ParseColorOrDefault(profile.CardBgHex, isLight ? iceWhite : Color.FromArgb(255, 30, 41, 59));
+            Brush cardPrimaryBrush = profile.CardOpacity < 96
+                ? ThemeService.CreateSectionBrush(cardBg, false, null, profile.CardOpacity, 0, useAcrylicBlur: true)
+                : new SolidColorBrush(ThemeService.WithOpacity(cardBg, profile.CardOpacity));
 
-            var borderCol = ThemeService.ParseColorOrDefault(profile.CardBorderHex, isLight ? Color.FromArgb(255, 226, 232, 240) : Color.FromArgb(255, 51, 65, 85));
-            var borderBrush = new SolidColorBrush(ThemeService.WithOpacity(borderCol, Math.Max(profile.CardOpacity, 55)));
-            var dividerBrush = new SolidColorBrush(Color.FromArgb(90, borderCol.R, borderCol.G, borderCol.B));
+            var secondaryCardCol = ThemeService.AdjustLightness(cardBg, isLight ? -0.02 : 0.04);
+            var cardSecondaryBrush = new SolidColorBrush(isLight
+                ? Color.FromArgb(82, secondaryCardCol.R, secondaryCardCol.G, secondaryCardCol.B)
+                : ThemeService.WithOpacity(secondaryCardCol, Math.Clamp(profile.CardOpacity - 8, 12, 100)));
+
+            var borderCol = ThemeService.ParseColorOrDefault(profile.CardBorderHex, isLight ? Colors.White : Color.FromArgb(255, 51, 65, 85));
+            var borderBrush = new SolidColorBrush(isLight
+                ? Color.FromArgb(165, borderCol.R, borderCol.G, borderCol.B)
+                : ThemeService.WithOpacity(borderCol, Math.Max(profile.CardOpacity, 55)));
+            var dividerBrush = new SolidColorBrush(isLight
+                ? Color.FromArgb(24, 15, 23, 42)
+                : Color.FromArgb(90, borderCol.R, borderCol.G, borderCol.B));
 
             rootRes["CardBackgroundFillColorDefaultBrush"] = cardPrimaryBrush;
             rootRes["CardBackgroundFillColorSecondaryBrush"] = cardSecondaryBrush;
@@ -379,18 +423,24 @@ public sealed partial class MainWindow
             rootRes.Remove("OverlayCornerRadius");
             rootRes.Remove("ControlCornerRadius");
 
-            // 若开启了全屏壁纸/极光但未开启自定义内容卡片，则自动赋予卡片柔和半透明毛玻璃感，防止实心大色块挡住壁纸
+            // 开启全屏壁纸/极光/流光等自定义背景层时，默认赋予卡片真实高斯模糊亚克力毛玻璃质感，透出底层浅色/深色动态特效
             if (isCustomLayer)
             {
-                rootRes["CardBackgroundFillColorDefaultBrush"] = new SolidColorBrush(isLight
-                    ? Color.FromArgb(224, 255, 255, 255)
-                    : Color.FromArgb(155, 24, 32, 48));
+                var accent = ThemeService.ParseColorOrDefault(profile.AccentColorHex, Color.FromArgb(255, 16, 185, 129));
+                var iceWhite = ThemeService.CreateTintedIceWhite(accent, 0.055);
+
+                rootRes["CardBackgroundFillColorDefaultBrush"] = isLight
+                    ? ThemeService.CreateFrostedGlassBrush(iceWhite, tintOpacity: 0.34, luminosityOpacity: 0.56, fallbackAlpha: 108)
+                    : ThemeService.CreateFrostedGlassBrush(Color.FromArgb(255, 22, 30, 46), tintOpacity: 0.48, luminosityOpacity: 0.66, fallbackAlpha: 122);
                 rootRes["CardBackgroundFillColorSecondaryBrush"] = new SolidColorBrush(isLight
-                    ? Color.FromArgb(196, 248, 250, 252)
-                    : Color.FromArgb(130, 17, 24, 39));
+                    ? Color.FromArgb(80, 255, 255, 255)
+                    : Color.FromArgb(95, 17, 24, 39));
+                rootRes["CardStrokeColorDefaultBrush"] = new SolidColorBrush(isLight
+                    ? Color.FromArgb(170, 255, 255, 255)
+                    : Color.FromArgb(52, 255, 255, 255));
                 if (isLight)
                 {
-                    rootRes["CardStrokeColorDefaultBrush"] = new SolidColorBrush(Color.FromArgb(215, 226, 232, 240));
+                    rootRes["DividerStrokeColorDefaultBrush"] = new SolidColorBrush(Color.FromArgb(22, 15, 23, 42));
                 }
             }
         }
@@ -430,8 +480,8 @@ public sealed partial class MainWindow
         {
             var bgCol = ThemeService.ParseColorOrDefault(profile.PlayBarBgHex, Color.FromArgb(255, 17, 24, 39));
             var borderCol = ThemeService.ParseColorOrDefault(profile.PlayBarBorderHex, Color.FromArgb(255, 31, 41, 55));
-            BottomPlayBarBorder.Background = ThemeService.CreateSectionBrush(bgCol, profile.EnablePlayBarGradient, profile.PlayBarGradientEndHex, profile.PlayBarOpacity, profile.GradientAngle);
-            BottomPlayBarBorder.BorderBrush = new SolidColorBrush(borderCol);
+            BottomPlayBarBorder.Background = ThemeService.CreateSectionBrush(bgCol, profile.EnablePlayBarGradient, profile.PlayBarGradientEndHex, profile.PlayBarOpacity, profile.GradientAngle, useAcrylicBlur: true);
+            BottomPlayBarBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(170, borderCol.R, borderCol.G, borderCol.B));
 
             if (ThemeService.TryParseColor(profile.PlayBarTextHex, out var textCol))
             {
@@ -677,17 +727,17 @@ public sealed partial class MainWindow
             : (isItemLight ? Color.FromArgb(255, 236, 241, 247) : Color.FromArgb(255, 26, 33, 46));
 
         Color normalBg = isUiLight
-            ? Color.FromArgb(245, 255, 255, 255)
+            ? Color.FromArgb(92, 255, 255, 255)
             : Color.FromArgb(20, 255, 255, 255);
         Color hoverBg = isUiLight
-            ? Color.FromArgb(22, accentCol.R, accentCol.G, accentCol.B)
+            ? Color.FromArgb(34, accentCol.R, accentCol.G, accentCol.B)
             : Color.FromArgb(34, 255, 255, 255);
         Color activeBg = isUiLight
-            ? Color.FromArgb(28, accentCol.R, accentCol.G, accentCol.B)
+            ? Color.FromArgb(40, accentCol.R, accentCol.G, accentCol.B)
             : Color.FromArgb(38, accentCol.R, accentCol.G, accentCol.B);
 
         Color normalBorder = isUiLight
-            ? Color.FromArgb(255, 226, 232, 240)
+            ? Color.FromArgb(155, 255, 255, 255)
             : Color.FromArgb(36, 255, 255, 255);
         Color hoverBorder = Color.FromArgb(145, accentCol.R, accentCol.G, accentCol.B);
 
@@ -971,8 +1021,8 @@ public sealed partial class MainWindow
         bool isThemeLight = string.Equals(t.BaseMode, "Light", StringComparison.OrdinalIgnoreCase);
         bool isInstalled = ViewModel.Theme.IsMarketplaceThemeInstalled(item.Id);
 
-        Color cardBg = isUiLight ? Color.FromArgb(250, 255, 255, 255) : Color.FromArgb(22, 255, 255, 255);
-        Color borderCol = isUiLight ? Color.FromArgb(255, 226, 232, 240) : Color.FromArgb(36, 255, 255, 255);
+        Color cardBg = isUiLight ? Color.FromArgb(96, 255, 255, 255) : Color.FromArgb(22, 255, 255, 255);
+        Color borderCol = isUiLight ? Color.FromArgb(160, 255, 255, 255) : Color.FromArgb(36, 255, 255, 255);
         Color titleColor = isUiLight ? Color.FromArgb(255, 15, 23, 42) : Color.FromArgb(255, 248, 250, 252);
         Color subColor = isUiLight ? Color.FromArgb(255, 100, 116, 139) : Color.FromArgb(255, 148, 163, 184);
 

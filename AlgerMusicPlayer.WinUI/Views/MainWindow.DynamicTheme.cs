@@ -620,6 +620,9 @@ public sealed partial class MainWindow
 
     private void ApplyMorphologyTypographyAndCoverDetails(CustomThemeProfile profile, Color accent, bool isLight)
     {
+        bool isCustomLayer = profile.BackdropType is "Image" or "Solid" or "Aurora" or "CoverFlow" or "Video";
+        Color iceWhite = ThemeService.CreateTintedIceWhite(accent, 0.06);
+
         // 1. 底部播放栏形态切换（Docked | FloatingIsland | MinimalGlass）
         string pbMode = profile.PlayBarLayoutMode ?? "Docked";
         if (pbMode == "FloatingIsland")
@@ -632,10 +635,12 @@ public sealed partial class MainWindow
 
             if (!profile.EnableCustomPlayBar)
             {
-                BottomPlayBarBorder.Background = new SolidColorBrush(isLight
-                    ? Color.FromArgb(242, 255, 255, 255)
-                    : Color.FromArgb(215, 20, 27, 42));
-                BottomPlayBarBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(95, accent.R, accent.G, accent.B));
+                BottomPlayBarBorder.Background = isLight
+                    ? ThemeService.CreateFrostedGlassBrush(iceWhite, tintOpacity: 0.38, luminosityOpacity: 0.60, fallbackAlpha: 120)
+                    : ThemeService.CreateFrostedGlassBrush(Color.FromArgb(255, 20, 27, 42), tintOpacity: 0.62, luminosityOpacity: 0.74, fallbackAlpha: 165);
+                BottomPlayBarBorder.BorderBrush = new SolidColorBrush(isLight
+                    ? Color.FromArgb(175, 255, 255, 255)
+                    : Color.FromArgb(95, accent.R, accent.G, accent.B));
             }
         }
         else if (pbMode == "MinimalGlass")
@@ -648,9 +653,9 @@ public sealed partial class MainWindow
 
             if (!profile.EnableCustomPlayBar)
             {
-                BottomPlayBarBorder.Background = new SolidColorBrush(isLight
-                    ? Color.FromArgb(205, 255, 255, 255)
-                    : Color.FromArgb(120, 15, 23, 42));
+                BottomPlayBarBorder.Background = isLight
+                    ? ThemeService.CreateFrostedGlassBrush(iceWhite, tintOpacity: 0.28, luminosityOpacity: 0.52, fallbackAlpha: 96)
+                    : ThemeService.CreateFrostedGlassBrush(Color.FromArgb(255, 15, 23, 42), tintOpacity: 0.42, luminosityOpacity: 0.62, fallbackAlpha: 115);
             }
         }
         else
@@ -660,6 +665,16 @@ public sealed partial class MainWindow
             BottomPlayBarBorder.CornerRadius = new CornerRadius(0);
             BottomPlayBarBorder.BorderThickness = new Thickness(0, 1, 0, 0);
             BottomPlayBarBorder.Padding = new Thickness(18, 2, 18, 8);
+
+            if (!profile.EnableCustomPlayBar && isCustomLayer)
+            {
+                BottomPlayBarBorder.Background = isLight
+                    ? ThemeService.CreateFrostedGlassBrush(iceWhite, tintOpacity: 0.40, luminosityOpacity: 0.62, fallbackAlpha: 125)
+                    : ThemeService.CreateFrostedGlassBrush(Color.FromArgb(255, 17, 24, 39), tintOpacity: 0.58, luminosityOpacity: 0.72, fallbackAlpha: 155);
+                BottomPlayBarBorder.BorderBrush = new SolidColorBrush(isLight
+                    ? Color.FromArgb(160, 255, 255, 255)
+                    : Color.FromArgb(55, 255, 255, 255));
+            }
         }
 
         // 2. 底栏音频律动流光呼吸灯带
@@ -749,19 +764,21 @@ public sealed partial class MainWindow
         string style = profile.CardVisualStyle ?? "Default";
         if (style == "Default") return;
 
+        Color iceWhite = ThemeService.CreateTintedIceWhite(accent, 0.055);
+
         switch (style)
         {
             case "FrostedGlass":
                 if (!profile.EnableCustomContent)
                 {
-                    rootRes["CardBackgroundFillColorDefaultBrush"] = new SolidColorBrush(isLight
-                        ? Color.FromArgb(218, 255, 255, 255)
-                        : Color.FromArgb(115, 24, 33, 52));
+                    rootRes["CardBackgroundFillColorDefaultBrush"] = isLight
+                        ? ThemeService.CreateFrostedGlassBrush(iceWhite, tintOpacity: 0.32, luminosityOpacity: 0.54, fallbackAlpha: 105)
+                        : ThemeService.CreateFrostedGlassBrush(Color.FromArgb(255, 24, 33, 52), tintOpacity: 0.44, luminosityOpacity: 0.62, fallbackAlpha: 115);
                     rootRes["CardBackgroundFillColorSecondaryBrush"] = new SolidColorBrush(isLight
-                        ? Color.FromArgb(190, 248, 250, 252)
-                        : Color.FromArgb(90, 15, 23, 42));
+                        ? Color.FromArgb(76, 255, 255, 255)
+                        : Color.FromArgb(88, 15, 23, 42));
                     rootRes["CardStrokeColorDefaultBrush"] = new SolidColorBrush(isLight
-                        ? Color.FromArgb(220, 226, 232, 240)
+                        ? Color.FromArgb(175, 255, 255, 255)
                         : Color.FromArgb(52, 255, 255, 255));
                 }
                 break;
@@ -769,9 +786,9 @@ public sealed partial class MainWindow
             case "NeonBorder":
                 if (!profile.EnableCustomContent)
                 {
-                    rootRes["CardBackgroundFillColorDefaultBrush"] = new SolidColorBrush(isLight
-                        ? Color.FromArgb(220, 255, 255, 255)
-                        : Color.FromArgb(155, 13, 18, 32));
+                    rootRes["CardBackgroundFillColorDefaultBrush"] = isLight
+                        ? ThemeService.CreateFrostedGlassBrush(iceWhite, tintOpacity: 0.36, luminosityOpacity: 0.58, fallbackAlpha: 112)
+                        : ThemeService.CreateFrostedGlassBrush(Color.FromArgb(255, 13, 18, 32), tintOpacity: 0.55, luminosityOpacity: 0.68, fallbackAlpha: 140);
                 }
                 rootRes["CardStrokeColorDefaultBrush"] = new SolidColorBrush(Color.FromArgb(165, accent.R, accent.G, accent.B));
                 rootRes["DividerStrokeColorDefaultBrush"] = new SolidColorBrush(Color.FromArgb(75, accent.R, accent.G, accent.B));
@@ -780,9 +797,9 @@ public sealed partial class MainWindow
             case "FlatMinimal":
                 if (!profile.EnableCustomContent)
                 {
-                    rootRes["CardBackgroundFillColorDefaultBrush"] = new SolidColorBrush(isLight
-                        ? Color.FromArgb(235, 244, 246, 250)
-                        : Color.FromArgb(160, 22, 27, 38));
+                    rootRes["CardBackgroundFillColorDefaultBrush"] = isLight
+                        ? ThemeService.CreateFrostedGlassBrush(iceWhite, tintOpacity: 0.38, luminosityOpacity: 0.60, fallbackAlpha: 118)
+                        : new SolidColorBrush(Color.FromArgb(160, 22, 27, 38));
                 }
                 rootRes["CardStrokeColorDefaultBrush"] = new SolidColorBrush(Colors.Transparent);
                 break;
@@ -790,11 +807,11 @@ public sealed partial class MainWindow
             case "ElevatedCard":
                 if (!profile.EnableCustomContent)
                 {
-                    rootRes["CardBackgroundFillColorDefaultBrush"] = new SolidColorBrush(isLight
-                        ? Color.FromArgb(255, 255, 255, 255)
-                        : Color.FromArgb(238, 26, 33, 48));
+                    rootRes["CardBackgroundFillColorDefaultBrush"] = isLight
+                        ? ThemeService.CreateFrostedGlassBrush(iceWhite, tintOpacity: 0.44, luminosityOpacity: 0.65, fallbackAlpha: 132)
+                        : new SolidColorBrush(Color.FromArgb(238, 26, 33, 48));
                     rootRes["CardStrokeColorDefaultBrush"] = new SolidColorBrush(isLight
-                        ? Color.FromArgb(255, 203, 213, 225)
+                        ? Color.FromArgb(185, 255, 255, 255)
                         : Color.FromArgb(140, 71, 85, 105));
                 }
                 break;
