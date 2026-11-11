@@ -5866,6 +5866,7 @@ public sealed partial class MainWindow : Window
         }
         _ = Win32Interop.SetForegroundWindow(_hWnd);
         Activate();
+        ScheduleDynamicPowerStateCheck();
     }
 
     private void OnTogglePinTopClick(object sender, RoutedEventArgs e)

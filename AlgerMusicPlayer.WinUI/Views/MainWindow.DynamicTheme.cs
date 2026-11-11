@@ -66,15 +66,30 @@ public sealed partial class MainWindow
     private void InitializeDynamicThemeVisualEngine()
     {
         _dynamicThemeTimer = DispatcherQueue.CreateTimer();
+        _dynamicThemeTimer.IsRepeating = true;
         _dynamicThemeTimer.Interval = TimeSpan.FromMilliseconds(33); // ~30 FPS 丝滑且极低功耗
         _dynamicThemeTimer.Tick += OnDynamicThemeFrameTick;
 
+        // 注意：WinUI 3 最小化/任务栏还原改变的是 OverlappedPresenter.State，触发的是 DidSizeChange 而非 DidPresenterChange
         _appWindow.Changed += (_, args) =>
         {
-            if (args.DidVisibilityChange || args.DidPresenterChange)
+            if (args.DidVisibilityChange || args.DidPresenterChange || args.DidSizeChange)
             {
-                DispatcherQueue.TryEnqueue(UpdateDynamicEnginePowerState);
+                ScheduleDynamicPowerStateCheck();
             }
+        };
+
+        Activated += (_, args) =>
+        {
+            if (args.WindowActivationState != WindowActivationState.Deactivated)
+            {
+                ScheduleDynamicPowerStateCheck();
+            }
+        };
+
+        VisibilityChanged += (_, _) =>
+        {
+            ScheduleDynamicPowerStateCheck();
         };
 
         RootLayout.SizeChanged += (_, _) =>
@@ -83,12 +98,25 @@ public sealed partial class MainWindow
             {
                 UpdateAuroraOrbPositions(0);
             }
+            UpdateDynamicEnginePowerState();
         };
+    }
+
+    private void ScheduleDynamicPowerStateCheck()
+    {
+        DispatcherQueue.TryEnqueue(UpdateDynamicEnginePowerState);
+        // 兼容任务栏窗口还原动画过渡瞬间 IsIconic 尚未清除的时序，延迟二次确认唤醒
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(120);
+            DispatcherQueue.TryEnqueue(UpdateDynamicEnginePowerState);
+        });
     }
 
     private bool IsMainWindowActivelyVisible()
     {
         if (!_appWindow.IsVisible) return false;
+        if (_hWnd != IntPtr.Zero && Helpers.Win32Interop.IsIconic(_hWnd)) return false;
         if (_appWindow.Presenter is OverlappedPresenter { State: OverlappedPresenterState.Minimized })
             return false;
         return true;
@@ -487,6 +515,12 @@ public sealed partial class MainWindow
 
     private void OnDynamicThemeFrameTick(DispatcherQueueTimer sender, object args)
     {
+        if (!IsMainWindowActivelyVisible())
+        {
+            UpdateDynamicEnginePowerState();
+            return;
+        }
+
         var now = DateTime.UtcNow;
         double dt = Math.Clamp((now - _lastDynamicTickUtc).TotalSeconds, 0.005, 0.12);
         _lastDynamicTickUtc = now;
