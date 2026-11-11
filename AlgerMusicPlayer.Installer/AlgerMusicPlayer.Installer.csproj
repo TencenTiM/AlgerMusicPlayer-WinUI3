@@ -5,7 +5,6 @@
     <RootNamespace>AlgerMusicPlayer.Installer</RootNamespace>
     <AssemblyName>AlgerMusicPlayer-Setup-x64</AssemblyName>
     <UseWPF>true</UseWPF>
-    <UseWindowsForms>true</UseWindowsForms>
     <ApplicationIcon>..\AlgerMusicPlayer.WinUI\Assets\icon.ico</ApplicationIcon>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>

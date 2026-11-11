@@ -9,10 +9,15 @@
     WindowStyle="None"
     AllowsTransparency="True"
     Background="Transparent"
-    ResizeMode="NoResize">
+    ResizeMode="NoResize"
+    UseLayoutRounding="True"
+    SnapsToDevicePixels="True"
+    FontFamily="Microsoft YaHei UI, Segoe UI"
+    TextOptions.TextFormattingMode="Ideal"
+    TextOptions.TextRenderingMode="ClearType">
 
     <Window.Resources>
-        <!-- 翡翠绿主按钮样式 -->
+        <!-- 翡翠绿主按钮样式（阴影层与文字内容层分离，保持字体原生锐利度） -->
         <Style x:Key="PrimaryEmeraldButtonStyle" TargetType="Button">
             <Setter Property="Background" Value="#10B981" />
             <Setter Property="Foreground" Value="White" />
@@ -23,16 +28,24 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Border
-                            x:Name="BtnBorder"
-                            Background="{TemplateBinding Background}"
-                            CornerRadius="22"
-                            Padding="{TemplateBinding Padding}">
-                            <Border.Effect>
-                                <DropShadowEffect Color="#10B981" BlurRadius="18" ShadowDepth="0" Opacity="0.38" />
-                            </Border.Effect>
-                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
-                        </Border>
+                        <Grid x:Name="BtnRoot">
+                            <Border
+                                Background="{Binding Background, ElementName=BtnBorder}"
+                                CornerRadius="22"
+                                IsHitTestVisible="False">
+                                <Border.Effect>
+                                    <DropShadowEffect Color="#10B981" BlurRadius="18" ShadowDepth="0" Opacity="0.38" />
+                                </Border.Effect>
+                            </Border>
+                            <Border
+                                x:Name="BtnBorder"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="22"
+                                Padding="{TemplateBinding Padding}"
+                                RenderOptions.ClearTypeHint="Enabled">
+                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            </Border>
+                        </Grid>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter TargetName="BtnBorder" Property="Background" Value="#059669" />
@@ -41,7 +54,7 @@
                                 <Setter TargetName="BtnBorder" Property="Background" Value="#047857" />
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
-                                <Setter TargetName="BtnBorder" Property="Opacity" Value="0.5" />
+                                <Setter TargetName="BtnRoot" Property="Opacity" Value="0.5" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -106,20 +119,28 @@
         </Style>
     </Window.Resources>
 
-    <!-- 外层阴影与圆角磨砂琉璃主容器 -->
-    <Border Margin="14" CornerRadius="18" BorderBrush="#2A10B981" BorderThickness="1.2">
-        <Border.Background>
-            <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
-                <GradientStop Color="#0B1120" Offset="0" />
-                <GradientStop Color="#111827" Offset="0.55" />
-                <GradientStop Color="#0D1F1C" Offset="1" />
-            </LinearGradientBrush>
-        </Border.Background>
-        <Border.Effect>
-            <DropShadowEffect Color="#000000" BlurRadius="24" ShadowDepth="4" Opacity="0.65" />
-        </Border.Effect>
+    <!-- 外层阴影层与圆角主内容层分离（避免 DropShadowEffect 触发全局离屏位图渲染导致文字发虚） -->
+    <Grid Margin="14">
+        <Border CornerRadius="18" Background="#0B1120" IsHitTestVisible="False">
+            <Border.Effect>
+                <DropShadowEffect Color="#000000" BlurRadius="24" ShadowDepth="4" Opacity="0.65" />
+            </Border.Effect>
+        </Border>
 
-        <Grid>
+        <Border
+            CornerRadius="18"
+            BorderBrush="#2A10B981"
+            BorderThickness="1.2"
+            RenderOptions.ClearTypeHint="Enabled">
+            <Border.Background>
+                <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                    <GradientStop Color="#0B1120" Offset="0" />
+                    <GradientStop Color="#111827" Offset="0.55" />
+                    <GradientStop Color="#0D1F1C" Offset="1" />
+                </LinearGradientBrush>
+            </Border.Background>
+
+            <Grid>
             <Grid.RowDefinitions>
                 <RowDefinition Height="44" />
                 <RowDefinition Height="*" />
@@ -302,5 +323,6 @@
                 </Grid>
             </Border>
         </Grid>
-    </Border>
+        </Border>
+    </Grid>
 </Window>

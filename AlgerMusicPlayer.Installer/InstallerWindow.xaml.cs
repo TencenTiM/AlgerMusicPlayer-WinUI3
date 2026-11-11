@@ -90,17 +90,22 @@ public partial class InstallerWindow : Window
 
     private void OnBrowseInstallPathClick(object sender, RoutedEventArgs e)
     {
-        using var dialog = new System.Windows.Forms.FolderBrowserDialog
+        var initialDir = InstallPathTextBox.Text.Trim();
+        var parentDir = Directory.Exists(initialDir)
+            ? initialDir
+            : Path.GetDirectoryName(initialDir);
+
+        var dialog = new OpenFolderDialog
         {
-            Description = "选择 Alger Music Player 安装目录（支持中文路径）",
-            UseDescriptionForTitle = true,
-            SelectedPath = InstallPathTextBox.Text
+            Title = "选择 Alger Music Player 安装目录（支持中文路径）",
+            InitialDirectory = !string.IsNullOrWhiteSpace(parentDir) && Directory.Exists(parentDir)
+                ? parentDir
+                : Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles)
         };
 
-        if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK &&
-            !string.IsNullOrWhiteSpace(dialog.SelectedPath))
+        if (dialog.ShowDialog(this) == true && !string.IsNullOrWhiteSpace(dialog.FolderName))
         {
-            var chosen = dialog.SelectedPath.Trim();
+            var chosen = dialog.FolderName.Trim();
             if (!chosen.EndsWith("AlgerMusicPlayer", StringComparison.OrdinalIgnoreCase))
             {
                 chosen = Path.Combine(chosen, "AlgerMusicPlayer");
