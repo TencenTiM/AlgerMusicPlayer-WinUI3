@@ -3906,7 +3906,7 @@ public sealed partial class MainWindow : Window
 
         try
         {
-            await QqQuickLoginWebView.EnsureCoreWebView2Async();
+            await App.EnsureWebView2Async(QqQuickLoginWebView);
             var coreWv = QqQuickLoginWebView.CoreWebView2;
             if (coreWv == null) return;
 

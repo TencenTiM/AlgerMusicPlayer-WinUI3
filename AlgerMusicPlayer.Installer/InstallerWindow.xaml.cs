@@ -166,6 +166,13 @@ public partial class InstallerWindow : Window
         UpdateProgressUi(8, $"正在创建安装目录：{targetDir}");
         Directory.CreateDirectory(targetDir);
 
+        // 清理旧版可能在程序目录内残留的默认 WebView2 缓存目录（新版已迁移至用户 AppData）
+        var legacyWebViewDir = Path.Combine(targetDir, $"{MainExeName}.WebView2");
+        if (Directory.Exists(legacyWebViewDir))
+        {
+            try { Directory.Delete(legacyWebViewDir, recursive: true); } catch { }
+        }
+
         using var payloadStream = Assembly.GetExecutingAssembly().GetManifestResourceStream("AlgerMusicPlayer.Payload.zip");
         if (payloadStream == null)
         {
@@ -359,15 +366,28 @@ public partial class InstallerWindow : Window
             {
                 try
                 {
+                    // 通过 explorer.exe 代理以标准桌面用户权限启动，避免继承安装器管理员令牌导致首次缓存文件权限异常
                     Process.Start(new ProcessStartInfo
                     {
-                        FileName = _installedTargetExe,
-                        WorkingDirectory = Path.GetDirectoryName(_installedTargetExe) ?? string.Empty,
+                        FileName = "explorer.exe",
+                        Arguments = $"\"{_installedTargetExe}\"",
                         UseShellExecute = true
                     });
                 }
                 catch
                 {
+                    try
+                    {
+                        Process.Start(new ProcessStartInfo
+                        {
+                            FileName = _installedTargetExe,
+                            WorkingDirectory = Path.GetDirectoryName(_installedTargetExe) ?? string.Empty,
+                            UseShellExecute = true
+                        });
+                    }
+                    catch
+                    {
+                    }
                 }
             }
         }

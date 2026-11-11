@@ -161,7 +161,7 @@ public sealed partial class MainWindow
                 try
                 {
                     _loadedBgVideoPath = profile.BackgroundVideoPath;
-                    await GlobalWallpaperVideoPlayer.EnsureCoreWebView2Async();
+                    await App.EnsureWebView2Async(GlobalWallpaperVideoPlayer);
                     string videoUri = new Uri(profile.BackgroundVideoPath).AbsoluteUri;
                     string html = $"<!DOCTYPE html><html><head><meta charset='utf-8'><style>html,body{{margin:0;padding:0;overflow:hidden;background:transparent;width:100%;height:100%;}}video{{position:fixed;top:0;left:0;width:100vw;height:100vh;object-fit:cover;pointer-events:none;}}</style></head><body><video id='v' src='{videoUri}' autoplay loop muted playsinline></video></body></html>";
                     GlobalWallpaperVideoPlayer.NavigateToString(html);

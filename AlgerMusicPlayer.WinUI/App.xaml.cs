@@ -10,6 +10,8 @@ using AlgerMusicPlayer.WinUI.ViewModels;
 using AlgerMusicPlayer.WinUI.Views;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
+using Microsoft.Web.WebView2.Core;
 
 namespace AlgerMusicPlayer.WinUI;
 
@@ -19,13 +21,54 @@ namespace AlgerMusicPlayer.WinUI;
 public partial class App : Application
 {
     public static IServiceProvider Services { get; private set; } = null!;
+    public static string WebView2DataDirectory { get; } = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        "AlgerMusicPlayer.WinUI",
+        "WebView2");
+
+    private static CoreWebView2Environment? _sharedWebViewEnv;
+    private static readonly SemaphoreSlim _webViewEnvLock = new(1, 1);
     private Window? _mainWindow;
 
     public App()
     {
+        try
+        {
+            Environment.CurrentDirectory = AppContext.BaseDirectory;
+            Directory.CreateDirectory(WebView2DataDirectory);
+            Environment.SetEnvironmentVariable("WEBVIEW2_USER_DATA_FOLDER", WebView2DataDirectory);
+        }
+        catch
+        {
+        }
+
         SingleInstanceGuard.AcquireOrRedirectAndExit();
         InitializeComponent();
         Services = ConfigureServices();
+    }
+
+    /// <summary>
+    /// 使用位于用户 AppData 下的共享环境初始化 WebView2，避免在 Program Files 下因无写权限报错
+    /// </summary>
+    public static async Task EnsureWebView2Async(WebView2 view)
+    {
+        if (view.CoreWebView2 != null) return;
+
+        await _webViewEnvLock.WaitAsync();
+        try
+        {
+            Directory.CreateDirectory(WebView2DataDirectory);
+            _sharedWebViewEnv ??= await CoreWebView2Environment.CreateWithOptionsAsync(
+                string.Empty,
+                WebView2DataDirectory,
+                new CoreWebView2EnvironmentOptions());
+        }
+        finally
+        {
+            _webViewEnvLock.Release();
+        }
+
+        await view.EnsureCoreWebView2Async(_sharedWebViewEnv);
     }
 
     private static IServiceProvider ConfigureServices()

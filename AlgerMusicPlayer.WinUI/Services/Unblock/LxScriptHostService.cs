@@ -55,7 +55,7 @@ public sealed class LxScriptHostService
         try
         {
             _dispatcher = DispatcherQueue.GetForCurrentThread();
-            await view.EnsureCoreWebView2Async();
+            await App.EnsureWebView2Async(view);
             _core = view.CoreWebView2;
             var folder = Path.Combine(AppContext.BaseDirectory, "LxHost");
             _core.SetVirtualHostNameToFolderMapping(HostName, folder, CoreWebView2HostResourceAccessKind.Allow);
