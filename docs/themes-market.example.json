@@ -1,0 +1,40 @@
+{
+  "FeedName": "Alger 官方扩展主题源",
+  "Items": [
+    {
+      "Id": "remote-demo-aurora-peach",
+      "Category": "极简浅色",
+      "Tags": ["动态极光", "蜜桃浅色", "悬浮岛"],
+      "Downloads": 3200,
+      "SourceName": "GitHub 在线源",
+      "PreviewImageUrl": "",
+      "Theme": {
+        "Id": "remote-demo-aurora-peach",
+        "MarketOriginId": "remote-demo-aurora-peach",
+        "Name": "蜜桃乌龙 · 午后微风",
+        "Author": "Official",
+        "Description": "在线热更新示例主题：PreviewImageUrl 留空时客户端自动 1:1 渲染微缩实景预览图，也可填入 https 截图地址",
+        "BaseMode": "Light",
+        "BackdropType": "Aurora",
+        "WindowBgColorHex": "#FFF8F5",
+        "AuroraColor1Hex": "#FECDD3",
+        "AuroraColor2Hex": "#FED7AA",
+        "AuroraColor3Hex": "#FDE68A",
+        "AuroraSpeed": 0.85,
+        "AuroraIntensity": 56,
+        "EnableParticleOverlay": true,
+        "ParticleType": "Sakura",
+        "ParticleDensity": 26,
+        "ParticleColorHex": "#FB7185",
+        "AccentColorHex": "#F43F5E",
+        "EnableAccentGradient": true,
+        "AccentGradientEndHex": "#FB923C",
+        "PlayBarLayoutMode": "FloatingIsland",
+        "EnablePlayBarRhythmGlow": true,
+        "CardVisualStyle": "FrostedGlass",
+        "CoverArtShape": "VinylSpin",
+        "ButtonCornerRadius": 16
+      }
+    }
+  ]
+}

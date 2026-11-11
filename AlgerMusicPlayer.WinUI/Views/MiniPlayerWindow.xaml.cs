@@ -103,8 +103,11 @@ public sealed partial class MiniPlayerWindow : Window
         DispatcherQueue.TryEnqueue(() => ApplyThemeProfile(profile));
     }
 
-    public void ApplyThemeProfile(CustomThemeProfile profile)
+    public void ApplyThemeProfile(CustomThemeProfile rawProfile)
     {
+        bool isLight = ThemeService.IsEffectiveLightMode(rawProfile.BaseMode);
+        var profile = ThemeService.ResolveModeAdaptedProfile(rawProfile, isLight);
+
         if (!profile.SyncMiniPlayer)
         {
             RootGrid.RequestedTheme = _vm.Config.Settings.AutoTheme

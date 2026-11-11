@@ -95,7 +95,7 @@
                     <!-- 添加到QQ音乐歌单 -->
                     <Button Click="OnContextMenuAddToQqPlaylistClick" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="10,7" CornerRadius="8" Background="Transparent" BorderThickness="0">
                         <StackPanel Orientation="Horizontal" Spacing="10">
-                            <FontIcon Glyph="&#xE8F4;" FontSize="14" Width="18" Foreground="#10B981" />
+                            <FontIcon Glyph="&#xE8F4;" FontSize="14" Width="18" Foreground="{StaticResource BrandAccentBrush}" />
                             <TextBlock Text="添加到QQ音乐歌单" FontSize="13" />
                         </StackPanel>
                     </Button>
@@ -138,15 +138,22 @@
             x:Name="GlobalWindowBaseBgLayer"
             Grid.Row="0"
             Grid.RowSpan="3"
-            Canvas.ZIndex="-2"
+            Canvas.ZIndex="-3"
             IsHitTestVisible="False"
             Visibility="Collapsed">
-            <Image
+            <Border
                 x:Name="GlobalWallpaperImage"
-                Stretch="UniformToFill"
                 HorizontalAlignment="Stretch"
                 VerticalAlignment="Stretch"
-                Visibility="Collapsed" />
+                Visibility="Collapsed">
+                <Border.Background>
+                    <ImageBrush
+                        x:Name="GlobalWallpaperBrush"
+                        Stretch="UniformToFill"
+                        AlignmentX="Center"
+                        AlignmentY="Center" />
+                </Border.Background>
+            </Border>
             <WebView2
                 x:Name="GlobalWallpaperVideoPlayer"
                 HorizontalAlignment="Stretch"
@@ -171,7 +178,7 @@
             x:Name="GlobalParticleOverlayCanvas"
             Grid.Row="0"
             Grid.RowSpan="3"
-            Canvas.ZIndex="-1"
+            Canvas.ZIndex="-2"
             IsHitTestVisible="False"
             Visibility="Collapsed" />
 
@@ -442,7 +449,7 @@
                         Padding="16,8"
                         CornerRadius="18"
                         Background="{ThemeResource SolidBackgroundFillColorBaseAltBrush}"
-                        BorderBrush="#5510B981"
+                        BorderBrush="{StaticResource BrandAccentBorderSubtleBrush}"
                         BorderThickness="1">
                         <StackPanel Orientation="Horizontal" Spacing="8">
                             <FontIcon Glyph="&#xE946;" FontSize="14" Foreground="{StaticResource BrandAccentBrush}" VerticalAlignment="Center" />
@@ -469,17 +476,18 @@
 
                                 <!-- 左卡：每日推荐 -->
                                 <Border
+                                    x:Name="DailyHeroCardBorder"
                                     Grid.Column="0"
                                     Height="192"
-                                    CornerRadius="12"
+                                    CornerRadius="{ThemeResource OverlayCornerRadius}"
                                     Padding="20,16"
                                     RequestedTheme="Dark"
-                                    BorderBrush="#3310B981"
+                                    BorderBrush="{StaticResource BrandAccentBorderSubtleBrush}"
                                     BorderThickness="1">
                                     <Border.Background>
                                         <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
-                                            <GradientStop Color="#E6064E3B" Offset="0.0" />
-                                            <GradientStop Color="#E60F172A" Offset="1.0" />
+                                            <GradientStop x:Name="DailyHeroStop0" Color="#E6064E3B" Offset="0.0" />
+                                            <GradientStop x:Name="DailyHeroStop1" Color="#E60F172A" Offset="1.0" />
                                         </LinearGradientBrush>
                                     </Border.Background>
                                     <Grid ColumnSpacing="16">
@@ -492,7 +500,7 @@
                                             <Grid>
                                                 <Image x:Name="DailyHeroCoverImg" Stretch="UniformToFill" />
                                                 <Border HorizontalAlignment="Left" VerticalAlignment="Top" Margin="8" Background="#BF000000" CornerRadius="6" Padding="8,3">
-                                                    <TextBlock x:Name="DailyHeroCountBadge" Text="30 首" FontSize="11" Foreground="#34D399" FontWeight="SemiBold" />
+                                                    <TextBlock x:Name="DailyHeroCountBadge" Text="30 首" FontSize="11" Foreground="{StaticResource BrandAccentLightTextBrush}" FontWeight="SemiBold" />
                                                 </Border>
                                             </Grid>
                                         </Border>
@@ -505,7 +513,7 @@
                                             </Grid.RowDefinitions>
                                             <StackPanel Grid.Row="0" Spacing="2">
                                                 <TextBlock Text="每日推荐" FontSize="20" FontWeight="Bold" Foreground="White" />
-                                                <TextBlock Text="根据你的音乐口味生成 · 每日 6:00 更新" FontSize="12" Foreground="#A7F3D0" />
+                                                <TextBlock x:Name="DailyHeroSubtitleText" Text="根据你的音乐口味生成 · 每日 6:00 更新" FontSize="12" Foreground="#A7F3D0" />
                                             </StackPanel>
 
                                             <ItemsControl x:Name="DailyPreviewItemsControl" Grid.Row="1" VerticalAlignment="Center">
@@ -535,17 +543,18 @@
 
                                 <!-- 右卡：私人 FM -->
                                 <Border
+                                    x:Name="FmHeroCardBorder"
                                     Grid.Column="1"
                                     Height="192"
-                                    CornerRadius="12"
+                                    CornerRadius="{ThemeResource OverlayCornerRadius}"
                                     Padding="20,16"
                                     RequestedTheme="Dark"
                                     BorderBrush="#336366F1"
                                     BorderThickness="1">
                                     <Border.Background>
                                         <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
-                                            <GradientStop Color="#E61E1B4B" Offset="0.0" />
-                                            <GradientStop Color="#E60F172A" Offset="1.0" />
+                                            <GradientStop x:Name="FmHeroStop0" Color="#E61E1B4B" Offset="0.0" />
+                                            <GradientStop x:Name="FmHeroStop1" Color="#E60F172A" Offset="1.0" />
                                         </LinearGradientBrush>
                                     </Border.Background>
                                     <Grid ColumnSpacing="16">
@@ -564,10 +573,10 @@
                                                 <RowDefinition Height="*" />
                                                 <RowDefinition Height="Auto" />
                                             </Grid.RowDefinitions>
-                                            <Border Grid.Row="0" HorizontalAlignment="Left" Background="#33818CF8" CornerRadius="6" Padding="8,3">
+                                            <Border x:Name="FmHeroBadgeBorder" Grid.Row="0" HorizontalAlignment="Left" Background="#33818CF8" CornerRadius="6" Padding="8,3">
                                                 <StackPanel Orientation="Horizontal" Spacing="6">
-                                                    <FontIcon Glyph="&#xE95A;" FontSize="11" Foreground="#A5B4FC" />
-                                                    <TextBlock Text="私人 FM · PERSONAL RADIO" FontSize="10" Foreground="#A5B4FC" FontWeight="SemiBold" />
+                                                    <FontIcon x:Name="FmHeroBadgeIcon" Glyph="&#xE95A;" FontSize="11" Foreground="#A5B4FC" />
+                                                    <TextBlock x:Name="FmHeroBadgeText" Text="私人 FM · PERSONAL RADIO" FontSize="10" Foreground="#A5B4FC" FontWeight="SemiBold" />
                                                 </StackPanel>
                                             </Border>
 
@@ -862,7 +871,7 @@
                                                         <Grid>
                                                             <Image Source="{x:Bind PicUrl}" Stretch="UniformToFill" />
                                                             <Border HorizontalAlignment="Left" VerticalAlignment="Top" Margin="6" Background="#B3000000" CornerRadius="4" Padding="6,2">
-                                                                <TextBlock Text="{x:Bind Category}" FontSize="10" Foreground="#34D399" />
+                                                                <TextBlock Text="{x:Bind Category}" FontSize="10" Foreground="{StaticResource BrandAccentLightTextBrush}" />
                                                             </Border>
                                                         </Grid>
                                                     </Border>
@@ -894,7 +903,7 @@
                                                     <Grid>
                                                         <Image Source="{x:Bind CoverImgUrl}" Stretch="UniformToFill" />
                                                         <Border HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="6" Background="#B3000000" CornerRadius="4" Padding="6,2">
-                                                            <TextBlock Text="{x:Bind UpdateFrequency}" FontSize="11" Foreground="#34D399" />
+                                                            <TextBlock Text="{x:Bind UpdateFrequency}" FontSize="11" Foreground="{StaticResource BrandAccentLightTextBrush}" />
                                                         </Border>
                                                     </Grid>
                                                 </Border>
@@ -960,8 +969,8 @@
                                         <Border CornerRadius="16" IsHitTestVisible="False">
                                             <Border.Background>
                                                 <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
-                                                    <GradientStop Color="#1810B981" Offset="0.0" />
-                                                    <GradientStop Color="#0810B981" Offset="0.45" />
+                                                    <GradientStop x:Name="DetailHeroStop0" Color="#1810B981" Offset="0.0" />
+                                                    <GradientStop x:Name="DetailHeroStop1" Color="#0810B981" Offset="0.45" />
                                                     <GradientStop Color="#00000000" Offset="1.0" />
                                                 </LinearGradientBrush>
                                             </Border.Background>
@@ -998,8 +1007,8 @@
                                             <!-- 右侧歌单信息 (playlist-info) -->
                                             <StackPanel Grid.Column="1" Spacing="8" VerticalAlignment="Center">
                                                 <!-- PLAYLIST / ALBUM 徽章 -->
-                                                <Border HorizontalAlignment="Left" CornerRadius="10" Padding="10,3" Background="#2210B981">
-                                                    <TextBlock x:Name="DetailBadgeTextBlock" Text="PLAYLIST" FontSize="11" FontWeight="Bold" Foreground="#10B981" CharacterSpacing="60" />
+                                                <Border HorizontalAlignment="Left" CornerRadius="10" Padding="10,3" Background="{StaticResource BrandAccentSubtleBrush}">
+                                                    <TextBlock x:Name="DetailBadgeTextBlock" Text="PLAYLIST" FontSize="11" FontWeight="Bold" Foreground="{StaticResource BrandAccentBrush}" CharacterSpacing="60" />
                                                 </Border>
 
                                                 <!-- 歌单大标题 -->
@@ -1132,22 +1141,22 @@
                                                     Click="OnDetailBatchDownloadClick"
                                                     CornerRadius="16"
                                                     Padding="14,6"
-                                                    Background="#1A10B981"
+                                                    Background="{StaticResource BrandAccentSubtleBrush}"
                                                     BorderThickness="0">
                                                     <StackPanel Orientation="Horizontal" Spacing="6">
-                                                        <FontIcon Glyph="&#xE896;" FontSize="12" Foreground="#10B981" />
-                                                        <TextBlock x:Name="DetailBatchDownloadText" Text="下载 (0)" FontSize="12" FontWeight="Bold" Foreground="#10B981" />
+                                                        <FontIcon Glyph="&#xE896;" FontSize="12" Foreground="{StaticResource BrandAccentBrush}" />
+                                                        <TextBlock x:Name="DetailBatchDownloadText" Text="下载 (0)" FontSize="12" FontWeight="Bold" Foreground="{StaticResource BrandAccentBrush}" />
                                                     </StackPanel>
                                                 </Button>
                                                 <Button
                                                     Click="OnDetailBatchAddToQueueClick"
                                                     CornerRadius="16"
                                                     Padding="14,6"
-                                                    Background="#1A10B981"
+                                                    Background="{StaticResource BrandAccentSubtleBrush}"
                                                     BorderThickness="0">
                                                     <StackPanel Orientation="Horizontal" Spacing="6">
-                                                        <FontIcon Glyph="&#xE90B;" FontSize="12" Foreground="#10B981" />
-                                                        <TextBlock Text="添加到播放列表" FontSize="12" FontWeight="Bold" Foreground="#10B981" />
+                                                        <FontIcon Glyph="&#xE90B;" FontSize="12" Foreground="{StaticResource BrandAccentBrush}" />
+                                                        <TextBlock Text="添加到播放列表" FontSize="12" FontWeight="Bold" Foreground="{StaticResource BrandAccentBrush}" />
                                                     </StackPanel>
                                                 </Button>
                                                 <Button
@@ -2500,8 +2509,8 @@
                                         Width="128"
                                         Height="128"
                                         CornerRadius="24"
-                                        Background="#1A10B981"
-                                        BorderBrush="#3310B981"
+                                        Background="{StaticResource BrandAccentSubtleBrush}"
+                                        BorderBrush="{StaticResource BrandAccentBorderSubtleBrush}"
                                         BorderThickness="1">
                                         <FontIcon
                                             Glyph="&#xEBD3;"
@@ -2514,7 +2523,7 @@
                                     <!-- 右侧标签、主标题与统计副标题 -->
                                     <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="8">
                                         <Border
-                                            Background="#2210B981"
+                                            Background="{StaticResource BrandAccentSubtleBrush}"
                                             CornerRadius="12"
                                             Padding="12,4"
                                             HorizontalAlignment="Left">
@@ -2675,7 +2684,7 @@
                                                                     <TextBlock Text="-" FontSize="12" Foreground="{ThemeResource TextFillColorTertiaryBrush}" VerticalAlignment="Center" />
                                                                     <TextBlock Text="{x:Bind Song.ArtistText}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" MaxWidth="200" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
                                                                 </StackPanel>
-                                                                <Border Grid.Column="1" Background="#1F10B981" CornerRadius="6" Padding="8,2">
+                                                                <Border Grid.Column="1" Background="{StaticResource BrandAccentSubtleBrush}" CornerRadius="6" Padding="8,2">
                                                                     <TextBlock Text="{x:Bind Status, Mode=OneWay}" FontSize="11" FontWeight="SemiBold" Foreground="{StaticResource BrandAccentBrush}" />
                                                                 </Border>
                                                             </Grid>
@@ -3565,7 +3574,9 @@
                             BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
                             BorderThickness="0,0,0,1">
                             <StackPanel Spacing="16" HorizontalAlignment="Left">
-                                <TextBlock Text="设置" FontSize="28" FontWeight="Bold" />
+                                <Border Style="{StaticResource FloatingHeaderPlateStyle}" Margin="-10,-4,0,-4" Padding="10,4">
+                                    <TextBlock Text="设置" FontSize="28" FontWeight="Bold" />
+                                </Border>
                                 <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
                                     <StackPanel Orientation="Horizontal" Spacing="10">
                                         <Button
@@ -3650,7 +3661,9 @@
 
                                 <!-- ==================== Tab 1：基础设置 (1:1 还原 BasicTab.vue) ==================== -->
                                 <StackPanel x:Name="SettingsBasicPanel" Visibility="Visible" HorizontalAlignment="Stretch">
-                                    <TextBlock Text="基础设置" Style="{StaticResource SettingsGroupHeaderTextStyle}" />
+                                    <Border Style="{StaticResource FloatingHeaderPlateStyle}">
+                                        <TextBlock Text="基础设置" Style="{StaticResource SettingsGroupHeaderTextStyle}" />
+                                    </Border>
 
                                     <Border Style="{StaticResource SettingSectionCardStyle}">
                                         <StackPanel HorizontalAlignment="Stretch">
@@ -3980,13 +3993,15 @@
                                                 <!-- 分类筛选 + 搜索 + 刷新在线订阅源 -->
                                                 <Border Style="{StaticResource SettingItemRowStyle}">
                                                     <Grid ColumnSpacing="12">
-                                                        <StackPanel x:Name="PageMarketFilterStack" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                                                            <Button Content="全部精选" Tag="all" CornerRadius="14" Padding="12,5" FontSize="12" Click="OnMarketCategoryFilterClick" />
-                                                            <Button Content="动态极光" Tag="动态极光" CornerRadius="14" Padding="12,5" FontSize="12" Click="OnMarketCategoryFilterClick" />
-                                                            <Button Content="粒子氛围" Tag="粒子氛围" CornerRadius="14" Padding="12,5" FontSize="12" Click="OnMarketCategoryFilterClick" />
-                                                            <Button Content="赛博高定" Tag="赛博高定" CornerRadius="14" Padding="12,5" FontSize="12" Click="OnMarketCategoryFilterClick" />
-                                                            <Button Content="极简浅色" Tag="极简浅色" CornerRadius="14" Padding="12,5" FontSize="12" Click="OnMarketCategoryFilterClick" />
-                                                            <Button Content="复古质感" Tag="复古质感" CornerRadius="14" Padding="12,5" FontSize="12" Click="OnMarketCategoryFilterClick" />
+                                                        <StackPanel x:Name="PageMarketFilterStack" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                                                            <Button Content="全部精选" Tag="all" CornerRadius="14" Padding="11,5" FontSize="12" Click="OnMarketCategoryFilterClick" />
+                                                            <Button Content="动态极光" Tag="动态极光" CornerRadius="14" Padding="11,5" FontSize="12" Click="OnMarketCategoryFilterClick" />
+                                                            <Button Content="粒子氛围" Tag="粒子氛围" CornerRadius="14" Padding="11,5" FontSize="12" Click="OnMarketCategoryFilterClick" />
+                                                            <Button Content="极简浅色" Tag="极简浅色" CornerRadius="14" Padding="11,5" FontSize="12" Click="OnMarketCategoryFilterClick" />
+                                                            <Button Content="国风雅韵" Tag="国风雅韵" CornerRadius="14" Padding="11,5" FontSize="12" Click="OnMarketCategoryFilterClick" />
+                                                            <Button Content="二次元ACG" Tag="二次元ACG" CornerRadius="14" Padding="11,5" FontSize="12" Click="OnMarketCategoryFilterClick" />
+                                                            <Button Content="赛博高定" Tag="赛博高定" CornerRadius="14" Padding="11,5" FontSize="12" Click="OnMarketCategoryFilterClick" />
+                                                            <Button Content="复古质感" Tag="复古质感" CornerRadius="14" Padding="11,5" FontSize="12" Click="OnMarketCategoryFilterClick" />
                                                         </StackPanel>
 
                                                         <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right" VerticalAlignment="Center">
@@ -4051,7 +4066,9 @@
 
                                     <!-- 分组 2：全局材质、动态流光背景与氛围粒子 -->
                                     <StackPanel HorizontalAlignment="Stretch">
-                                        <TextBlock Text="全局材质、动态流光背景与氛围粒子" Style="{StaticResource SettingsGroupHeaderTextStyle}" />
+                                        <Border Style="{StaticResource FloatingHeaderPlateStyle}">
+                                            <TextBlock Text="全局材质、动态流光背景与氛围粒子" Style="{StaticResource SettingsGroupHeaderTextStyle}" />
+                                        </Border>
                                         <Border Style="{StaticResource SettingSectionCardStyle}">
                                             <StackPanel HorizontalAlignment="Stretch">
                                                 <Border Style="{StaticResource SettingItemRowStyle}">
@@ -4200,6 +4217,14 @@
                                                                 </StackPanel>
                                                             </Grid>
                                                         </Grid>
+
+                                                        <Grid Padding="0,2,0,0">
+                                                            <StackPanel Spacing="2" VerticalAlignment="Center">
+                                                                <TextBlock Text="壁纸智能可读性（字色固定 · 玻璃自适应）" FontSize="13" FontWeight="Medium" />
+                                                                <TextBlock Text="文字颜色跟随深浅基调保持统一，根据卡片背后的壁纸明暗自动调节玻璃雾化浓度，兼顾通透与清晰" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                                            </StackPanel>
+                                                            <ToggleSwitch x:Name="PageAdaptiveWallpaperTextToggle" Tag="EnableAdaptiveWallpaperText" HorizontalAlignment="Right" VerticalAlignment="Center" MinWidth="0" OnContent="已开启" OffContent="关闭" Toggled="OnTaggedThemeSwitchToggled" />
+                                                        </Grid>
                                                     </StackPanel>
                                                 </Border>
 
@@ -4294,7 +4319,9 @@
 
                                     <!-- 分组 3：全局品牌强调色与双色流光渐变 -->
                                     <StackPanel HorizontalAlignment="Stretch">
-                                        <TextBlock Text="全局品牌强调色与双色流光渐变" Style="{StaticResource SettingsGroupHeaderTextStyle}" />
+                                        <Border Style="{StaticResource FloatingHeaderPlateStyle}">
+                                            <TextBlock Text="全局品牌强调色与双色流光渐变" Style="{StaticResource SettingsGroupHeaderTextStyle}" />
+                                        </Border>
                                         <Border Style="{StaticResource SettingSectionCardStyle}">
                                             <StackPanel HorizontalAlignment="Stretch">
                                                 <Border Style="{StaticResource SettingItemRowStyle}">
@@ -4389,7 +4416,9 @@
 
                                     <!-- 分组 4：四大区域独立 DIY（支持各区域独立双色渐变） -->
                                     <StackPanel HorizontalAlignment="Stretch">
-                                        <TextBlock Text="多区域独立 DIY（标题栏 / 侧边栏 / 内容卡片 / 播放栏，均支持双色渐变）" Style="{StaticResource SettingsGroupHeaderTextStyle}" />
+                                        <Border Style="{StaticResource FloatingHeaderPlateStyle}">
+                                            <TextBlock Text="多区域独立 DIY（标题栏 / 侧边栏 / 内容卡片 / 播放栏，均支持双色渐变）" Style="{StaticResource SettingsGroupHeaderTextStyle}" />
+                                        </Border>
                                         <Border Style="{StaticResource SettingSectionCardStyle}">
                                             <StackPanel HorizontalAlignment="Stretch">
                                                 <!-- 4.1 顶部标题栏 -->
@@ -4621,7 +4650,9 @@
 
                                     <!-- 分组 4.5：界面形态、卡片质感、黑胶唱盘与全局字体 -->
                                     <StackPanel HorizontalAlignment="Stretch">
-                                        <TextBlock Text="界面形态、卡片质感、黑胶唱盘与全局字体" Style="{StaticResource SettingsGroupHeaderTextStyle}" />
+                                        <Border Style="{StaticResource FloatingHeaderPlateStyle}">
+                                            <TextBlock Text="界面形态、卡片质感、黑胶唱盘与全局字体" Style="{StaticResource SettingsGroupHeaderTextStyle}" />
+                                        </Border>
                                         <Border Style="{StaticResource SettingSectionCardStyle}">
                                             <StackPanel HorizontalAlignment="Stretch">
                                                 <!-- 播放栏形态与律动光带 -->
@@ -4650,11 +4681,13 @@
                                                             <TextBlock Text="一键赋予全客户端卡片磨砂毛玻璃、霓虹流光边框、极简无边扁平或立体悬浮质感" FontSize="13" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                                                         </StackPanel>
                                                         <StackPanel x:Name="PageCardVisualStyleButtonsPanel" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right" VerticalAlignment="Center">
-                                                            <Button Content="系统默认" Tag="Default" CornerRadius="8" Padding="11,5" FontSize="12" Click="OnCardVisualStyleBtnClick" />
-                                                            <Button Content="磨砂毛玻璃" Tag="FrostedGlass" CornerRadius="8" Padding="11,5" FontSize="12" Click="OnCardVisualStyleBtnClick" />
-                                                            <Button Content="霓虹流光边" Tag="NeonBorder" CornerRadius="8" Padding="11,5" FontSize="12" Click="OnCardVisualStyleBtnClick" />
-                                                            <Button Content="极简无边框" Tag="FlatMinimal" CornerRadius="8" Padding="11,5" FontSize="12" Click="OnCardVisualStyleBtnClick" />
-                                                            <Button Content="立体悬浮卡" Tag="ElevatedCard" CornerRadius="8" Padding="11,5" FontSize="12" Click="OnCardVisualStyleBtnClick" />
+                                                            <Button Content="系统默认" Tag="Default" CornerRadius="8" Padding="10,5" FontSize="12" Click="OnCardVisualStyleBtnClick" />
+                                                            <Button Content="液态玻璃" Tag="LiquidGlass" CornerRadius="8" Padding="10,5" FontSize="12" Click="OnCardVisualStyleBtnClick" />
+                                                            <Button Content="磨砂毛玻璃" Tag="FrostedGlass" CornerRadius="8" Padding="10,5" FontSize="12" Click="OnCardVisualStyleBtnClick" />
+                                                            <Button Content="全透明晶透" Tag="CrystalClear" CornerRadius="8" Padding="10,5" FontSize="12" Click="OnCardVisualStyleBtnClick" />
+                                                            <Button Content="霓虹流光边" Tag="NeonBorder" CornerRadius="8" Padding="10,5" FontSize="12" Click="OnCardVisualStyleBtnClick" />
+                                                            <Button Content="极简无边框" Tag="FlatMinimal" CornerRadius="8" Padding="10,5" FontSize="12" Click="OnCardVisualStyleBtnClick" />
+                                                            <Button Content="立体悬浮卡" Tag="ElevatedCard" CornerRadius="8" Padding="10,5" FontSize="12" Click="OnCardVisualStyleBtnClick" />
                                                         </StackPanel>
                                                     </Grid>
                                                 </Border>
@@ -4705,7 +4738,9 @@
 
                                     <!-- 分组 5：歌词与子窗口联动 -->
                                     <StackPanel HorizontalAlignment="Stretch">
-                                        <TextBlock Text="歌词高亮、迷你窗口与封面动态联动" Style="{StaticResource SettingsGroupHeaderTextStyle}" />
+                                        <Border Style="{StaticResource FloatingHeaderPlateStyle}">
+                                            <TextBlock Text="歌词高亮、迷你窗口与封面动态联动" Style="{StaticResource SettingsGroupHeaderTextStyle}" />
+                                        </Border>
                                         <Border Style="{StaticResource SettingSectionCardStyle}">
                                             <StackPanel HorizontalAlignment="Stretch">
                                                 <Border Style="{StaticResource SettingItemRowStyle}">
@@ -4759,7 +4794,9 @@
                                 <!-- ==================== Tab 2：播放设置 (1:1 还原 PlaybackTab.vue) ==================== -->
                                 <StackPanel x:Name="SettingsPlaybackPanel" Visibility="Collapsed" HorizontalAlignment="Stretch" Spacing="20">
                                     <StackPanel HorizontalAlignment="Stretch">
-                                        <TextBlock Text="播放设置" Style="{StaticResource SettingsGroupHeaderTextStyle}" />
+                                        <Border Style="{StaticResource FloatingHeaderPlateStyle}">
+                                            <TextBlock Text="播放设置" Style="{StaticResource SettingsGroupHeaderTextStyle}" />
+                                        </Border>
 
                                         <Border Style="{StaticResource SettingSectionCardStyle}">
                                             <StackPanel HorizontalAlignment="Stretch">
@@ -4887,7 +4924,7 @@
                                                         <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="4">
                                                             <StackPanel Orientation="Horizontal" Spacing="8">
                                                                 <TextBlock Text="多声道环绕声空间配置" FontSize="15" FontWeight="Medium" />
-                                                                <Border Background="#1A10B981" BorderBrush="#4010B981" BorderThickness="1" CornerRadius="4" Padding="6,1" VerticalAlignment="Center">
+                                                                <Border Background="{StaticResource BrandAccentSubtleBrush}" BorderBrush="{StaticResource BrandAccentBorderSubtleBrush}" BorderThickness="1" CornerRadius="4" Padding="6,1" VerticalAlignment="Center">
                                                                     <TextBlock Text="5.1 / 7.1 原生" FontSize="11" FontWeight="SemiBold" Foreground="{StaticResource BrandAccentBrush}" />
                                                                 </Border>
                                                             </StackPanel>
@@ -4921,7 +4958,9 @@
 
                                 <!-- ==================== Tab 3：应用设置 (1:1 还原 ApplicationTab.vue) ==================== -->
                                 <StackPanel x:Name="SettingsApplicationPanel" Visibility="Collapsed" HorizontalAlignment="Stretch">
-                                    <TextBlock Text="应用设置" Style="{StaticResource SettingsGroupHeaderTextStyle}" />
+                                    <Border Style="{StaticResource FloatingHeaderPlateStyle}">
+                                        <TextBlock Text="应用设置" Style="{StaticResource SettingsGroupHeaderTextStyle}" />
+                                    </Border>
 
                                     <Border Style="{StaticResource SettingSectionCardStyle}">
                                         <StackPanel HorizontalAlignment="Stretch">
@@ -5036,7 +5075,9 @@
 
                                 <!-- ==================== Tab 4：网络设置 (1:1 还原 NetworkTab.vue) ==================== -->
                                 <StackPanel x:Name="SettingsNetworkPanel" Visibility="Collapsed" HorizontalAlignment="Stretch">
-                                    <TextBlock Text="网络设置" Style="{StaticResource SettingsGroupHeaderTextStyle}" />
+                                    <Border Style="{StaticResource FloatingHeaderPlateStyle}">
+                                        <TextBlock Text="网络设置" Style="{StaticResource SettingsGroupHeaderTextStyle}" />
+                                    </Border>
 
                                     <Border Style="{StaticResource SettingSectionCardStyle}">
                                         <StackPanel HorizontalAlignment="Stretch">
@@ -5100,7 +5141,9 @@
 
                                 <!-- ==================== Tab 5：系统管理 (1:1 还原 SystemTab.vue 全部 8 行) ==================== -->
                                 <StackPanel x:Name="SettingsSystemPanel" Visibility="Collapsed" HorizontalAlignment="Stretch">
-                                    <TextBlock Text="系统管理" Style="{StaticResource SettingsGroupHeaderTextStyle}" />
+                                    <Border Style="{StaticResource FloatingHeaderPlateStyle}">
+                                        <TextBlock Text="系统管理" Style="{StaticResource SettingsGroupHeaderTextStyle}" />
+                                    </Border>
 
                                     <Border Style="{StaticResource SettingSectionCardStyle}">
                                         <StackPanel HorizontalAlignment="Stretch">
@@ -5247,7 +5290,9 @@
 
                                 <!-- ==================== Tab 6：关于 (1:1 还原 AboutTab.vue) ==================== -->
                                 <StackPanel x:Name="SettingsAboutPanel" Visibility="Collapsed" HorizontalAlignment="Stretch">
-                                    <TextBlock Text="关于" Style="{StaticResource SettingsGroupHeaderTextStyle}" />
+                                    <Border Style="{StaticResource FloatingHeaderPlateStyle}">
+                                        <TextBlock Text="关于" Style="{StaticResource SettingsGroupHeaderTextStyle}" />
+                                    </Border>
 
                                     <Border Style="{StaticResource SettingSectionCardStyle}">
                                         <StackPanel HorizontalAlignment="Stretch">
@@ -5260,7 +5305,7 @@
                                                     </Grid.ColumnDefinitions>
                                                     <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="2">
                                                         <TextBlock Text="版本" FontSize="15" FontWeight="Medium" />
-                                                        <TextBlock x:Name="AboutVersionStatusText" Text="5.1.1" FontSize="13" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                                        <TextBlock x:Name="AboutVersionStatusText" Text="5.1.2" FontSize="13" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                                                     </StackPanel>
                                                     <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
                                                         <Button Content="检查更新" Click="OnCheckUpdateClick" CornerRadius="8" Padding="14,6" />
@@ -6078,8 +6123,10 @@
                         </Grid>
 
                         <!-- ==================== 模态弹窗 6：多声道 5.1 / 7.1 环绕声可视化配置与空间校准 ==================== -->
-                        <Grid x:Name="MultichannelModalOverlay" Grid.RowSpan="2" Visibility="Collapsed" Background="#88000000" Margin="-28,-24,-28,-24" Canvas.ZIndex="60">
+                        <Grid x:Name="MultichannelModalOverlay" Grid.RowSpan="2" Visibility="Collapsed" Background="#88000000" Margin="-28,-24,-28,-24" Canvas.ZIndex="60" Tapped="OnMultichannelModalBackdropTapped">
                             <Border
+                                x:Name="MultichannelModalCard"
+                                Tapped="OnMultichannelModalCardTapped"
                                 Width="1040"
                                 MaxHeight="720"
                                 HorizontalAlignment="Center"
@@ -6100,13 +6147,13 @@
                                     <!-- 1. 顶部标题栏 -->
                                     <Grid Grid.Row="0" Padding="0,0,0,8" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" BorderThickness="0,0,0,1">
                                         <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
-                                            <Border Width="34" Height="34" CornerRadius="17" Background="#1810B981" VerticalAlignment="Center">
+                                            <Border Width="34" Height="34" CornerRadius="17" Background="{StaticResource BrandAccentSubtleBrush}" VerticalAlignment="Center">
                                                 <FontIcon Glyph="&#xEC15;" FontSize="17" Foreground="{StaticResource BrandAccentBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
                                             </Border>
                                             <StackPanel Spacing="1" VerticalAlignment="Center">
                                                 <StackPanel Orientation="Horizontal" Spacing="8">
                                                     <TextBlock Text="多声道环绕声空间配置与校准" FontSize="18" FontWeight="Bold" />
-                                                    <Border Background="#1A10B981" BorderBrush="#4010B981" BorderThickness="1" CornerRadius="4" Padding="6,1" VerticalAlignment="Center">
+                                                    <Border Background="{StaticResource BrandAccentSubtleBrush}" BorderBrush="{StaticResource BrandAccentBorderSubtleBrush}" BorderThickness="1" CornerRadius="4" Padding="6,1" VerticalAlignment="Center">
                                                         <TextBlock Text="5.1 / 7.1 原生" FontSize="11" FontWeight="SemiBold" Foreground="{StaticResource BrandAccentBrush}" />
                                                     </Border>
                                                 </StackPanel>
@@ -6130,7 +6177,7 @@
                                                 <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
                                                     <FontIcon Glyph="&#xE7F4;" FontSize="14" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                                                     <TextBlock x:Name="MultichannelDeviceNameText" Text="扬声器 (正在检测...)" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center" />
-                                                    <Border x:Name="MultichannelChannelBadgeBorder" Background="#2410B981" CornerRadius="4" Padding="6,1" VerticalAlignment="Center">
+                                                    <Border x:Name="MultichannelChannelBadgeBorder" Background="{StaticResource BrandAccentSubtleBrush}" CornerRadius="4" Padding="6,1" VerticalAlignment="Center">
                                                         <TextBlock x:Name="MultichannelChannelBadgeText" Text="5.1 环绕声 (6 声道)" FontSize="11" FontWeight="Bold" Foreground="{StaticResource BrandAccentBrush}" />
                                                     </Border>
                                                     <Border Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}" CornerRadius="4" Padding="6,1" VerticalAlignment="Center">
@@ -6184,7 +6231,7 @@
                                                     <Ellipse Width="110" Height="90" Canvas.Left="165" Canvas.Top="135" Stroke="#334155" StrokeThickness="1" />
 
                                                     <!-- 中心皇帝位 (听者坐席) -->
-                                                    <Border Canvas.Left="190" Canvas.Top="145" Width="60" Height="60" CornerRadius="30" Background="#2510B981" BorderBrush="{StaticResource BrandAccentBrush}" BorderThickness="1.5">
+                                                    <Border Canvas.Left="190" Canvas.Top="145" Width="60" Height="60" CornerRadius="30" Background="{StaticResource BrandAccentSubtleBrush}" BorderBrush="{StaticResource BrandAccentBrush}" BorderThickness="1.5">
                                                         <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="2">
                                                             <FontIcon Glyph="&#xE77B;" FontSize="17" Foreground="{StaticResource BrandAccentBrush}" />
                                                             <TextBlock Text="皇帝位" FontSize="9" FontWeight="SemiBold" Foreground="White" HorizontalAlignment="Center" />
@@ -6203,7 +6250,7 @@
                                                     <!-- 音箱节点 2: 前置左 (FL - Front Left) (Top Left) -->
                                                     <Button x:Name="SpeakerBtnFrontLeft" Canvas.Left="20" Canvas.Top="45" Tag="0" Click="OnSpeakerNodeButtonClick" Style="{StaticResource TransportIconButtonStyle}" Padding="6,4" Background="#1E293B" BorderBrush="#334155" BorderThickness="1" CornerRadius="8" ToolTipService.ToolTip="前置左声道 (Front Left) - 点击测试发声">
                                                         <StackPanel Orientation="Horizontal" Spacing="5">
-                                                            <FontIcon Glyph="&#xE767;" FontSize="12" Foreground="#34D399" />
+                                                            <FontIcon Glyph="&#xE767;" FontSize="12" Foreground="{StaticResource BrandAccentLightTextBrush}" />
                                                             <TextBlock Text="FL 前左" FontSize="11" FontWeight="SemiBold" Foreground="White" />
                                                             <TextBlock x:Name="SpeakerBadgeFrontLeft" Text="0.0dB" FontSize="9" Foreground="#94A3B8" />
                                                         </StackPanel>
@@ -6212,7 +6259,7 @@
                                                     <!-- 音箱节点 3: 前置右 (FR - Front Right) (Top Right) -->
                                                     <Button x:Name="SpeakerBtnFrontRight" Canvas.Left="330" Canvas.Top="45" Tag="1" Click="OnSpeakerNodeButtonClick" Style="{StaticResource TransportIconButtonStyle}" Padding="6,4" Background="#1E293B" BorderBrush="#334155" BorderThickness="1" CornerRadius="8" ToolTipService.ToolTip="前置右声道 (Front Right) - 点击测试发声">
                                                         <StackPanel Orientation="Horizontal" Spacing="5">
-                                                            <FontIcon Glyph="&#xE767;" FontSize="12" Foreground="#34D399" />
+                                                            <FontIcon Glyph="&#xE767;" FontSize="12" Foreground="{StaticResource BrandAccentLightTextBrush}" />
                                                             <TextBlock Text="FR 前右" FontSize="11" FontWeight="SemiBold" Foreground="White" />
                                                             <TextBlock x:Name="SpeakerBadgeFrontRight" Text="0.0dB" FontSize="9" Foreground="#94A3B8" />
                                                         </StackPanel>
@@ -6750,7 +6797,7 @@
                         </Grid.ColumnDefinitions>
                         <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
                             <TextBlock x:Name="AddToPlaylistDrawerTitleText" Text="添加到歌单" FontSize="17" FontWeight="Bold" />
-                            <Ellipse Width="6" Height="6" Fill="#10B981" VerticalAlignment="Center" />
+                            <Ellipse Width="6" Height="6" Fill="{StaticResource BrandAccentBrush}" VerticalAlignment="Center" />
                         </StackPanel>
                         <Button
                             Grid.Column="1"
@@ -6777,7 +6824,7 @@
                             BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                             BorderThickness="1">
                             <StackPanel Orientation="Horizontal" Spacing="14">
-                                <Border Width="42" Height="42" CornerRadius="12" Background="#10B981">
+                                <Border Width="42" Height="42" CornerRadius="12" Background="{StaticResource BrandAccentFillBrush}">
                                     <FontIcon x:Name="CreatePlaylistToggleIcon" Glyph="&#xE710;" FontSize="16" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center" />
                                 </Border>
                                 <TextBlock x:Name="CreatePlaylistToggleText" Text="创建新歌单" FontSize="14" FontWeight="SemiBold" VerticalAlignment="Center" />
@@ -6848,8 +6895,8 @@
                                         <TextBlock Text="{x:Bind Name}" FontSize="14" FontWeight="SemiBold" MaxLines="1" TextTrimming="CharacterEllipsis" />
                                         <TextBlock Text="{x:Bind TrackCountBadgeText}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                                     </StackPanel>
-                                    <Border Grid.Column="2" Width="32" Height="32" CornerRadius="16" Background="#1510B981" VerticalAlignment="Center">
-                                        <FontIcon Glyph="&#xE710;" FontSize="13" Foreground="#10B981" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                    <Border Grid.Column="2" Width="32" Height="32" CornerRadius="16" Background="{StaticResource BrandAccentSubtleBrush}" VerticalAlignment="Center">
+                                        <FontIcon Glyph="&#xE710;" FontSize="13" Foreground="{StaticResource BrandAccentBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
                                     </Border>
                                 </Grid>
                             </DataTemplate>
@@ -7400,8 +7447,8 @@
                             MinHeight="0"
                             MinWidth="0"
                             CornerRadius="6"
-                            Background="#2410B981"
-                            BorderBrush="#5510B981"
+                            Background="{StaticResource BrandAccentSubtleBrush}"
+                            BorderBrush="{StaticResource BrandAccentBorderSubtleBrush}"
                             BorderThickness="1"
                             ToolTipService.ToolTip="当前播放音质（点击可切换在线音质等级）">
                             <StackPanel Orientation="Horizontal" Spacing="4">
@@ -7410,8 +7457,8 @@
                                     Text="无损 FLAC"
                                     FontSize="11"
                                     FontWeight="SemiBold"
-                                    Foreground="#34D399" />
-                                <FontIcon Glyph="&#xE70D;" FontSize="9" Foreground="#34D399" VerticalAlignment="Center" />
+                                    Foreground="{StaticResource BrandAccentLightTextBrush}" />
+                                <FontIcon Glyph="&#xE70D;" FontSize="9" Foreground="{StaticResource BrandAccentLightTextBrush}" VerticalAlignment="Center" />
                             </StackPanel>
                             <Button.Flyout>
                                 <MenuFlyout Placement="Bottom">
@@ -7857,7 +7904,7 @@
                                     CornerRadius="4"
                                     VerticalAlignment="Center"
                                     Background="{StaticResource BrandAccentSubtleBrush}"
-                                    BorderBrush="#4010B981"
+                                    BorderBrush="{StaticResource BrandAccentBorderSubtleBrush}"
                                     BorderThickness="1"
                                     ToolTipService.ToolTip="当前播放音质（点击选择在线音质级别）">
                                     <StackPanel Orientation="Horizontal" Spacing="3">
@@ -8531,16 +8578,16 @@
                             BorderThickness="0"
                             ToolTipService.ToolTip="切换 MV 连播 / 单曲循环模式">
                             <StackPanel Orientation="Horizontal" Spacing="6">
-                                <FontIcon x:Name="MvLoopModeIcon" Glyph="&#xE8EE;" FontSize="12" Foreground="#34D399" />
-                                <TextBlock x:Name="MvLoopModeText" Text="列表连播" FontSize="12" Foreground="#34D399" FontWeight="SemiBold" />
+                                <FontIcon x:Name="MvLoopModeIcon" Glyph="&#xE8EE;" FontSize="12" Foreground="{StaticResource BrandAccentLightTextBrush}" />
+                                <TextBlock x:Name="MvLoopModeText" Text="列表连播" FontSize="12" Foreground="{StaticResource BrandAccentLightTextBrush}" FontWeight="SemiBold" />
                             </StackPanel>
                         </Button>
                         <Button
                             x:Name="MvResolutionBtn"
                             CornerRadius="8"
                             Padding="12,6"
-                            Background="#2610B981"
-                            BorderBrush="#6610B981"
+                            Background="{StaticResource BrandAccentSubtleBrush}"
+                            BorderBrush="{StaticResource BrandAccentBorderSubtleBrush}"
                             BorderThickness="1"
                             ToolTipService.ToolTip="切换 MV 视频画质">
                             <Button.Flyout>
@@ -8551,7 +8598,7 @@
                                     <MenuFlyoutItem Text="240P 流畅" Tag="240" Click="OnSelectMvResolutionClick" />
                                 </MenuFlyout>
                             </Button.Flyout>
-                            <TextBlock x:Name="MvResolutionText" Text="1080P" FontSize="12" FontWeight="Bold" Foreground="#34D399" />
+                            <TextBlock x:Name="MvResolutionText" Text="1080P" FontSize="12" FontWeight="Bold" Foreground="{StaticResource BrandAccentLightTextBrush}" />
                         </Button>
                     </StackPanel>
                 </Grid>
@@ -8641,7 +8688,7 @@
                         <!-- 全局居中初始加载面板（仅在一条结果都还没出来前的毫秒级过渡期显示） -->
                         <StackPanel x:Name="DlQualityLoadingPanel" Grid.Row="1" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="12" Padding="0,28" Visibility="Visible">
                             <ProgressRing IsActive="True" Width="32" Height="32" Foreground="{StaticResource BrandAccentBrush}" />
-                            <TextBlock Text="正在并发秒测各音源可用音质..." FontSize="13" Foreground="#94A3B8" HorizontalAlignment="Center" />
+                            <TextBlock Text="正在并发秒测各音源可用音质..." FontSize="13" Foreground="{ThemeResource TextFillColorSecondaryBrush}" HorizontalAlignment="Center" />
                         </StackPanel>
 
                         <!-- 音质列表面板 -->
@@ -8656,7 +8703,7 @@
                     <Grid Grid.Row="3" Padding="0,10,0,0" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" BorderThickness="0,1,0,0">
                         <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
                             <FontIcon Glyph="&#xE946;" FontSize="12" Foreground="{StaticResource BrandAccentBrush}" VerticalAlignment="Center" />
-                            <TextBlock Text="提示：点击心仪音质即可直接下载，已自动支持内嵌元数据与高清封面" FontSize="12" Foreground="#94A3B8" VerticalAlignment="Center" />
+                            <TextBlock Text="提示：点击心仪音质即可直接下载，已自动支持内嵌元数据与高清封面" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
                         </StackPanel>
                     </Grid>
                 </Grid>
@@ -9256,6 +9303,14 @@
                                                             <TextBox x:Name="HexMaskColorBox" Tag="BackgroundMaskColorHex" Width="96" FontSize="12" LostFocus="OnThemeHexBoxLostFocus" KeyDown="OnThemeHexBoxKeyDown" />
                                                         </StackPanel>
                                                     </Grid>
+
+                                                    <Grid Padding="0,2,0,0">
+                                                        <StackPanel Spacing="2" VerticalAlignment="Center">
+                                                            <TextBlock Text="壁纸智能可读性（字色固定 · 玻璃自适应）" FontSize="12" FontWeight="Medium" />
+                                                            <TextBlock Text="字色跟随深浅基调统一，按壁纸明暗自动调节玻璃雾化浓度" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                                        </StackPanel>
+                                                        <ToggleSwitch x:Name="ThemeAdaptiveWallpaperTextToggle" Tag="EnableAdaptiveWallpaperText" HorizontalAlignment="Right" VerticalAlignment="Center" MinWidth="0" OnContent="已开启" OffContent="关闭" Toggled="OnTaggedThemeSwitchToggled" />
+                                                    </Grid>
                                                 </StackPanel>
                                             </Border>
 
@@ -9774,12 +9829,14 @@
                                                 <StackPanel Spacing="10">
                                                     <TextBlock Text="全局卡片材质风格预设" FontSize="14" FontWeight="SemiBold" />
                                                     <TextBlock Text="为歌单广场、搜索页、设置卡片施加磨砂毛玻璃、霓虹流光边框、极简无边或立体悬浮质感" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                                                    <StackPanel x:Name="ModalCardVisualStyleButtonsPanel" Orientation="Horizontal" Spacing="8">
-                                                        <Button Content="默认质感" Tag="Default" CornerRadius="8" Padding="10,5" FontSize="12" Click="OnCardVisualStyleBtnClick" />
-                                                        <Button Content="磨砂毛玻璃" Tag="FrostedGlass" CornerRadius="8" Padding="10,5" FontSize="12" Click="OnCardVisualStyleBtnClick" />
-                                                        <Button Content="霓虹流光边" Tag="NeonBorder" CornerRadius="8" Padding="10,5" FontSize="12" Click="OnCardVisualStyleBtnClick" />
-                                                        <Button Content="极简无边框" Tag="FlatMinimal" CornerRadius="8" Padding="10,5" FontSize="12" Click="OnCardVisualStyleBtnClick" />
-                                                        <Button Content="立体悬浮卡" Tag="ElevatedCard" CornerRadius="8" Padding="10,5" FontSize="12" Click="OnCardVisualStyleBtnClick" />
+                                                    <StackPanel x:Name="ModalCardVisualStyleButtonsPanel" Orientation="Horizontal" Spacing="6">
+                                                        <Button Content="默认质感" Tag="Default" CornerRadius="8" Padding="9,5" FontSize="12" Click="OnCardVisualStyleBtnClick" />
+                                                        <Button Content="液态玻璃" Tag="LiquidGlass" CornerRadius="8" Padding="9,5" FontSize="12" Click="OnCardVisualStyleBtnClick" />
+                                                        <Button Content="磨砂毛玻璃" Tag="FrostedGlass" CornerRadius="8" Padding="9,5" FontSize="12" Click="OnCardVisualStyleBtnClick" />
+                                                        <Button Content="全透明晶透" Tag="CrystalClear" CornerRadius="8" Padding="9,5" FontSize="12" Click="OnCardVisualStyleBtnClick" />
+                                                        <Button Content="霓虹流光边" Tag="NeonBorder" CornerRadius="8" Padding="9,5" FontSize="12" Click="OnCardVisualStyleBtnClick" />
+                                                        <Button Content="极简无边框" Tag="FlatMinimal" CornerRadius="8" Padding="9,5" FontSize="12" Click="OnCardVisualStyleBtnClick" />
+                                                        <Button Content="立体悬浮卡" Tag="ElevatedCard" CornerRadius="8" Padding="9,5" FontSize="12" Click="OnCardVisualStyleBtnClick" />
                                                     </StackPanel>
                                                 </StackPanel>
                                             </Border>
@@ -9842,13 +9899,15 @@
                         <!-- 顶部分类筛选 + 搜索框 + 刷新在线源 -->
                         <Border Grid.Row="0" Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="12" Padding="14,10">
                             <Grid ColumnSpacing="12">
-                                <StackPanel x:Name="ModalMarketFilterStack" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                                    <Button Content="全部精选" Tag="all" CornerRadius="14" Padding="12,5" FontSize="12" Click="OnMarketCategoryFilterClick" />
-                                    <Button Content="动态极光" Tag="动态极光" CornerRadius="14" Padding="12,5" FontSize="12" Click="OnMarketCategoryFilterClick" />
-                                    <Button Content="粒子氛围" Tag="粒子氛围" CornerRadius="14" Padding="12,5" FontSize="12" Click="OnMarketCategoryFilterClick" />
-                                    <Button Content="赛博高定" Tag="赛博高定" CornerRadius="14" Padding="12,5" FontSize="12" Click="OnMarketCategoryFilterClick" />
-                                    <Button Content="极简浅色" Tag="极简浅色" CornerRadius="14" Padding="12,5" FontSize="12" Click="OnMarketCategoryFilterClick" />
-                                    <Button Content="复古质感" Tag="复古质感" CornerRadius="14" Padding="12,5" FontSize="12" Click="OnMarketCategoryFilterClick" />
+                                <StackPanel x:Name="ModalMarketFilterStack" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                                    <Button Content="全部精选" Tag="all" CornerRadius="14" Padding="11,5" FontSize="12" Click="OnMarketCategoryFilterClick" />
+                                    <Button Content="动态极光" Tag="动态极光" CornerRadius="14" Padding="11,5" FontSize="12" Click="OnMarketCategoryFilterClick" />
+                                    <Button Content="粒子氛围" Tag="粒子氛围" CornerRadius="14" Padding="11,5" FontSize="12" Click="OnMarketCategoryFilterClick" />
+                                    <Button Content="极简浅色" Tag="极简浅色" CornerRadius="14" Padding="11,5" FontSize="12" Click="OnMarketCategoryFilterClick" />
+                                    <Button Content="国风雅韵" Tag="国风雅韵" CornerRadius="14" Padding="11,5" FontSize="12" Click="OnMarketCategoryFilterClick" />
+                                    <Button Content="二次元ACG" Tag="二次元ACG" CornerRadius="14" Padding="11,5" FontSize="12" Click="OnMarketCategoryFilterClick" />
+                                    <Button Content="赛博高定" Tag="赛博高定" CornerRadius="14" Padding="11,5" FontSize="12" Click="OnMarketCategoryFilterClick" />
+                                    <Button Content="复古质感" Tag="复古质感" CornerRadius="14" Padding="11,5" FontSize="12" Click="OnMarketCategoryFilterClick" />
                                 </StackPanel>
 
                                 <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right" VerticalAlignment="Center">

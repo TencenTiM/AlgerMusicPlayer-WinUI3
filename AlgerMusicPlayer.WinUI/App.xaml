@@ -8,27 +8,61 @@
                 <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
             </ResourceDictionary.MergedDictionaries>
 
-            <!-- 品牌主色：翠绿音乐主题色及悬停/按下态 -->
+            <!-- 品牌主色：纯色画刷（供全窗口文字、矢量图标、进度环、描边等原地实时变色，避免类型替换断联） -->
             <SolidColorBrush x:Key="BrandAccentBrush" Color="#10B981" />
             <SolidColorBrush x:Key="BrandAccentHoverBrush" Color="#059669" />
             <SolidColorBrush x:Key="BrandAccentPressedBrush" Color="#047857" />
-            <SolidColorBrush x:Key="BrandAccentSubtleBrush" Color="#1F10B981" />
+            <SolidColorBrush x:Key="BrandAccentLightTextBrush" Color="#34D399" />
+            <SolidColorBrush x:Key="BrandAccentSubtleBrush" Color="#2210B981" />
+            <SolidColorBrush x:Key="BrandAccentBorderSubtleBrush" Color="#5210B981" />
+            <SolidColorBrush x:Key="BrandAccentPressedSubtleBrush" Color="#3A10B981" />
+            <SolidColorBrush x:Key="ThemePlayBarSliderBrush" Color="#10B981" />
+            <SolidColorBrush x:Key="SecondaryPillFillBrush" Color="#1864748B" />
+            <SolidColorBrush x:Key="SecondaryPillBorderBrush" Color="#2494A3B8" />
 
-            <!-- Windows 11 标准设置项卡片样式 (对标 Windows 11 SettingsCard：自适应深浅色背景 + 1px 微边框 + 8px 圆角) -->
+            <!-- 品牌双色流光线性渐变画刷（供主操作按钮、选中态胶囊、底部圆形主播放按钮原地实时变色并呈现流光渐变） -->
+            <LinearGradientBrush x:Key="BrandAccentFillBrush" StartPoint="0,0" EndPoint="1,1">
+                <GradientStop Color="#10B981" Offset="0.0" />
+                <GradientStop Color="#10B981" Offset="1.0" />
+            </LinearGradientBrush>
+            <LinearGradientBrush x:Key="BrandAccentHoverFillBrush" StartPoint="0,0" EndPoint="1,1">
+                <GradientStop Color="#059669" Offset="0.0" />
+                <GradientStop Color="#059669" Offset="1.0" />
+            </LinearGradientBrush>
+            <LinearGradientBrush x:Key="BrandAccentPressedFillBrush" StartPoint="0,0" EndPoint="1,1">
+                <GradientStop Color="#047857" Offset="0.0" />
+                <GradientStop Color="#047857" Offset="1.0" />
+            </LinearGradientBrush>
+            <LinearGradientBrush x:Key="ThemePlayButtonBrush" StartPoint="0,0" EndPoint="1,1">
+                <GradientStop Color="#10B981" Offset="0.0" />
+                <GradientStop Color="#10B981" Offset="1.0" />
+            </LinearGradientBrush>
+            <LinearGradientBrush x:Key="ThemePlayButtonHoverBrush" StartPoint="0,0" EndPoint="1,1">
+                <GradientStop Color="#059669" Offset="0.0" />
+                <GradientStop Color="#059669" Offset="1.0" />
+            </LinearGradientBrush>
+            <LinearGradientBrush x:Key="ThemePlayButtonPressedBrush" StartPoint="0,0" EndPoint="1,1">
+                <GradientStop Color="#047857" Offset="0.0" />
+                <GradientStop Color="#047857" Offset="1.0" />
+            </LinearGradientBrush>
+
+            <!-- Windows 11 标准设置项卡片样式 (圆角动态跟随主题 ControlCornerRadius) -->
             <Style x:Key="FluentSettingsCardStyle" TargetType="Border">
                 <Setter Property="Background" Value="{ThemeResource CardBackgroundFillColorDefaultBrush}" />
                 <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}" />
                 <Setter Property="BorderThickness" Value="1" />
-                <Setter Property="CornerRadius" Value="8" />
+                <Setter Property="BackgroundSizing" Value="OuterBorderEdge" />
+                <Setter Property="CornerRadius" Value="{ThemeResource ControlCornerRadius}" />
                 <Setter Property="Padding" Value="18,14" />
             </Style>
 
-            <!-- Windows 11 通用内容容器卡片样式 (带图层立体感与自适应边框) -->
+            <!-- Windows 11 通用内容容器卡片样式 (圆角动态跟随主题 OverlayCornerRadius) -->
             <Style x:Key="FluentSurfaceCardStyle" TargetType="Border">
                 <Setter Property="Background" Value="{ThemeResource CardBackgroundFillColorDefaultBrush}" />
                 <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}" />
                 <Setter Property="BorderThickness" Value="1" />
-                <Setter Property="CornerRadius" Value="12" />
+                <Setter Property="BackgroundSizing" Value="OuterBorderEdge" />
+                <Setter Property="CornerRadius" Value="{ThemeResource OverlayCornerRadius}" />
                 <Setter Property="Padding" Value="16" />
             </Style>
 
@@ -37,17 +71,17 @@
                 <Setter Property="Background" Value="{ThemeResource CardBackgroundFillColorSecondaryBrush}" />
                 <Setter Property="BorderBrush" Value="{ThemeResource DividerStrokeColorDefaultBrush}" />
                 <Setter Property="BorderThickness" Value="1" />
-                <Setter Property="CornerRadius" Value="8" />
+                <Setter Property="CornerRadius" Value="{ThemeResource ControlCornerRadius}" />
                 <Setter Property="Padding" Value="14,12" />
             </Style>
 
-            <!-- 无边框轻量媒体图标按钮（带清晰悬停高亮底色与翠绿图标反馈） -->
+            <!-- 无边框轻量媒体图标按钮（悬停高亮底色与图标反馈动态跟随当前主题色） -->
             <Style x:Key="TransportIconButtonStyle" TargetType="Button">
                 <Setter Property="Background" Value="Transparent" />
                 <Setter Property="Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}" />
                 <Setter Property="BorderBrush" Value="Transparent" />
                 <Setter Property="BorderThickness" Value="1" />
-                <Setter Property="CornerRadius" Value="8" />
+                <Setter Property="CornerRadius" Value="{ThemeResource ControlCornerRadius}" />
                 <Setter Property="Padding" Value="8,6" />
                 <Setter Property="MinWidth" Value="36" />
                 <Setter Property="MinHeight" Value="34" />
@@ -69,10 +103,10 @@
                                         <VisualState x:Name="PointerOver">
                                             <Storyboard>
                                                 <ObjectAnimationUsingKeyFrames Storyboard.TargetName="RootGrid" Storyboard.TargetProperty="Background">
-                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="#2410B981" />
+                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="{StaticResource BrandAccentSubtleBrush}" />
                                                 </ObjectAnimationUsingKeyFrames>
                                                 <ObjectAnimationUsingKeyFrames Storyboard.TargetName="RootGrid" Storyboard.TargetProperty="BorderBrush">
-                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="#4810B981" />
+                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="{StaticResource BrandAccentBorderSubtleBrush}" />
                                                 </ObjectAnimationUsingKeyFrames>
                                                 <ObjectAnimationUsingKeyFrames Storyboard.TargetName="ContentPresenter" Storyboard.TargetProperty="Foreground">
                                                     <DiscreteObjectKeyFrame KeyTime="0" Value="{StaticResource BrandAccentBrush}" />
@@ -82,7 +116,7 @@
                                         <VisualState x:Name="Pressed">
                                             <Storyboard>
                                                 <ObjectAnimationUsingKeyFrames Storyboard.TargetName="RootGrid" Storyboard.TargetProperty="Background">
-                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="#3A10B981" />
+                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="{StaticResource BrandAccentPressedSubtleBrush}" />
                                                 </ObjectAnimationUsingKeyFrames>
                                                 <ObjectAnimationUsingKeyFrames Storyboard.TargetName="ContentPresenter" Storyboard.TargetProperty="Foreground">
                                                     <DiscreteObjectKeyFrame KeyTime="0" Value="{StaticResource BrandAccentPressedBrush}" />
@@ -110,7 +144,7 @@
                 </Setter>
             </Style>
 
-            <!-- 上一首 / 下一首专用按钮样式（鼠标悬停时提供翠绿色填充色与纯白图标反馈） -->
+            <!-- 上一首 / 下一首专用按钮样式（鼠标悬停时提供主题色/流光渐变填充与纯白图标反馈） -->
             <Style x:Key="TransportPrevNextButtonStyle" TargetType="Button">
                 <Setter Property="Width" Value="38" />
                 <Setter Property="Height" Value="38" />
@@ -135,7 +169,7 @@
                                         <VisualState x:Name="PointerOver">
                                             <Storyboard>
                                                 <ObjectAnimationUsingKeyFrames Storyboard.TargetName="RootGrid" Storyboard.TargetProperty="Background">
-                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="{StaticResource BrandAccentBrush}" />
+                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="{StaticResource BrandAccentFillBrush}" />
                                                 </ObjectAnimationUsingKeyFrames>
                                                 <ObjectAnimationUsingKeyFrames Storyboard.TargetName="ContentPresenter" Storyboard.TargetProperty="Foreground">
                                                     <DiscreteObjectKeyFrame KeyTime="0" Value="White" />
@@ -145,7 +179,7 @@
                                         <VisualState x:Name="Pressed">
                                             <Storyboard>
                                                 <ObjectAnimationUsingKeyFrames Storyboard.TargetName="RootGrid" Storyboard.TargetProperty="Background">
-                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="{StaticResource BrandAccentPressedBrush}" />
+                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="{StaticResource BrandAccentPressedFillBrush}" />
                                                 </ObjectAnimationUsingKeyFrames>
                                                 <ObjectAnimationUsingKeyFrames Storyboard.TargetName="ContentPresenter" Storyboard.TargetProperty="Foreground">
                                                     <DiscreteObjectKeyFrame KeyTime="0" Value="White" />
@@ -173,13 +207,13 @@
                 </Setter>
             </Style>
 
-            <!-- 底部主播放/暂停圆形高亮按钮（自定义模板：深浅色主题下悬停/按下均保持翠绿深浅变化与纯白前景，彻底解决浅色主题悬停变白消失问题） -->
+            <!-- 底部主播放/暂停圆形高亮按钮（动态响应主题主色/双色流光渐变或独立播放键配色） -->
             <Style x:Key="AccentCirclePlayButtonStyle" TargetType="Button">
                 <Setter Property="Width" Value="42" />
                 <Setter Property="Height" Value="42" />
                 <Setter Property="CornerRadius" Value="21" />
                 <Setter Property="Padding" Value="0" />
-                <Setter Property="Background" Value="{StaticResource BrandAccentBrush}" />
+                <Setter Property="Background" Value="{StaticResource ThemePlayButtonBrush}" />
                 <Setter Property="Foreground" Value="White" />
                 <Setter Property="BorderThickness" Value="0" />
                 <Setter Property="HorizontalContentAlignment" Value="Center" />
@@ -189,7 +223,7 @@
                         <ControlTemplate TargetType="Button">
                             <Grid
                                 x:Name="RootGrid"
-                                Background="{TemplateBinding Background}"
+                                Background="{StaticResource ThemePlayButtonBrush}"
                                 CornerRadius="{TemplateBinding CornerRadius}">
                                 <VisualStateManager.VisualStateGroups>
                                     <VisualStateGroup x:Name="CommonStates">
@@ -197,14 +231,14 @@
                                         <VisualState x:Name="PointerOver">
                                             <Storyboard>
                                                 <ObjectAnimationUsingKeyFrames Storyboard.TargetName="RootGrid" Storyboard.TargetProperty="Background">
-                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="{StaticResource BrandAccentHoverBrush}" />
+                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="{StaticResource ThemePlayButtonHoverBrush}" />
                                                 </ObjectAnimationUsingKeyFrames>
                                             </Storyboard>
                                         </VisualState>
                                         <VisualState x:Name="Pressed">
                                             <Storyboard>
                                                 <ObjectAnimationUsingKeyFrames Storyboard.TargetName="RootGrid" Storyboard.TargetProperty="Background">
-                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="{StaticResource BrandAccentPressedBrush}" />
+                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="{StaticResource ThemePlayButtonPressedBrush}" />
                                                 </ObjectAnimationUsingKeyFrames>
                                             </Storyboard>
                                         </VisualState>
@@ -224,12 +258,12 @@
                 </Setter>
             </Style>
 
-            <!-- 翠绿品牌主操作按钮样式（用于播放全部、播放日推、保存、选中态胶囊等绿色主按钮，确保浅色主题下任何状态均保持翠绿底白字） -->
+            <!-- 品牌主操作按钮样式（动态响应主题主色/双色流光渐变与 ButtonCornerRadius 圆角造型） -->
             <Style x:Key="BrandPrimaryButtonStyle" TargetType="Button">
-                <Setter Property="Background" Value="{StaticResource BrandAccentBrush}" />
+                <Setter Property="Background" Value="{StaticResource BrandAccentFillBrush}" />
                 <Setter Property="Foreground" Value="White" />
                 <Setter Property="BorderThickness" Value="0" />
-                <Setter Property="CornerRadius" Value="6" />
+                <Setter Property="CornerRadius" Value="{ThemeResource ControlCornerRadius}" />
                 <Setter Property="Padding" Value="14,6" />
                 <Setter Property="HorizontalContentAlignment" Value="Center" />
                 <Setter Property="VerticalContentAlignment" Value="Center" />
@@ -238,7 +272,7 @@
                         <ControlTemplate TargetType="Button">
                             <Grid
                                 x:Name="RootGrid"
-                                Background="{StaticResource BrandAccentBrush}"
+                                Background="{StaticResource BrandAccentFillBrush}"
                                 CornerRadius="{TemplateBinding CornerRadius}">
                                 <VisualStateManager.VisualStateGroups>
                                     <VisualStateGroup x:Name="CommonStates">
@@ -246,14 +280,14 @@
                                         <VisualState x:Name="PointerOver">
                                             <Storyboard>
                                                 <ObjectAnimationUsingKeyFrames Storyboard.TargetName="RootGrid" Storyboard.TargetProperty="Background">
-                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="{StaticResource BrandAccentHoverBrush}" />
+                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="{StaticResource BrandAccentHoverFillBrush}" />
                                                 </ObjectAnimationUsingKeyFrames>
                                             </Storyboard>
                                         </VisualState>
                                         <VisualState x:Name="Pressed">
                                             <Storyboard>
                                                 <ObjectAnimationUsingKeyFrames Storyboard.TargetName="RootGrid" Storyboard.TargetProperty="Background">
-                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="{StaticResource BrandAccentPressedBrush}" />
+                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="{StaticResource BrandAccentPressedFillBrush}" />
                                                 </ObjectAnimationUsingKeyFrames>
                                             </Storyboard>
                                         </VisualState>
@@ -278,13 +312,13 @@
                 </Setter>
             </Style>
 
-            <!-- 次级胶囊/分段切换按钮样式（自定义模板：严禁系统 VisualState 覆盖前景色与背景色，彻底杜绝浅色主题白底白字消失问题） -->
+            <!-- 次级胶囊/分段切换按钮样式（自定义模板：严禁系统 VisualState 覆盖前景色与背景色，圆角动态跟随主题 ControlCornerRadius） -->
             <Style x:Key="SecondaryTabButtonStyle" TargetType="Button">
-                <Setter Property="Background" Value="#1864748B" />
+                <Setter Property="Background" Value="{ThemeResource SecondaryPillFillBrush}" />
                 <Setter Property="Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}" />
-                <Setter Property="BorderBrush" Value="{ThemeResource DividerStrokeColorDefaultBrush}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource SecondaryPillBorderBrush}" />
                 <Setter Property="BorderThickness" Value="1" />
-                <Setter Property="CornerRadius" Value="6" />
+                <Setter Property="CornerRadius" Value="{ThemeResource ControlCornerRadius}" />
                 <Setter Property="Padding" Value="14,6" />
                 <Setter Property="HorizontalContentAlignment" Value="Center" />
                 <Setter Property="VerticalContentAlignment" Value="Center" />
@@ -296,6 +330,7 @@
                                 Background="{TemplateBinding Background}"
                                 BorderBrush="{TemplateBinding BorderBrush}"
                                 BorderThickness="{TemplateBinding BorderThickness}"
+                                BackgroundSizing="OuterBorderEdge"
                                 CornerRadius="{TemplateBinding CornerRadius}">
                                 <VisualStateManager.VisualStateGroups>
                                     <VisualStateGroup x:Name="CommonStates">
@@ -373,20 +408,31 @@
                 <Setter Property="FontSize" Value="13" />
             </Style>
 
-            <!-- 设置分组小标题样式 (1:1 对齐 SettingSection.vue: text-xl font-bold mb-4 px-1) -->
+            <!-- 设置分组小标题样式 (1:1 对齐 SettingSection.vue: text-xl font-bold mb-4 px-1；外边距由 FloatingHeaderPlateStyle 承担) -->
             <Style x:Key="SettingsGroupHeaderTextStyle" TargetType="TextBlock">
                 <Setter Property="FontSize" Value="20" />
                 <Setter Property="FontWeight" Value="Bold" />
                 <Setter Property="Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}" />
-                <Setter Property="Margin" Value="4,0,0,12" />
+                <Setter Property="Margin" Value="0" />
             </Style>
 
-            <!-- 设置分组列表大卡片容器样式 (1:1 对齐 SettingSection.vue: rounded-2xl overflow-hidden border) -->
+            <!-- 悬浮标题玻璃牌（平时透明且布局与原标题完全一致；自定义壁纸智能可读性开启时由引擎填充无白边液态玻璃并自适应雾化浓度） -->
+            <Style x:Key="FloatingHeaderPlateStyle" TargetType="Border">
+                <Setter Property="Background" Value="Transparent" />
+                <Setter Property="BorderThickness" Value="0" />
+                <Setter Property="HorizontalAlignment" Value="Left" />
+                <Setter Property="CornerRadius" Value="10" />
+                <Setter Property="Padding" Value="10,3" />
+                <Setter Property="Margin" Value="-6,-3,0,9" />
+            </Style>
+
+            <!-- 设置分组列表大卡片容器样式 (圆角动态跟随主题 OverlayCornerRadius) -->
             <Style x:Key="SettingSectionCardStyle" TargetType="Border">
                 <Setter Property="Background" Value="{ThemeResource CardBackgroundFillColorDefaultBrush}" />
                 <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}" />
                 <Setter Property="BorderThickness" Value="1" />
-                <Setter Property="CornerRadius" Value="16" />
+                <Setter Property="BackgroundSizing" Value="OuterBorderEdge" />
+                <Setter Property="CornerRadius" Value="{ThemeResource OverlayCornerRadius}" />
                 <Setter Property="Padding" Value="0" />
                 <Setter Property="HorizontalAlignment" Value="Stretch" />
             </Style>

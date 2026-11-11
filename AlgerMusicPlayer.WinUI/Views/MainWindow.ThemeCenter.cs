@@ -2,6 +2,7 @@ using AlgerMusicPlayer.WinUI.Models;
 using AlgerMusicPlayer.WinUI.Services.System;
 using Microsoft.UI;
 using Microsoft.UI.Composition.SystemBackdrops;
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -29,6 +30,13 @@ public sealed partial class MainWindow
     private string _activeThemeDiyTab = "global";
     private string _currentBackdropKindKey = "Mica";
     private int _wallpaperRenderVersion;
+    private int _themeApplyVersion;
+
+    // DIY 滑块与调色盘原生 VSync 高刷帧合并局部预览调度状态（自动匹配 60Hz~240Hz+ 显示器刷新率）
+    private bool _isDiyVsyncPending;
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _diyBlurPreviewTimer;
+    private readonly HashSet<string> _pendingFastPreviewKeys = new(StringComparer.Ordinal);
+    private string _cachedMiniPreviewWallPath = string.Empty;
 
     // 主题市场交互状态
     private string _selectedMarketCategory = string.Empty;
@@ -37,14 +45,38 @@ public sealed partial class MainWindow
     private string _modalMainMode = "workshop";
     private List<MarketplaceThemeItem> _marketItems = [];
 
+    /// <summary>
+    /// 实时返回当前主界面实际应呈现的明暗基调（直接依据生效主题计算，规避 RootLayout.ActualTheme 异步滞后导致的反色漏刷）
+    /// </summary>
+    private bool IsCurrentUiLightMode => ThemeService.IsEffectiveLightMode(ViewModel.Theme.GetEffectiveTheme().BaseMode);
+
+    /// <summary>
+    /// 判断指定主题是否处于「iOS 27 液态玻璃 (Liquid Glass)」模式（显式选择 LiquidGlass，或自定义图片壁纸开启局部智能反色且未指定其他特定卡片风格时默认启用）
+    /// </summary>
+    private static bool IsLiquidGlassMode(CustomThemeProfile profile) =>
+        string.Equals(profile.CardVisualStyle, "LiquidGlass", StringComparison.OrdinalIgnoreCase) ||
+        (string.Equals(profile.BackdropType, "Image", StringComparison.OrdinalIgnoreCase) &&
+         profile.EnableAdaptiveWallpaperText &&
+         (string.IsNullOrWhiteSpace(profile.CardVisualStyle) ||
+          string.Equals(profile.CardVisualStyle, "Default", StringComparison.OrdinalIgnoreCase)));
+
+    /// <summary>
+    /// 判断指定主题是否处于「全透明晶透无框底」模式（仅当用户显式选择 CrystalClear 档位时启用）
+    /// </summary>
+    private static bool IsCrystalClearMode(CustomThemeProfile profile) =>
+        string.Equals(profile.CardVisualStyle, "CrystalClear", StringComparison.OrdinalIgnoreCase);
+
     private static readonly string[] OverridableThemeResourceKeys =
     [
         "CardBackgroundFillColorDefaultBrush",
         "CardBackgroundFillColorSecondaryBrush",
         "CardStrokeColorDefaultBrush",
         "DividerStrokeColorDefaultBrush",
+        "SecondaryPillFillBrush",
+        "SecondaryPillBorderBrush",
         "TextFillColorPrimaryBrush",
-        "TextFillColorSecondaryBrush"
+        "TextFillColorSecondaryBrush",
+        "TextFillColorTertiaryBrush"
     ];
 
     /// <summary>
@@ -53,6 +85,20 @@ public sealed partial class MainWindow
     private void InitializeThemeCenterEngine()
     {
         InitializeDynamicThemeVisualEngine();
+        InitializeAdaptiveWallpaperTextEngine();
+
+        _diyBlurPreviewTimer = DispatcherQueue.CreateTimer();
+        _diyBlurPreviewTimer.Interval = TimeSpan.FromMilliseconds(45);
+        _diyBlurPreviewTimer.IsRepeating = false;
+        _diyBlurPreviewTimer.Tick += async (_, _) =>
+        {
+            bool isLight = ThemeService.IsEffectiveLightMode(_themeDraft.BaseMode);
+            var adapted = ThemeService.ResolveModeAdaptedProfile(_themeDraft, isLight);
+            await UpdateGlobalWallpaperLayerAsync(adapted);
+            _activeAdaptiveRenderedProfile = adapted;
+            ScheduleAdaptiveWallpaperTextPass(immediate: false);
+        };
+
         ViewModel.Theme.ThemeApplied += OnThemeServiceApplied;
         RootLayout.ActualThemeChanged += (_, _) =>
         {
@@ -83,7 +129,16 @@ public sealed partial class MainWindow
 
     private async Task ApplyThemeProfileToMainWindowAsync(CustomThemeProfile rawProfile)
     {
-        // 1. 计算目标明暗模式并交由双态自适应引擎生成协调的白昼/暗夜渲染配置（不修改原始保存的主题数据）
+        if (_isDiyVsyncPending)
+        {
+            CompositionTarget.Rendering -= OnDiyFastPreviewVsyncTick;
+            _isDiyVsyncPending = false;
+        }
+        _diyBlurPreviewTimer?.Stop();
+        _pendingFastPreviewKeys.Clear();
+        int applyVersion = ++_themeApplyVersion;
+
+        // 1. 先计算新主题的目标明暗模式（必须在还原自适应文字之前确定，确保切回浅色主题时直接恢复为深色基准字而非旧暗夜白字）
         ElementTheme targetElementTheme = rawProfile.BaseMode switch
         {
             "Light" => ElementTheme.Light,
@@ -94,6 +149,13 @@ public sealed partial class MainWindow
         bool isEffectiveLight = targetElementTheme == ElementTheme.Light ||
                                 (targetElementTheme == ElementTheme.Default && Application.Current.RequestedTheme == ApplicationTheme.Light);
 
+        // 0. 立即阻断壁纸反色激活态并干净还原所有曾被自定义壁纸接管的文字/控件前景色（动态反色严格仅限自定义壁纸）
+        _activeAdaptiveRenderedProfile = null;
+        if (_hasActiveAdaptiveOverrides)
+        {
+            RestoreAllAdaptiveWallpaperTexts(isEffectiveLight);
+        }
+
         var profile = ThemeService.ResolveModeAdaptedProfile(rawProfile, isEffectiveLight);
         ViewModel.Theme.UpdateGlobalAccentBrushes(profile);
         var (accent, hover, pressed, _) = ViewModel.Theme.DeriveAccentColors(profile);
@@ -101,29 +163,34 @@ public sealed partial class MainWindow
         // 2. 窗口材质 (Mica / MicaAlt / Acrylic / Solid / Aurora / CoverFlow / Video / Image) 与底层壁纸渲染
         ApplyWindowBackdropAndBaseLayer(profile, isEffectiveLight);
         await UpdateGlobalWallpaperLayerAsync(profile);
+        if (applyVersion != _themeApplyVersion) return;
 
         // 3. 动态流体极光、封面流光、动态视频壁纸与独立粒子氛围层
-        await ApplyDynamicBackgroundAndParticlesAsync(profile, accent);
+        await ApplyDynamicBackgroundAndParticlesAsync(profile, accent, isEffectiveLight);
+        if (applyVersion != _themeApplyVersion) return;
 
-        // 4. 顶部标题栏独立 DIY 渲染（支持双色流光渐变）
-        ApplyTitleBarSectionTheme(profile, isEffectiveLight);
+        // 4. 顶部标题栏独立 DIY 渲染（支持双色流光渐变与特色皮肤顶栏微光）
+        ApplyTitleBarSectionTheme(profile, accent, isEffectiveLight);
 
-        // 5. 左侧导航栏独立 DIY 渲染（支持双色流光渐变）
+        // 5. 左侧导航栏独立 DIY 渲染（支持双色流光渐变与选中胶囊联动）
         ApplyNavigationPaneSectionTheme(profile, accent, isEffectiveLight);
 
         // 6. 主内容工作区与卡片全局 DIY 渲染
         ApplyContentAndCardsSectionTheme(profile, isEffectiveLight);
 
         // 7. 底部播放控制栏独立 DIY 渲染（支持双色流光渐变、独立主播放圆钮与进度条色）
-        ApplyBottomPlayBarSectionTheme(profile, accent, hover, pressed);
+        ApplyBottomPlayBarSectionTheme(profile, accent, hover, pressed, isEffectiveLight);
 
         // 8. 界面形态（经典贴底 / 悬浮胶囊灵动岛 / 极简无界玻璃）、卡片视觉质感预设、旋转黑胶唱盘与全局字体排版
         ApplyMorphologyTypographyAndCoverDetails(profile, accent, isEffectiveLight);
 
-        // 9. 触发视觉树 ThemeResource 刷新以使卡片/文字覆盖立即生效
+        // 9. 全局系统原生控件强调色（开关/滑块/复选框/输入框聚焦线）、15 个二级弹窗/抽屉/右键菜单磨砂染色与首页英雄大卡联动
+        ApplySystemControlAndHeroThemeResources(profile, accent, hover, pressed, isEffectiveLight);
+
+        // 10. 触发视觉树 ThemeResource 刷新以使卡片/文字/圆角/弹窗与原生控件覆盖立即生效
         RefreshRootElementTheme(targetElementTheme);
 
-        // 10. 同步弹窗与常规设置内嵌面板徽章、原生最小化/关闭按钮与歌词行配色
+        // 11. 同步弹窗与常规设置内嵌面板徽章、原生最小化/关闭按钮、动态标签与歌词行配色
         var savedTheme = ViewModel.Theme.GetSavedActiveTheme();
         string badgeText = ViewModel.Theme.PreviewProfile != null
             ? $"实时预览中：{profile.Name}"
@@ -132,15 +199,40 @@ public sealed partial class MainWindow
         if (PageActiveThemeNameBadge != null) PageActiveThemeNameBadge.Text = badgeText;
         if (ThemeModalActiveNameBadge != null) ThemeModalActiveNameBadge.Text = badgeText;
 
-        // 若当前正展示主题中心弹窗或设置页「个性主题」面板，立即随明暗基调同步重绘主题卡片，彻底杜绝深浅切换残影或泛白
+        // 若当前正展示主题中心弹窗或设置页「个性主题」面板，原地同步主题市场卡片配色并锁定滚动条偏移，杜绝焦点顺延跳动与白字残影
         if (ThemeCenterModalOverlay.Visibility == Visibility.Visible || SettingsThemePanel.Visibility == Visibility.Visible)
         {
+            var settingsSv = FindAncestorScrollViewer(SettingsThemePanel);
+            double? savedOffset = (SettingsThemePanel.Visibility == Visibility.Visible && settingsSv != null)
+                ? settingsSv.VerticalOffset
+                : null;
+
             RebuildThemeLibraryCardsUi();
+            RefreshMarketplaceCardsInPlace();
+
+            if (savedOffset.HasValue && settingsSv != null)
+            {
+                double targetOffset = savedOffset.Value;
+                settingsSv.ChangeView(null, targetOffset, null, disableAnimation: true);
+                DispatcherQueue.TryEnqueue(() =>
+                {
+                    settingsSv.ChangeView(null, targetOffset, null, disableAnimation: true);
+                });
+            }
         }
 
         ConfigureTitleBarButtonsTheme();
         SyncThemeSettingsUi();
+        SyncMvAreaButtonsUi();
+        if (MusicSourcesModalOverlay.Visibility == Visibility.Visible)
+        {
+            SyncMusicSourceCardsUi();
+        }
         SyncLyricLinesTypographyAndEmptyState();
+
+        // 12. 仅当当前主题为「自定义图片壁纸」且开启局部反色时启动动态文字采样；非壁纸主题保持 100% 原生深浅色字效
+        _activeAdaptiveRenderedProfile = profile;
+        ScheduleAdaptiveWallpaperTextPass(immediate: true);
     }
 
     private void ApplyWindowBackdropAndBaseLayer(CustomThemeProfile profile, bool isLight)
@@ -197,7 +289,8 @@ public sealed partial class MainWindow
             string.IsNullOrWhiteSpace(profile.BackgroundImagePath) ||
             !File.Exists(profile.BackgroundImagePath))
         {
-            GlobalWallpaperImage.Source = null;
+            _activeWallpaperColorGrid = null;
+            GlobalWallpaperBrush.ImageSource = null;
             GlobalWallpaperImage.Visibility = Visibility.Collapsed;
             GlobalWallpaperMaskBorder.Visibility = Visibility.Collapsed;
             return;
@@ -208,25 +301,34 @@ public sealed partial class MainWindow
         GlobalWallpaperMaskBorder.Visibility = Visibility.Visible;
 
         var imgSource = await ViewModel.Theme.CreateWallpaperImageSourceAsync(profile.BackgroundImagePath, profile.BackgroundBlur);
+        WallpaperColorGrid? colorGrid = profile.EnableAdaptiveWallpaperText
+            ? await ViewModel.Theme.GetOrBuildWallpaperColorGridAsync(profile.BackgroundImagePath, profile.BackgroundBlur)
+            : null;
         if (myVersion != _wallpaperRenderVersion) return;
 
         if (imgSource != null)
         {
-            GlobalWallpaperImage.Source = imgSource;
+            _activeWallpaperColorGrid = colorGrid;
+            GlobalWallpaperBrush.ImageSource = imgSource;
             GlobalWallpaperImage.Visibility = Visibility.Visible;
         }
         else
         {
+            _activeWallpaperColorGrid = null;
             GlobalWallpaperImage.Visibility = Visibility.Collapsed;
         }
     }
 
-    private void ApplyTitleBarSectionTheme(CustomThemeProfile profile, bool isLight)
+    private void ApplyTitleBarSectionTheme(CustomThemeProfile profile, Color accent, bool isLight)
     {
+        bool isCustomLayer = profile.BackdropType is "Image" or "Solid" or "Aurora" or "CoverFlow" or "Video";
+        bool isCrystalClear = IsCrystalClearMode(profile);
+
         if (profile.EnableCustomTitleBar)
         {
-            var bgCol = ThemeService.ParseColorOrDefault(profile.TitleBarBgHex, isLight ? Color.FromArgb(255, 241, 245, 249) : Color.FromArgb(255, 17, 24, 39));
-            AppTitleBar.Background = ThemeService.CreateSectionBrush(bgCol, profile.EnableTitleBarGradient, profile.TitleBarGradientEndHex, profile.TitleBarOpacity, profile.GradientAngle);
+            var defaultTbCol = ThemeService.CreateThemeTintedSurfaceColor(profile, accent, isLight, isLight ? 0.14 : 0.22);
+            var bgCol = ThemeService.ParseColorOrDefault(profile.TitleBarBgHex, defaultTbCol);
+            AppTitleBar.Background = ThemeService.UpdateOrCreateSectionBrush(AppTitleBar.Background, bgCol, profile.EnableTitleBarGradient, profile.TitleBarGradientEndHex, profile.TitleBarOpacity, profile.GradientAngle, useAcrylicBlur: !isCrystalClear);
 
             if (ThemeService.TryParseColor(profile.TitleBarTextHex, out var textCol))
             {
@@ -242,44 +344,115 @@ public sealed partial class MainWindow
                 return;
             }
         }
+        else if (isCrystalClear)
+        {
+            AppTitleBar.Background = new SolidColorBrush(Colors.Transparent);
+        }
+        else if (isCustomLayer)
+        {
+            // 在特色动态/定制主题下，为顶栏铺设极轻盈的水平氛围渐变微光，使顶部区域自然融入皮肤性格
+            var lgb = new LinearGradientBrush { StartPoint = new Windows.Foundation.Point(0, 0.5), EndPoint = new Windows.Foundation.Point(1, 0.5) };
+            byte a0 = isLight ? (byte)22 : (byte)32;
+            byte a1 = isLight ? (byte)6 : (byte)10;
+            var endAccent = profile.EnableAccentGradient
+                ? ThemeService.ParseColorOrDefault(profile.AccentGradientEndHex, accent)
+                : accent;
+            lgb.GradientStops.Add(new GradientStop { Color = Color.FromArgb(a0, accent.R, accent.G, accent.B), Offset = 0.0 });
+            lgb.GradientStops.Add(new GradientStop { Color = Color.FromArgb(a1, endAccent.R, endAccent.G, endAccent.B), Offset = 1.0 });
+            AppTitleBar.Background = lgb;
+        }
         else
         {
             AppTitleBar.Background = new SolidColorBrush(Colors.Transparent);
         }
 
-        BrandTitleText.ClearValue(TextBlock.ForegroundProperty);
-        foreach (var child in TitleBarRightToolbar.Children)
+        if (isLight)
         {
-            if (child is Button btn)
+            var crispDark = new SolidColorBrush(Color.FromArgb(255, 15, 23, 42));
+            BrandTitleText.Foreground = crispDark;
+            foreach (var child in TitleBarRightToolbar.Children)
             {
-                btn.ClearValue(Control.ForegroundProperty);
+                if (child is Button btn)
+                {
+                    btn.Foreground = crispDark;
+                }
+            }
+        }
+        else
+        {
+            BrandTitleText.ClearValue(TextBlock.ForegroundProperty);
+            foreach (var child in TitleBarRightToolbar.Children)
+            {
+                if (child is Button btn)
+                {
+                    btn.ClearValue(Control.ForegroundProperty);
+                }
             }
         }
     }
 
+    private static readonly string[] NavPaneForegroundResourceKeys =
+    [
+        "NavigationViewItemForeground",
+        "NavigationViewItemForegroundPointerOver",
+        "NavigationViewItemForegroundPressed",
+        "NavigationViewItemForegroundSelected",
+        "NavigationViewItemForegroundSelectedPointerOver",
+        "NavigationViewItemForegroundSelectedPressed",
+        "NavigationViewItemHeaderForeground",
+        "NavigationViewButtonForeground"
+    ];
+
     private void ApplyNavigationPaneSectionTheme(CustomThemeProfile profile, Color accent, bool isLight)
     {
         var navRes = MainNavView.Resources;
-        navRes["NavigationViewSelectionIndicatorForeground"] = new SolidColorBrush(accent);
+        var indicatorCol = ThemeService.EnsureReadableButtonFill(accent, isLight);
+        navRes["NavigationViewSelectionIndicatorForeground"] = new SolidColorBrush(indicatorCol);
 
         bool isCustomLayer = profile.BackdropType is "Image" or "Solid" or "Aurora" or "CoverFlow" or "Video";
-        Color iceWhite = ThemeService.CreateTintedIceWhite(accent, 0.06);
+        bool isLiquidGlass = IsLiquidGlassMode(profile);
+        bool isCrystalClear = IsCrystalClearMode(profile);
+        Color tintedSurface = ThemeService.CreateThemeTintedSurfaceColor(profile, accent, isLight, isLight ? 0.13 : 0.22);
 
-        // 同步让顶栏搜索框在动态玻璃背景下呈现轻盈半透明雾面，消除生硬纯白条
+        // 同步让顶栏搜索框在液态玻璃/全透明壁纸/动态玻璃背景下呈现对应质感，并在浅色下确保输入字与占位符高对比清晰
         if (TopSearchBox != null)
         {
             var sbRes = TopSearchBox.Resources;
-            if (isCustomLayer)
+            sbRes["TextControlBorderBrushFocused"] = new SolidColorBrush(indicatorCol);
+            if (isLiquidGlass)
+            {
+                var boxBg = ThemeService.CreateLiquidGlassSurfaceBrush(accent, isLight, intensity: 1.15);
+                var boxFocusBg = new SolidColorBrush(isLight
+                    ? Color.FromArgb(195, 255, 255, 255)
+                    : Color.FromArgb(145, 15, 23, 42));
+                var boxBorder = ThemeService.CreateLiquidGlassBorderBrush(accent, intensity: 1.0);
+                sbRes["TextControlBackground"] = boxBg;
+                sbRes["TextControlBackgroundPointerOver"] = boxFocusBg;
+                sbRes["TextControlBackgroundFocused"] = boxFocusBg;
+                sbRes["TextControlBorderBrush"] = boxBorder;
+            }
+            else if (isCrystalClear)
+            {
+                var boxBg = new SolidColorBrush(Color.FromArgb(20, 148, 163, 184));
+                var boxFocusBg = new SolidColorBrush(isLight
+                    ? Color.FromArgb(185, 255, 255, 255)
+                    : Color.FromArgb(135, 15, 23, 42));
+                var boxBorder = new SolidColorBrush(Color.FromArgb(76, 148, 163, 184));
+                sbRes["TextControlBackground"] = boxBg;
+                sbRes["TextControlBackgroundPointerOver"] = boxFocusBg;
+                sbRes["TextControlBackgroundFocused"] = boxFocusBg;
+                sbRes["TextControlBorderBrush"] = boxBorder;
+            }
+            else if (isCustomLayer)
             {
                 var boxBg = new SolidColorBrush(isLight
                     ? Color.FromArgb(115, 255, 255, 255)
-                    : Color.FromArgb(95, 15, 23, 42));
+                    : Color.FromArgb(88, tintedSurface.R, tintedSurface.G, tintedSurface.B));
                 var boxFocusBg = new SolidColorBrush(isLight
-                    ? Color.FromArgb(175, 255, 255, 255)
-                    : Color.FromArgb(145, 15, 23, 42));
-                var boxBorder = new SolidColorBrush(isLight
-                    ? Color.FromArgb(155, 255, 255, 255)
-                    : Color.FromArgb(55, 255, 255, 255));
+                    ? Color.FromArgb(205, 255, 255, 255)
+                    : Color.FromArgb(145, tintedSurface.R, tintedSurface.G, tintedSurface.B));
+                var borderMix = ThemeService.LerpColor(Colors.White, accent, isLight ? 0.30 : 0.45);
+                var boxBorder = new SolidColorBrush(Color.FromArgb(isLight ? (byte)185 : (byte)72, borderMix.R, borderMix.G, borderMix.B));
                 sbRes["TextControlBackground"] = boxBg;
                 sbRes["TextControlBackgroundPointerOver"] = boxFocusBg;
                 sbRes["TextControlBackgroundFocused"] = boxFocusBg;
@@ -292,34 +465,65 @@ public sealed partial class MainWindow
                 sbRes.Remove("TextControlBackgroundFocused");
                 sbRes.Remove("TextControlBorderBrush");
             }
+
+            if (isLight)
+            {
+                sbRes["TextControlForeground"] = new SolidColorBrush(Color.FromArgb(255, 15, 23, 42));
+                sbRes["TextControlPlaceholderForeground"] = new SolidColorBrush(Color.FromArgb(255, 71, 85, 105));
+            }
+            else
+            {
+                sbRes.Remove("TextControlForeground");
+                sbRes.Remove("TextControlPlaceholderForeground");
+            }
         }
 
+        // 所有主题下左侧导航栏选中胶囊均融合当前主题灵魂强调色
+        var defaultSelCol = Color.FromArgb(isLight ? (byte)0x28 : (byte)0x34, accent.R, accent.G, accent.B);
+        var defaultSelHoverCol = Color.FromArgb(isLight ? (byte)0x38 : (byte)0x46, accent.R, accent.G, accent.B);
+
+        Brush? explicitNavFg = null;
         if (profile.EnableCustomNavPane)
         {
-            var paneCol = ThemeService.ParseColorOrDefault(profile.NavPaneBgHex, isLight ? iceWhite : Color.FromArgb(255, 15, 23, 42));
-            var paneBrush = ThemeService.CreateSectionBrush(paneCol, profile.EnableNavPaneGradient, profile.NavPaneGradientEndHex, profile.NavPaneOpacity, profile.GradientAngle, useAcrylicBlur: true);
+            var paneCol = ThemeService.ParseColorOrDefault(profile.NavPaneBgHex, tintedSurface);
+            Brush? curPane = navRes.TryGetValue("NavigationViewDefaultPaneBackground", out var cp) ? cp as Brush : null;
+            var paneBrush = ThemeService.UpdateOrCreateSectionBrush(curPane, paneCol, profile.EnableNavPaneGradient, profile.NavPaneGradientEndHex, profile.NavPaneOpacity, profile.GradientAngle, useAcrylicBlur: !(isCrystalClear || isLiquidGlass));
             navRes["NavigationViewDefaultPaneBackground"] = paneBrush;
             navRes["NavigationViewExpandedPaneBackground"] = paneBrush;
             navRes["NavigationViewTopPaneBackground"] = paneBrush;
 
             var selCol = ThemeService.TryParseColor(profile.NavPaneSelectedBgHex, out var parsedSel)
                 ? parsedSel
-                : Color.FromArgb(0x28, accent.R, accent.G, accent.B);
-            navRes["NavigationViewItemBackgroundSelected"] = new SolidColorBrush(selCol);
-            navRes["NavigationViewItemBackgroundSelectedPointerOver"] = new SolidColorBrush(selCol);
+                : defaultSelCol;
+            ThemeService.SetOrUpdateSolidBrush(navRes, "NavigationViewItemBackgroundSelected", selCol);
+            ThemeService.SetOrUpdateSolidBrush(navRes, "NavigationViewItemBackgroundSelectedPointerOver", selCol);
 
-            Brush? itemFg = ThemeService.TryParseColor(profile.NavPaneTextHex, out var txtCol)
-                ? new SolidColorBrush(txtCol)
-                : null;
-            ApplyNavItemsForeground(itemFg);
+            if (ThemeService.TryParseColor(profile.NavPaneTextHex, out var txtCol))
+            {
+                explicitNavFg = new SolidColorBrush(txtCol);
+            }
         }
         else
         {
-            if (isCustomLayer)
+            if (isLiquidGlass)
+            {
+                var liquidPane = ThemeService.CreateLiquidGlassSurfaceBrush(accent, isLight, intensity: 0.96, blurAmount: 15.5f);
+                navRes["NavigationViewDefaultPaneBackground"] = liquidPane;
+                navRes["NavigationViewExpandedPaneBackground"] = liquidPane;
+                navRes["NavigationViewTopPaneBackground"] = liquidPane;
+            }
+            else if (isCrystalClear)
+            {
+                var clearBrush = new SolidColorBrush(Colors.Transparent);
+                navRes["NavigationViewDefaultPaneBackground"] = clearBrush;
+                navRes["NavigationViewExpandedPaneBackground"] = clearBrush;
+                navRes["NavigationViewTopPaneBackground"] = clearBrush;
+            }
+            else if (isCustomLayer)
             {
                 Brush glassPane = isLight
-                    ? ThemeService.CreateFrostedGlassBrush(iceWhite, tintOpacity: 0.36, luminosityOpacity: 0.58, fallbackAlpha: 112)
-                    : ThemeService.CreateFrostedGlassBrush(Color.FromArgb(255, 15, 23, 42), tintOpacity: 0.52, luminosityOpacity: 0.68, fallbackAlpha: 125);
+                    ? ThemeService.CreateFrostedGlassBrush(tintedSurface, tintOpacity: 0.14, luminosityOpacity: 0.22, fallbackAlpha: 50)
+                    : ThemeService.CreateFrostedGlassBrush(tintedSurface, tintOpacity: 0.36, luminosityOpacity: 0.50, fallbackAlpha: 98);
                 navRes["NavigationViewDefaultPaneBackground"] = glassPane;
                 navRes["NavigationViewExpandedPaneBackground"] = glassPane;
                 navRes["NavigationViewTopPaneBackground"] = glassPane;
@@ -330,20 +534,54 @@ public sealed partial class MainWindow
                 navRes.Remove("NavigationViewExpandedPaneBackground");
                 navRes.Remove("NavigationViewTopPaneBackground");
             }
-            navRes.Remove("NavigationViewItemBackgroundSelected");
-            navRes.Remove("NavigationViewItemBackgroundSelectedPointerOver");
-            ApplyNavItemsForeground(null);
+            navRes["NavigationViewItemBackgroundSelected"] = new SolidColorBrush(defaultSelCol);
+            navRes["NavigationViewItemBackgroundSelectedPointerOver"] = new SolidColorBrush(defaultSelHoverCol);
         }
+
+        // 统一设置主视图继承基准前景色与左侧导航菜单项各级状态前景色，彻底杜绝浅色模式下白字隐形
+        var baseContentFg = (profile.EnableCustomContent && ThemeService.TryParseColor(profile.PrimaryTextHex, out var customPrimary))
+            ? new SolidColorBrush(customPrimary)
+            : new SolidColorBrush(isLight ? Color.FromArgb(255, 15, 23, 42) : Color.FromArgb(255, 248, 250, 252));
+        MainNavView.Foreground = baseContentFg;
+
+        Brush? targetNavFg = explicitNavFg ?? (isLight ? new SolidColorBrush(Color.FromArgb(255, 15, 23, 42)) : null);
+        if (targetNavFg != null)
+        {
+            var headerFg = explicitNavFg ?? new SolidColorBrush(Color.FromArgb(255, 71, 85, 105));
+            navRes["NavigationViewItemForeground"] = targetNavFg;
+            navRes["NavigationViewItemForegroundPointerOver"] = targetNavFg;
+            navRes["NavigationViewItemForegroundPressed"] = targetNavFg;
+            navRes["NavigationViewItemForegroundSelected"] = targetNavFg;
+            navRes["NavigationViewItemForegroundSelectedPointerOver"] = targetNavFg;
+            navRes["NavigationViewItemForegroundSelectedPressed"] = targetNavFg;
+            navRes["NavigationViewItemHeaderForeground"] = headerFg;
+            navRes["NavigationViewButtonForeground"] = targetNavFg;
+        }
+        else
+        {
+            foreach (var key in NavPaneForegroundResourceKeys)
+            {
+                navRes.Remove(key);
+            }
+        }
+
+        ApplyNavItemsForeground(targetNavFg);
     }
 
     private void ApplyNavItemsForeground(Brush? fgBrush)
     {
+        var headerBrush = fgBrush ?? (IsCurrentUiLightMode ? new SolidColorBrush(Color.FromArgb(255, 71, 85, 105)) : null);
         foreach (var obj in MainNavView.MenuItems.Concat(MainNavView.FooterMenuItems))
         {
             if (obj is NavigationViewItem item)
             {
                 if (fgBrush != null) item.Foreground = fgBrush;
                 else item.ClearValue(Control.ForegroundProperty);
+            }
+            else if (obj is NavigationViewItemHeader header)
+            {
+                if (headerBrush != null) header.Foreground = headerBrush;
+                else header.ClearValue(Control.ForegroundProperty);
             }
         }
     }
@@ -353,9 +591,11 @@ public sealed partial class MainWindow
         var rootRes = RootLayout.Resources;
         var navRes = MainNavView.Resources;
         bool isCustomLayer = profile.BackdropType is "Image" or "Solid" or "Aurora" or "CoverFlow" or "Video";
+        bool isLiquidGlass = IsLiquidGlassMode(profile);
+        bool isCrystalClear = IsCrystalClearMode(profile);
 
         // 当启用自定义底层壁纸/极光或开启内容区独立定制时，让 NavigationView 默认实心内容底透明化，交由我们的图层控制
-        if (profile.EnableCustomContent || isCustomLayer)
+        if (profile.EnableCustomContent || isCustomLayer || isLiquidGlass || isCrystalClear)
         {
             navRes["NavigationViewContentBackground"] = new SolidColorBrush(Colors.Transparent);
             navRes["NavigationViewContentGridBorderBrush"] = new SolidColorBrush(Colors.Transparent);
@@ -372,41 +612,74 @@ public sealed partial class MainWindow
             var iceWhite = ThemeService.CreateTintedIceWhite(accent, 0.055);
 
             var contentBg = ThemeService.ParseColorOrDefault(profile.ContentBgHex, isLight ? Color.FromArgb(255, 248, 250, 252) : Color.FromArgb(255, 11, 17, 32));
-            double effContentOp = (isLight && isCustomLayer) ? Math.Min(profile.ContentOpacity, 10) : profile.ContentOpacity;
-            MainContentWorkspaceGrid.Background = new SolidColorBrush(ThemeService.WithOpacity(contentBg, effContentOp));
+            double effContentOp = (isCrystalClear || isLiquidGlass) ? 0 : ((isLight && isCustomLayer) ? Math.Min(profile.ContentOpacity, 10) : profile.ContentOpacity);
+            MainContentWorkspaceGrid.Background = ThemeService.UpdateOrCreateSectionBrush(MainContentWorkspaceGrid.Background, contentBg, false, null, effContentOp, 0, useAcrylicBlur: false);
 
-            var cardBg = ThemeService.ParseColorOrDefault(profile.CardBgHex, isLight ? iceWhite : Color.FromArgb(255, 30, 41, 59));
-            Brush cardPrimaryBrush = profile.CardOpacity < 96
-                ? ThemeService.CreateSectionBrush(cardBg, false, null, profile.CardOpacity, 0, useAcrylicBlur: true)
-                : new SolidColorBrush(ThemeService.WithOpacity(cardBg, profile.CardOpacity));
+            if (isLiquidGlass)
+            {
+                rootRes["CardBackgroundFillColorDefaultBrush"] = ThemeService.CreateLiquidGlassSurfaceBrush(accent, isLight, intensity: 1.04, blurAmount: 14.0f);
+                rootRes["CardBackgroundFillColorSecondaryBrush"] = ThemeService.CreateLiquidGlassSurfaceBrush(accent, isLight, intensity: 0.86, blurAmount: 10.5f);
+                rootRes["SecondaryPillFillBrush"] = ThemeService.CreateLiquidGlassSurfaceBrush(accent, isLight, intensity: 0.95, blurAmount: 9.5f);
+                rootRes["SecondaryPillBorderBrush"] = new SolidColorBrush(Colors.Transparent);
+                rootRes["CardStrokeColorDefaultBrush"] = ThemeService.CreateLiquidGlassBorderBrush(accent, intensity: 1.0);
+                ThemeService.SetOrUpdateSolidBrush(rootRes, "DividerStrokeColorDefaultBrush", isLight
+                    ? Color.FromArgb(30, 15, 23, 42)
+                    : Color.FromArgb(48, 255, 255, 255));
+            }
+            else if (isCrystalClear)
+            {
+                rootRes.Remove("SecondaryPillFillBrush");
+                rootRes.Remove("SecondaryPillBorderBrush");
+                ThemeService.SetOrUpdateSolidBrush(rootRes, "CardBackgroundFillColorDefaultBrush", Colors.Transparent);
+                ThemeService.SetOrUpdateSolidBrush(rootRes, "CardBackgroundFillColorSecondaryBrush", Colors.Transparent);
+                ThemeService.SetOrUpdateSolidBrush(rootRes, "CardStrokeColorDefaultBrush", Color.FromArgb(72, 148, 163, 184));
+                ThemeService.SetOrUpdateSolidBrush(rootRes, "DividerStrokeColorDefaultBrush", Color.FromArgb(46, 148, 163, 184));
+            }
+            else
+            {
+                rootRes.Remove("SecondaryPillFillBrush");
+                rootRes.Remove("SecondaryPillBorderBrush");
+                var cardBg = ThemeService.ParseColorOrDefault(profile.CardBgHex, isLight ? iceWhite : Color.FromArgb(255, 30, 41, 59));
+                Brush? curCardPrimary = rootRes.TryGetValue("CardBackgroundFillColorDefaultBrush", out var ccp) ? ccp as Brush : null;
+                Brush cardPrimaryBrush = ThemeService.UpdateOrCreateSectionBrush(curCardPrimary, cardBg, false, null, profile.CardOpacity, 0, useAcrylicBlur: true);
 
-            var secondaryCardCol = ThemeService.AdjustLightness(cardBg, isLight ? -0.02 : 0.04);
-            var cardSecondaryBrush = new SolidColorBrush(isLight
-                ? Color.FromArgb(82, secondaryCardCol.R, secondaryCardCol.G, secondaryCardCol.B)
-                : ThemeService.WithOpacity(secondaryCardCol, Math.Clamp(profile.CardOpacity - 8, 12, 100)));
+                var secondaryCardCol = ThemeService.AdjustLightness(cardBg, isLight ? -0.02 : 0.04);
+                var secondaryFinalCol = isLight
+                    ? Color.FromArgb(32, secondaryCardCol.R, secondaryCardCol.G, secondaryCardCol.B)
+                    : ThemeService.WithOpacity(secondaryCardCol, Math.Clamp(profile.CardOpacity - 8, 12, 100));
 
-            var borderCol = ThemeService.ParseColorOrDefault(profile.CardBorderHex, isLight ? Colors.White : Color.FromArgb(255, 51, 65, 85));
-            var borderBrush = new SolidColorBrush(isLight
-                ? Color.FromArgb(165, borderCol.R, borderCol.G, borderCol.B)
-                : ThemeService.WithOpacity(borderCol, Math.Max(profile.CardOpacity, 55)));
-            var dividerBrush = new SolidColorBrush(isLight
-                ? Color.FromArgb(24, 15, 23, 42)
-                : Color.FromArgb(90, borderCol.R, borderCol.G, borderCol.B));
+                var borderCol = ThemeService.ParseColorOrDefault(profile.CardBorderHex, isLight ? Colors.White : Color.FromArgb(255, 51, 65, 85));
+                var borderFinalCol = isLight
+                    ? Color.FromArgb(185, borderCol.R, borderCol.G, borderCol.B)
+                    : ThemeService.WithOpacity(borderCol, Math.Max(profile.CardOpacity, 55));
+                var dividerFinalCol = isLight
+                    ? Color.FromArgb(24, 15, 23, 42)
+                    : Color.FromArgb(90, borderCol.R, borderCol.G, borderCol.B);
 
-            rootRes["CardBackgroundFillColorDefaultBrush"] = cardPrimaryBrush;
-            rootRes["CardBackgroundFillColorSecondaryBrush"] = cardSecondaryBrush;
-            rootRes["CardStrokeColorDefaultBrush"] = borderBrush;
-            rootRes["DividerStrokeColorDefaultBrush"] = dividerBrush;
+                rootRes["CardBackgroundFillColorDefaultBrush"] = cardPrimaryBrush;
+                ThemeService.SetOrUpdateSolidBrush(rootRes, "CardBackgroundFillColorSecondaryBrush", secondaryFinalCol);
+                ThemeService.SetOrUpdateSolidBrush(rootRes, "CardStrokeColorDefaultBrush", borderFinalCol);
+                ThemeService.SetOrUpdateSolidBrush(rootRes, "DividerStrokeColorDefaultBrush", dividerFinalCol);
+            }
 
             if (ThemeService.TryParseColor(profile.PrimaryTextHex, out var pText))
-                rootRes["TextFillColorPrimaryBrush"] = new SolidColorBrush(pText);
+                ThemeService.SetOrUpdateSolidBrush(rootRes, "TextFillColorPrimaryBrush", pText);
+            else if (isLight)
+                ThemeService.SetOrUpdateSolidBrush(rootRes, "TextFillColorPrimaryBrush", Color.FromArgb(255, 15, 23, 42));
             else
                 rootRes.Remove("TextFillColorPrimaryBrush");
 
             if (ThemeService.TryParseColor(profile.SecondaryTextHex, out var sText))
-                rootRes["TextFillColorSecondaryBrush"] = new SolidColorBrush(sText);
+                ThemeService.SetOrUpdateSolidBrush(rootRes, "TextFillColorSecondaryBrush", sText);
+            else if (isLight)
+                ThemeService.SetOrUpdateSolidBrush(rootRes, "TextFillColorSecondaryBrush", Color.FromArgb(255, 51, 65, 85));
             else
                 rootRes.Remove("TextFillColorSecondaryBrush");
+
+            if (isLight)
+                ThemeService.SetOrUpdateSolidBrush(rootRes, "TextFillColorTertiaryBrush", Color.FromArgb(255, 71, 85, 105));
+            else
+                rootRes.Remove("TextFillColorTertiaryBrush");
 
             double r = Math.Clamp(profile.CardCornerRadius, 4, 24);
             rootRes["OverlayCornerRadius"] = new CornerRadius(r);
@@ -423,25 +696,53 @@ public sealed partial class MainWindow
             rootRes.Remove("OverlayCornerRadius");
             rootRes.Remove("ControlCornerRadius");
 
-            // 开启全屏壁纸/极光/流光等自定义背景层时，默认赋予卡片真实高斯模糊亚克力毛玻璃质感，透出底层浅色/深色动态特效
-            if (isCustomLayer)
+            if (isLiquidGlass)
             {
                 var accent = ThemeService.ParseColorOrDefault(profile.AccentColorHex, Color.FromArgb(255, 16, 185, 129));
-                var iceWhite = ThemeService.CreateTintedIceWhite(accent, 0.055);
+                MainContentWorkspaceGrid.Background = new SolidColorBrush(Colors.Transparent);
+                rootRes["CardBackgroundFillColorDefaultBrush"] = ThemeService.CreateLiquidGlassSurfaceBrush(accent, isLight, intensity: 1.04, blurAmount: 14.0f);
+                rootRes["CardBackgroundFillColorSecondaryBrush"] = ThemeService.CreateLiquidGlassSurfaceBrush(accent, isLight, intensity: 0.86, blurAmount: 10.5f);
+                rootRes["SecondaryPillFillBrush"] = ThemeService.CreateLiquidGlassSurfaceBrush(accent, isLight, intensity: 0.95, blurAmount: 9.5f);
+                rootRes["SecondaryPillBorderBrush"] = new SolidColorBrush(Colors.Transparent);
+                rootRes["CardStrokeColorDefaultBrush"] = ThemeService.CreateLiquidGlassBorderBrush(accent, intensity: 1.0);
+                rootRes["DividerStrokeColorDefaultBrush"] = new SolidColorBrush(isLight
+                    ? Color.FromArgb(30, 15, 23, 42)
+                    : Color.FromArgb(48, 255, 255, 255));
+            }
+            else if (isCrystalClear)
+            {
+                MainContentWorkspaceGrid.Background = new SolidColorBrush(Colors.Transparent);
+                rootRes["CardBackgroundFillColorDefaultBrush"] = new SolidColorBrush(Colors.Transparent);
+                rootRes["CardBackgroundFillColorSecondaryBrush"] = new SolidColorBrush(Colors.Transparent);
+                rootRes["CardStrokeColorDefaultBrush"] = new SolidColorBrush(Color.FromArgb(72, 148, 163, 184));
+                rootRes["DividerStrokeColorDefaultBrush"] = new SolidColorBrush(Color.FromArgb(46, 148, 163, 184));
+            }
+            else if (isCustomLayer)
+            {
+                var accent = ThemeService.ParseColorOrDefault(profile.AccentColorHex, Color.FromArgb(255, 16, 185, 129));
+                var tintedCardSurface = ThemeService.CreateThemeTintedSurfaceColor(profile, accent, isLight, isLight ? 0.11 : 0.20);
+                var borderTint = ThemeService.LerpColor(Colors.White, accent, isLight ? 0.20 : 0.38);
 
                 rootRes["CardBackgroundFillColorDefaultBrush"] = isLight
-                    ? ThemeService.CreateFrostedGlassBrush(iceWhite, tintOpacity: 0.34, luminosityOpacity: 0.56, fallbackAlpha: 108)
-                    : ThemeService.CreateFrostedGlassBrush(Color.FromArgb(255, 22, 30, 46), tintOpacity: 0.48, luminosityOpacity: 0.66, fallbackAlpha: 122);
+                    ? ThemeService.CreateFrostedGlassBrush(tintedCardSurface, tintOpacity: 0.09, luminosityOpacity: 0.15, fallbackAlpha: 40)
+                    : ThemeService.CreateFrostedGlassBrush(tintedCardSurface, tintOpacity: 0.26, luminosityOpacity: 0.38, fallbackAlpha: 78);
                 rootRes["CardBackgroundFillColorSecondaryBrush"] = new SolidColorBrush(isLight
-                    ? Color.FromArgb(80, 255, 255, 255)
-                    : Color.FromArgb(95, 17, 24, 39));
+                    ? Color.FromArgb(42, 255, 255, 255)
+                    : Color.FromArgb(55, tintedCardSurface.R, tintedCardSurface.G, tintedCardSurface.B));
                 rootRes["CardStrokeColorDefaultBrush"] = new SolidColorBrush(isLight
-                    ? Color.FromArgb(170, 255, 255, 255)
-                    : Color.FromArgb(52, 255, 255, 255));
-                if (isLight)
+                    ? Color.FromArgb(190, borderTint.R, borderTint.G, borderTint.B)
+                    : Color.FromArgb(58, borderTint.R, borderTint.G, borderTint.B));
+            }
+
+            if (isLight)
+            {
+                if (!isCrystalClear && !isLiquidGlass)
                 {
-                    rootRes["DividerStrokeColorDefaultBrush"] = new SolidColorBrush(Color.FromArgb(22, 15, 23, 42));
+                    rootRes["DividerStrokeColorDefaultBrush"] = new SolidColorBrush(Color.FromArgb(30, 15, 23, 42));
                 }
+                rootRes["TextFillColorPrimaryBrush"] = new SolidColorBrush(Color.FromArgb(255, 15, 23, 42));
+                rootRes["TextFillColorSecondaryBrush"] = new SolidColorBrush(Color.FromArgb(255, 51, 65, 85));
+                rootRes["TextFillColorTertiaryBrush"] = new SolidColorBrush(Color.FromArgb(255, 71, 85, 105));
             }
         }
     }
@@ -464,28 +765,58 @@ public sealed partial class MainWindow
         }
     }
 
-    private void ApplyBottomPlayBarSectionTheme(CustomThemeProfile profile, Color accent, Color hover, Color pressed)
+    private void ApplyBottomPlayBarSectionTheme(CustomThemeProfile profile, Color accent, Color hover, Color pressed, bool isLight)
     {
-        Color sliderCol = (profile.EnableCustomPlayBar && ThemeService.TryParseColor(profile.ProgressSliderColorHex, out var customSlider))
+        Color rawSlider = (profile.EnableCustomPlayBar && ThemeService.TryParseColor(profile.ProgressSliderColorHex, out var customSlider))
             ? customSlider
             : accent;
+        Color sliderCol = ThemeService.EnsureReadableButtonFill(rawSlider, isLight);
         Color sliderHover = ThemeService.AdjustLightness(sliderCol, -0.06);
         Color sliderPressed = ThemeService.AdjustLightness(sliderCol, -0.12);
 
         ApplySliderAccentResources(SeekSlider, sliderCol, sliderHover, sliderPressed);
         ApplySliderAccentResources(VolumeSlider, sliderCol, sliderHover, sliderPressed);
+        ApplySliderAccentResources(SimplePlayBarSeekSlider, sliderCol, sliderHover, sliderPressed);
         ApplySliderAccentResources(SimplePlayBarVolumeSlider, sliderCol, sliderHover, sliderPressed);
+
+        bool isCrystalClear = IsCrystalClearMode(profile);
+        bool isLiquidGlass = IsLiquidGlassMode(profile);
 
         if (profile.EnableCustomPlayBar)
         {
             var bgCol = ThemeService.ParseColorOrDefault(profile.PlayBarBgHex, Color.FromArgb(255, 17, 24, 39));
             var borderCol = ThemeService.ParseColorOrDefault(profile.PlayBarBorderHex, Color.FromArgb(255, 31, 41, 55));
-            BottomPlayBarBorder.Background = ThemeService.CreateSectionBrush(bgCol, profile.EnablePlayBarGradient, profile.PlayBarGradientEndHex, profile.PlayBarOpacity, profile.GradientAngle, useAcrylicBlur: true);
-            BottomPlayBarBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(170, borderCol.R, borderCol.G, borderCol.B));
+            BottomPlayBarBorder.Background = isCrystalClear
+                ? ThemeService.UpdateOrCreateSectionBrush(BottomPlayBarBorder.Background, Colors.Transparent, false, null, 0, 0)
+                : isLiquidGlass
+                    ? (BottomPlayBarBorder.Background is LiquidGlassCompositionBrush lg && lg.IsLight == isLight
+                        ? lg
+                        : ThemeService.CreateLiquidGlassSurfaceBrush(accent, isLight, intensity: 1.12))
+                    : ThemeService.UpdateOrCreateSectionBrush(BottomPlayBarBorder.Background, bgCol, profile.EnablePlayBarGradient, profile.PlayBarGradientEndHex, profile.PlayBarOpacity, profile.GradientAngle, useAcrylicBlur: true);
+
+            if (isLiquidGlass)
+            {
+                BottomPlayBarBorder.BorderBrush = ThemeService.CreateLiquidGlassBorderBrush(accent, intensity: 1.15);
+            }
+            else
+            {
+                var targetBdCol = isCrystalClear
+                    ? Color.FromArgb(72, 148, 163, 184)
+                    : Color.FromArgb(170, borderCol.R, borderCol.G, borderCol.B);
+                BottomPlayBarBorder.BorderBrush = ThemeService.UpdateOrCreateSectionBrush(BottomPlayBarBorder.BorderBrush, targetBdCol, false, null, targetBdCol.A / 255.0 * 100.0, 0);
+            }
 
             if (ThemeService.TryParseColor(profile.PlayBarTextHex, out var textCol))
             {
                 var fg = new SolidColorBrush(textCol);
+                BottomSongTitleText.Foreground = fg;
+                PositionTimeText.Foreground = fg;
+                DurationTimeText.Foreground = fg;
+                PlayModeText.Foreground = fg;
+            }
+            else if (isLight)
+            {
+                var fg = new SolidColorBrush(Color.FromArgb(255, 15, 23, 42));
                 BottomSongTitleText.Foreground = fg;
                 PositionTimeText.Foreground = fg;
                 DurationTimeText.Foreground = fg;
@@ -500,7 +831,18 @@ public sealed partial class MainWindow
         {
             BottomPlayBarBorder.ClearValue(Border.BackgroundProperty);
             BottomPlayBarBorder.ClearValue(Border.BorderBrushProperty);
-            ClearPlayBarCustomTextForeground();
+            if (isLight)
+            {
+                var fg = new SolidColorBrush(Color.FromArgb(255, 15, 23, 42));
+                BottomSongTitleText.Foreground = fg;
+                PositionTimeText.Foreground = fg;
+                DurationTimeText.Foreground = fg;
+                PlayModeText.Foreground = fg;
+            }
+            else
+            {
+                ClearPlayBarCustomTextForeground();
+            }
         }
     }
 
@@ -516,16 +858,136 @@ public sealed partial class MainWindow
     {
         if (slider == null) return;
         var r = slider.Resources;
-        var fillBrush = new SolidColorBrush(fill);
-        var hoverBrush = new SolidColorBrush(hover);
-        var pressedBrush = new SolidColorBrush(pressed);
+        ThemeService.SetOrUpdateSolidBrush(r, "SliderTrackValueFill", fill);
+        ThemeService.SetOrUpdateSolidBrush(r, "SliderTrackValueFillPointerOver", hover);
+        ThemeService.SetOrUpdateSolidBrush(r, "SliderTrackValueFillPressed", pressed);
+        ThemeService.SetOrUpdateSolidBrush(r, "SliderThumbBackground", fill);
+        ThemeService.SetOrUpdateSolidBrush(r, "SliderThumbBackgroundPointerOver", hover);
+        ThemeService.SetOrUpdateSolidBrush(r, "SliderThumbBackgroundPressed", pressed);
+    }
 
-        r["SliderTrackValueFill"] = fillBrush;
-        r["SliderTrackValueFillPointerOver"] = hoverBrush;
-        r["SliderTrackValueFillPressed"] = pressedBrush;
-        r["SliderThumbBackground"] = fillBrush;
-        r["SliderThumbBackgroundPointerOver"] = hoverBrush;
-        r["SliderThumbBackgroundPressed"] = pressedBrush;
+    /// <summary>
+    /// 全量接管 WinUI 3 原生系统控件强调色（开关/复选框/下拉框/滑块/输入框聚焦线）、全窗口 15 个弹窗/抽屉/右键菜单主题色磨砂背景，以及首页双英雄大卡与歌单详情页氛围渐变
+    /// </summary>
+    private void ApplySystemControlAndHeroThemeResources(CustomThemeProfile profile, Color accent, Color hover, Color pressed, bool isLight)
+    {
+        var rootRes = RootLayout.Resources;
+        var fillCol = ThemeService.EnsureReadableButtonFill(accent, isLight);
+        var fillHoverCol = ThemeService.AdjustLightness(fillCol, -0.07);
+        var fillPressedCol = ThemeService.AdjustLightness(fillCol, -0.14);
+        var readableTextCol = ThemeService.EnsureReadableTextAccent(accent, isLight);
+
+        // 1. 原地更新 WinUI 3 原生控件系统强调色画刷（无需翻转 RequestedTheme 即可使全窗口滑块/开关/复选框实时变色）
+        rootRes["SystemAccentColor"] = fillCol;
+        ThemeService.SetOrUpdateSolidBrush(rootRes, "AccentFillColorDefaultBrush", fillCol);
+        ThemeService.SetOrUpdateSolidBrush(rootRes, "AccentFillColorSecondaryBrush", Color.FromArgb(230, fillHoverCol.R, fillHoverCol.G, fillHoverCol.B));
+        ThemeService.SetOrUpdateSolidBrush(rootRes, "AccentFillColorTertiaryBrush", Color.FromArgb(205, fillPressedCol.R, fillPressedCol.G, fillPressedCol.B));
+        ThemeService.SetOrUpdateSolidBrush(rootRes, "AccentTextFillColorPrimaryBrush", readableTextCol);
+        ThemeService.SetOrUpdateSolidBrush(rootRes, "AccentTextFillColorSecondaryBrush", readableTextCol);
+        ThemeService.SetOrUpdateSolidBrush(rootRes, "AccentTextFillColorTertiaryBrush", ThemeService.AdjustLightness(readableTextCol, -0.06));
+        ThemeService.SetOrUpdateSolidBrush(rootRes, "TextControlBorderBrushFocused", fillCol);
+
+        ThemeService.SetOrUpdateSolidBrush(rootRes, "ToggleSwitchFillOn", fillCol);
+        ThemeService.SetOrUpdateSolidBrush(rootRes, "ToggleSwitchFillOnPointerOver", fillHoverCol);
+        ThemeService.SetOrUpdateSolidBrush(rootRes, "ToggleSwitchFillOnPressed", fillPressedCol);
+        ThemeService.SetOrUpdateSolidBrush(rootRes, "ToggleSwitchStrokeOn", fillCol);
+        ThemeService.SetOrUpdateSolidBrush(rootRes, "ToggleSwitchStrokeOnPointerOver", fillHoverCol);
+        ThemeService.SetOrUpdateSolidBrush(rootRes, "ToggleSwitchStrokeOnPressed", fillPressedCol);
+
+        ThemeService.SetOrUpdateSolidBrush(rootRes, "CheckBoxCheckBackgroundFillChecked", fillCol);
+        ThemeService.SetOrUpdateSolidBrush(rootRes, "CheckBoxCheckBackgroundFillCheckedPointerOver", fillHoverCol);
+        ThemeService.SetOrUpdateSolidBrush(rootRes, "CheckBoxCheckBackgroundFillCheckedPressed", fillPressedCol);
+        ThemeService.SetOrUpdateSolidBrush(rootRes, "CheckBoxCheckBackgroundStrokeChecked", fillCol);
+
+        ThemeService.SetOrUpdateSolidBrush(rootRes, "SliderTrackValueFill", fillCol);
+        ThemeService.SetOrUpdateSolidBrush(rootRes, "SliderTrackValueFillPointerOver", fillHoverCol);
+        ThemeService.SetOrUpdateSolidBrush(rootRes, "SliderTrackValueFillPressed", fillPressedCol);
+        ThemeService.SetOrUpdateSolidBrush(rootRes, "SliderThumbBackground", fillCol);
+        ThemeService.SetOrUpdateSolidBrush(rootRes, "SliderThumbBackgroundPointerOver", fillHoverCol);
+        ThemeService.SetOrUpdateSolidBrush(rootRes, "SliderThumbBackgroundPressed", fillPressedCol);
+
+        // 2. 为全窗口 15 个二级弹窗、右侧抽屉与右键菜单（FlyoutPresenter）注入融合当前主题色相的高级磨砂亚克力质感
+        bool isCustomLayer = profile.BackdropType is "Image" or "Solid" or "Aurora" or "CoverFlow" or "Video";
+        Color flyoutTint = ThemeService.CreateThemeTintedSurfaceColor(profile, accent, isLight, isLight ? 0.13 : 0.22);
+        if (isCustomLayer || profile.EnableCustomContent)
+        {
+            Brush modalGlass = isLight
+                ? ThemeService.CreateFrostedGlassBrush(flyoutTint, tintOpacity: 0.62, luminosityOpacity: 0.72, fallbackAlpha: 230)
+                : ThemeService.CreateFrostedGlassBrush(flyoutTint, tintOpacity: 0.68, luminosityOpacity: 0.76, fallbackAlpha: 234);
+            rootRes["SolidBackgroundFillColorBaseBrush"] = modalGlass;
+            rootRes["SolidBackgroundFillColorBaseAltBrush"] = modalGlass;
+            rootRes["AcrylicBackgroundFillColorDefaultBrush"] = modalGlass;
+            rootRes["SurfaceStrokeColorFlyoutBrush"] = new SolidColorBrush(Color.FromArgb(isLight ? (byte)115 : (byte)90, accent.R, accent.G, accent.B));
+        }
+        else
+        {
+            rootRes.Remove("SolidBackgroundFillColorBaseBrush");
+            rootRes.Remove("SolidBackgroundFillColorBaseAltBrush");
+            rootRes.Remove("AcrylicBackgroundFillColorDefaultBrush");
+            rootRes.Remove("SurfaceStrokeColorFlyoutBrush");
+        }
+
+        // 3. 联动首页双英雄大卡（左卡：每日推荐主色流光；右卡：私人 FM 主题副色/谐波色流光）与歌单详情页头部渐变层
+        var (ah, aSat, _) = ThemeService.RgbToHsl(accent.R, accent.G, accent.B);
+        var heroDarkBase = ThemeService.CreateThemeTintedSurfaceColor(profile, accent, isLight: false, tintWeight: 0.16);
+
+        if (DailyHeroStop0 != null && DailyHeroStop1 != null)
+        {
+            var dailyStart = ThemeService.HslToColor(ah, Math.Clamp(aSat, 0.45, 0.82), 0.23);
+            DailyHeroStop0.Color = Color.FromArgb(232, dailyStart.R, dailyStart.G, dailyStart.B);
+            DailyHeroStop1.Color = Color.FromArgb(232, heroDarkBase.R, heroDarkBase.G, heroDarkBase.B);
+        }
+        if (DailyHeroSubtitleText != null)
+        {
+            DailyHeroSubtitleText.Foreground = new SolidColorBrush(ThemeService.HslToColor(ah, Math.Clamp(aSat, 0.45, 0.75), 0.82));
+        }
+
+        Color fmAccent;
+        if (profile.EnableAccentGradient && ThemeService.TryParseColor(profile.AccentGradientEndHex, out var gradEnd))
+        {
+            fmAccent = gradEnd;
+        }
+        else if (profile.BackdropType == "Aurora" && ThemeService.TryParseColor(profile.AuroraColor2Hex, out var aur2))
+        {
+            var (h2, s2, _) = ThemeService.RgbToHsl(aur2.R, aur2.G, aur2.B);
+            fmAccent = ThemeService.HslToColor(h2, Math.Clamp(s2, 0.55, 0.85), 0.56);
+        }
+        else
+        {
+            fmAccent = ThemeService.HslToColor((ah + 46.0) % 360.0, Math.Clamp(aSat, 0.55, 0.82), 0.58);
+        }
+
+        var (fh, fs, _) = ThemeService.RgbToHsl(fmAccent.R, fmAccent.G, fmAccent.B);
+        if (FmHeroStop0 != null && FmHeroStop1 != null)
+        {
+            var fmStart = ThemeService.HslToColor(fh, Math.Clamp(fs, 0.45, 0.82), 0.22);
+            FmHeroStop0.Color = Color.FromArgb(232, fmStart.R, fmStart.G, fmStart.B);
+            FmHeroStop1.Color = Color.FromArgb(232, heroDarkBase.R, heroDarkBase.G, heroDarkBase.B);
+        }
+        if (FmHeroCardBorder != null)
+        {
+            FmHeroCardBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(75, fmAccent.R, fmAccent.G, fmAccent.B));
+        }
+        var fmSoftLight = ThemeService.HslToColor(fh, Math.Clamp(fs, 0.55, 0.82), 0.82);
+        var fmSoftBrush = new SolidColorBrush(fmSoftLight);
+        if (FmHeroBadgeBorder != null) FmHeroBadgeBorder.Background = new SolidColorBrush(Color.FromArgb(52, fmAccent.R, fmAccent.G, fmAccent.B));
+        if (FmHeroBadgeIcon != null) FmHeroBadgeIcon.Foreground = fmSoftBrush;
+        if (FmHeroBadgeText != null) FmHeroBadgeText.Foreground = fmSoftBrush;
+        if (FmHeroArtistName != null) FmHeroArtistName.Foreground = new SolidColorBrush(ThemeService.HslToColor(fh, Math.Clamp(fs, 0.45, 0.72), 0.86));
+        if (FmPlayBtn != null)
+        {
+            var fmBtnCol = ThemeService.HslToColor(fh, Math.Clamp(fs, 0.58, 0.85), 0.52);
+            FmPlayBtn.Background = new SolidColorBrush(fmBtnCol);
+            FmPlayBtn.CornerRadius = new CornerRadius(Math.Clamp(profile.ButtonCornerRadius, 4, 22));
+            FmPlayBtn.Resources["ButtonBackgroundPointerOver"] = new SolidColorBrush(ThemeService.AdjustLightness(fmBtnCol, -0.07));
+            FmPlayBtn.Resources["ButtonBackgroundPressed"] = new SolidColorBrush(ThemeService.AdjustLightness(fmBtnCol, -0.14));
+        }
+
+        if (DetailHeroStop0 != null && DetailHeroStop1 != null)
+        {
+            DetailHeroStop0.Color = Color.FromArgb(42, accent.R, accent.G, accent.B);
+            DetailHeroStop1.Color = Color.FromArgb(14, accent.R, accent.G, accent.B);
+        }
     }
 
     private void RefreshRootElementTheme(ElementTheme targetTheme)
@@ -561,6 +1023,7 @@ public sealed partial class MainWindow
         {
             _ = LoadAndRenderMarketplaceCardsAsync();
         }
+        ScheduleAdaptiveWallpaperTextPass(immediate: true);
     }
 
     // ==================== 入口二：标题栏独立主题中心全屏弹窗 ====================
@@ -715,10 +1178,31 @@ public sealed partial class MainWindow
         }
     }
 
+    private static LinearGradientBrush CreateInnerLiquidCrystalBrush(Color accent, bool isLight, double intensity = 1.0)
+    {
+        double k = Math.Clamp(intensity, 0.5, 1.6);
+        Color accentSheen = ThemeService.LerpColor(Colors.White, accent, isLight ? 0.22 : 0.35);
+        byte aTop = (byte)Math.Clamp(Math.Round((isLight ? 72 : 42) * k), 12, 130);
+        byte aMid = (byte)Math.Clamp(Math.Round((isLight ? 28 : 14) * k), 4, 64);
+        byte aBot = (byte)Math.Clamp(Math.Round((isLight ? 46 : 30) * k), 10, 96);
+
+        var lgb = new LinearGradientBrush
+        {
+            StartPoint = new Windows.Foundation.Point(0, 0),
+            EndPoint = new Windows.Foundation.Point(1, 1)
+        };
+        lgb.GradientStops.Add(new GradientStop { Color = Color.FromArgb(aTop, 255, 255, 255), Offset = 0.0 });
+        lgb.GradientStops.Add(new GradientStop { Color = Color.FromArgb(aMid, 248, 252, 255), Offset = 0.52 });
+        lgb.GradientStops.Add(new GradientStop { Color = Color.FromArgb(aBot, accentSheen.R, accentSheen.G, accentSheen.B), Offset = 1.0 });
+        return lgb;
+    }
+
     private UIElement CreateThemeLibraryItemCard(CustomThemeProfile item, bool isActive)
     {
-        bool isUiLight = RootLayout.ActualTheme == ElementTheme.Light;
+        bool isUiLight = IsCurrentUiLightMode;
         var accentCol = ThemeService.ParseColorOrDefault(item.AccentColorHex, Color.FromArgb(255, 16, 185, 129));
+        var readableTagTextCol = ThemeService.EnsureReadableTextAccent(accentCol, isUiLight);
+        var readableBadgeFillCol = ThemeService.EnsureReadableButtonFill(accentCol, true);
         bool isItemLight = string.Equals(item.BaseMode, "Light", StringComparison.OrdinalIgnoreCase);
         var itemWinBg = ThemeService.ParseColorOrDefault(item.WindowBgColorHex,
             isItemLight ? Color.FromArgb(255, 248, 250, 252) : Color.FromArgb(255, 18, 22, 31));
@@ -726,35 +1210,58 @@ public sealed partial class MainWindow
             ? ThemeService.ParseColorOrDefault(item.NavPaneBgHex, itemWinBg)
             : (isItemLight ? Color.FromArgb(255, 236, 241, 247) : Color.FromArgb(255, 26, 33, 46));
 
-        Color normalBg = isUiLight
-            ? Color.FromArgb(92, 255, 255, 255)
-            : Color.FromArgb(20, 255, 255, 255);
-        Color hoverBg = isUiLight
-            ? Color.FromArgb(34, accentCol.R, accentCol.G, accentCol.B)
-            : Color.FromArgb(34, 255, 255, 255);
-        Color activeBg = isUiLight
-            ? Color.FromArgb(40, accentCol.R, accentCol.G, accentCol.B)
-            : Color.FromArgb(38, accentCol.R, accentCol.G, accentCol.B);
+        var effectiveProf = ViewModel.Theme.GetEffectiveTheme();
+        bool isLiquid = IsLiquidGlassMode(effectiveProf);
+        bool isCrystal = IsCrystalClearMode(effectiveProf);
 
-        Color normalBorder = isUiLight
-            ? Color.FromArgb(155, 255, 255, 255)
-            : Color.FromArgb(36, 255, 255, 255);
-        Color hoverBorder = Color.FromArgb(145, accentCol.R, accentCol.G, accentCol.B);
+        Brush restBgBrush;
+        Brush hoverBgBrush;
+        Brush restBorderBrush;
+        if (isLiquid)
+        {
+            // 父容器已具备实时液态玻璃折射，子项采用清透对角冰晶高光渐变釉面，避免 60+ 嵌套 Backdrop 重复模糊叠加
+            restBgBrush = CreateInnerLiquidCrystalBrush(accentCol, isUiLight, isActive ? 1.35 : 0.85);
+            hoverBgBrush = CreateInnerLiquidCrystalBrush(accentCol, isUiLight, 1.45);
+            restBorderBrush = isActive
+                ? new SolidColorBrush(readableBadgeFillCol)
+                : ThemeService.CreateLiquidGlassBorderBrush(accentCol, intensity: 0.95);
+        }
+        else
+        {
+            Color normalBg = isCrystal
+                ? Colors.Transparent
+                : (isUiLight ? Color.FromArgb(62, 255, 255, 255) : Color.FromArgb(18, 255, 255, 255));
+            Color hoverBg = isCrystal
+                ? Color.FromArgb(22, accentCol.R, accentCol.G, accentCol.B)
+                : (isUiLight ? Color.FromArgb(44, accentCol.R, accentCol.G, accentCol.B) : Color.FromArgb(34, 255, 255, 255));
+            Color activeBg = isCrystal
+                ? Color.FromArgb(28, accentCol.R, accentCol.G, accentCol.B)
+                : (isUiLight ? Color.FromArgb(52, accentCol.R, accentCol.G, accentCol.B) : Color.FromArgb(38, accentCol.R, accentCol.G, accentCol.B));
+            Color normalBorder = isCrystal
+                ? Color.FromArgb(72, 148, 163, 184)
+                : (isUiLight ? Color.FromArgb(195, 255, 255, 255) : Color.FromArgb(38, 255, 255, 255));
 
+            restBgBrush = new SolidColorBrush(isActive ? activeBg : normalBg);
+            hoverBgBrush = new SolidColorBrush(hoverBg);
+            restBorderBrush = new SolidColorBrush(isActive ? readableBadgeFillCol : normalBorder);
+        }
+        Color hoverBorder = Color.FromArgb(195, accentCol.R, accentCol.G, accentCol.B);
+
+        // 注意：使用纯中性黑白灰，避免冷色 Slate 在低明度下产生伪色相，确保壁纸自适应引擎 100% 识别为纯黑白语义
         Color titleColor = isUiLight
-            ? Color.FromArgb(255, 15, 23, 42)
-            : Color.FromArgb(255, 248, 250, 252);
+            ? Color.FromArgb(255, 18, 22, 28)
+            : Color.FromArgb(255, 250, 250, 252);
         Color descColor = isUiLight
-            ? Color.FromArgb(255, 100, 116, 139)
-            : Color.FromArgb(255, 148, 163, 184);
+            ? Color.FromArgb(255, 64, 70, 80)
+            : Color.FromArgb(255, 175, 182, 192);
 
         var outerBorder = new Border
         {
-            CornerRadius = new CornerRadius(10),
-            Padding = new Thickness(11, 9, 11, 9),
+            CornerRadius = new CornerRadius(isLiquid ? 14 : 10),
+            Padding = new Thickness(12, 10, 12, 10),
             HorizontalAlignment = HorizontalAlignment.Stretch,
-            Background = new SolidColorBrush(isActive ? activeBg : normalBg),
-            BorderBrush = new SolidColorBrush(isActive ? accentCol : normalBorder),
+            Background = restBgBrush,
+            BorderBrush = restBorderBrush,
             BorderThickness = new Thickness(isActive ? 1.5 : 1)
         };
 
@@ -775,6 +1282,7 @@ public sealed partial class MainWindow
                 : Color.FromArgb(75, 148, 163, 184)),
             BorderThickness = new Thickness(1)
         };
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(swatchBox, SkipAdaptiveTextTag);
 
         var swatchInnerGrid = new Grid();
         swatchInnerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(12) });
@@ -820,8 +1328,8 @@ public sealed partial class MainWindow
         {
             titleRow.Children.Add(new Border
             {
-                Background = new SolidColorBrush(Color.FromArgb(0x24, accentCol.R, accentCol.G, accentCol.B)),
-                BorderBrush = new SolidColorBrush(Color.FromArgb(0x80, accentCol.R, accentCol.G, accentCol.B)),
+                Background = new SolidColorBrush(Color.FromArgb(0x28, accentCol.R, accentCol.G, accentCol.B)),
+                BorderBrush = new SolidColorBrush(Color.FromArgb(0x88, readableTagTextCol.R, readableTagTextCol.G, readableTagTextCol.B)),
                 BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(4),
                 Padding = new Thickness(4, 1, 4, 1),
@@ -830,7 +1338,7 @@ public sealed partial class MainWindow
                 {
                     Text = item.BackdropType is "Aurora" or "CoverFlow" ? "极光" : (item.EnableParticleOverlay ? "粒子" : "动态"),
                     FontSize = 9,
-                    Foreground = new SolidColorBrush(accentCol),
+                    Foreground = new SolidColorBrush(readableTagTextCol),
                     FontWeight = FontWeights.SemiBold
                 }
             });
@@ -840,7 +1348,7 @@ public sealed partial class MainWindow
         {
             var activeTag = new Border
             {
-                Background = new SolidColorBrush(accentCol),
+                Background = new SolidColorBrush(readableBadgeFillCol),
                 CornerRadius = new CornerRadius(4),
                 Padding = new Thickness(5, 1, 5, 1),
                 VerticalAlignment = VerticalAlignment.Center,
@@ -897,14 +1405,14 @@ public sealed partial class MainWindow
         {
             if (!isActive)
             {
-                outerBorder.Background = new SolidColorBrush(hoverBg);
+                outerBorder.Background = hoverBgBrush;
                 outerBorder.BorderBrush = new SolidColorBrush(hoverBorder);
             }
         };
         outerBorder.PointerExited += (_, _) =>
         {
-            outerBorder.Background = new SolidColorBrush(isActive ? activeBg : normalBg);
-            outerBorder.BorderBrush = new SolidColorBrush(isActive ? accentCol : normalBorder);
+            outerBorder.Background = restBgBrush;
+            outerBorder.BorderBrush = restBorderBrush;
         };
         outerBorder.Tapped += async (_, te) =>
         {
@@ -981,6 +1489,7 @@ public sealed partial class MainWindow
 
         UpdateMarketCategoryFilterButtonsUi();
         UpdateMarketFeedsStatusUi();
+        ScheduleAdaptiveWallpaperTextPass(immediate: true);
     }
 
     private void PopulateMarketplaceGrid(Grid targetGrid, IReadOnlyList<MarketplaceThemeItem> items)
@@ -1013,130 +1522,120 @@ public sealed partial class MainWindow
         }
     }
 
+    private static ScrollViewer? FindAncestorScrollViewer(DependencyObject? element)
+    {
+        var cur = element;
+        while (cur != null)
+        {
+            if (cur is ScrollViewer sv) return sv;
+            cur = VisualTreeHelper.GetParent(cur);
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// 原地无损刷新已渲染的主题市场卡片明暗反色与已安装徽章状态（零 DOM 销毁重建，防止按钮焦点丢失引起 ScrollViewer 跳至底部）
+    /// </summary>
+    private void RefreshMarketplaceCardsInPlace()
+    {
+        static void SyncGrid(Grid? grid)
+        {
+            if (grid == null) return;
+            foreach (var child in grid.Children)
+            {
+                if (child is Border { Tag: Action syncAction })
+                {
+                    syncAction();
+                }
+            }
+        }
+
+        SyncGrid(PageMarketCardsGrid);
+        SyncGrid(ModalMarketCardsGrid);
+        UpdateMarketCategoryFilterButtonsUi();
+    }
+
     private UIElement CreateMarketplaceThemeCard(MarketplaceThemeItem item)
     {
-        bool isUiLight = RootLayout.ActualTheme == ElementTheme.Light;
         var t = item.Theme;
         var accentCol = ThemeService.ParseColorOrDefault(t.AccentColorHex, Color.FromArgb(255, 16, 185, 129));
         bool isThemeLight = string.Equals(t.BaseMode, "Light", StringComparison.OrdinalIgnoreCase);
-        bool isInstalled = ViewModel.Theme.IsMarketplaceThemeInstalled(item.Id);
 
-        Color cardBg = isUiLight ? Color.FromArgb(96, 255, 255, 255) : Color.FromArgb(22, 255, 255, 255);
-        Color borderCol = isUiLight ? Color.FromArgb(160, 255, 255, 255) : Color.FromArgb(36, 255, 255, 255);
-        Color titleColor = isUiLight ? Color.FromArgb(255, 15, 23, 42) : Color.FromArgb(255, 248, 250, 252);
-        Color subColor = isUiLight ? Color.FromArgb(255, 100, 116, 139) : Color.FromArgb(255, 148, 163, 184);
-
+        Brush currentBorderBrush = new SolidColorBrush(Color.FromArgb(38, 255, 255, 255));
         var card = new Border
         {
-            CornerRadius = new CornerRadius(12),
-            Background = new SolidColorBrush(cardBg),
-            BorderBrush = new SolidColorBrush(borderCol),
+            CornerRadius = new CornerRadius(14),
             BorderThickness = new Thickness(1),
             Padding = new Thickness(12)
         };
 
         var mainStack = new StackPanel { Spacing = 10, HorizontalAlignment = HorizontalAlignment.Stretch };
 
-        // 1. 顶部艺术色带头图（带双色渐变 / 极光预览色）
-        var headerBanner = new Border
+        void PreviewThisMarketItem()
         {
-            Height = 44,
-            CornerRadius = new CornerRadius(8),
-            BorderThickness = new Thickness(1),
-            BorderBrush = new SolidColorBrush(Color.FromArgb(40, 255, 255, 255))
-        };
+            var settingsSv = FindAncestorScrollViewer(SettingsThemePanel);
+            double? savedOffset = (SettingsThemePanel.Visibility == Visibility.Visible && settingsSv != null)
+                ? settingsSv.VerticalOffset
+                : null;
 
-        var c1 = accentCol;
-        var c2 = t.EnableAccentGradient && ThemeService.TryParseColor(t.AccentGradientEndHex, out var parsedEnd)
-            ? parsedEnd
-            : ThemeService.AdjustLightness(accentCol, isThemeLight ? 0.18 : -0.15);
+            _themeDraft = item.Theme.Clone();
+            ViewModel.Theme.NotifyPreviewUpdated(_themeDraft);
+            LoadThemeDraftToEditorUi();
+            ViewModel.StatusToast = $"正在预览试用市场主题：{t.Name}";
 
-        headerBanner.Background = new LinearGradientBrush
-        {
-            StartPoint = new Windows.Foundation.Point(0, 0),
-            EndPoint = new Windows.Foundation.Point(1, 1),
-            GradientStops =
+            if (savedOffset.HasValue && settingsSv != null)
             {
-                new GradientStop { Color = c1, Offset = 0 },
-                new GradientStop { Color = c2, Offset = 1 }
+                settingsSv.ChangeView(null, savedOffset.Value, null, disableAnimation: true);
             }
-        };
-
-        var bannerGrid = new Grid { Padding = new Thickness(8, 0, 8, 0) };
-        var leftTags = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
-        leftTags.Children.Add(new Border
-        {
-            Background = new SolidColorBrush(Color.FromArgb(170, 0, 0, 0)),
-            CornerRadius = new CornerRadius(4),
-            Padding = new Thickness(6, 2, 6, 2),
-            Child = new TextBlock { Text = item.Category, FontSize = 10, Foreground = new SolidColorBrush(Colors.White), FontWeight = FontWeights.SemiBold }
-        });
-
-        if (t.HasDynamicEffect)
-        {
-            leftTags.Children.Add(new Border
-            {
-                Background = new SolidColorBrush(Color.FromArgb(170, 0, 0, 0)),
-                CornerRadius = new CornerRadius(4),
-                Padding = new Thickness(5, 2, 5, 2),
-                Child = new TextBlock { Text = t.BackdropType is "Aurora" or "CoverFlow" ? "动态极光" : "氛围粒子", FontSize = 10, Foreground = new SolidColorBrush(Colors.White) }
-            });
         }
-        bannerGrid.Children.Add(leftTags);
 
-        var rightMeta = new TextBlock
-        {
-            Text = $"↓ {item.Downloads}",
-            FontSize = 10,
-            Foreground = new SolidColorBrush(Colors.White),
-            HorizontalAlignment = HorizontalAlignment.Right,
-            VerticalAlignment = VerticalAlignment.Center
-        };
-        bannerGrid.Children.Add(rightMeta);
-        headerBanner.Child = bannerGrid;
-        mainStack.Children.Add(headerBanner);
+        // 1. 顶部 1:1 高拟真「微缩播放器实景预览图」（兼容远程 PreviewImageUrl 真实截图叠加，点击直接试穿）
+        var previewThumbnail = BuildThemeLiveMockupPreview(item, accentCol, isThemeLight);
+        previewThumbnail.Tapped += (_, _) => PreviewThisMarketItem();
+        ToolTipService.SetToolTip(previewThumbnail, "点击预览图即可在主窗口实时试穿该主题效果");
+        mainStack.Children.Add(previewThumbnail);
 
         // 2. 主题标题、作者与简介
         var infoStack = new StackPanel { Spacing = 3 };
         var titleRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-        titleRow.Children.Add(new TextBlock
+        var titleBlock = new TextBlock
         {
             Text = t.Name,
             FontSize = 14,
             FontWeight = FontWeights.Bold,
-            Foreground = new SolidColorBrush(titleColor),
             TextTrimming = TextTrimming.CharacterEllipsis,
             MaxLines = 1
-        });
-        if (isInstalled)
+        };
+        titleRow.Children.Add(titleBlock);
+
+        var installedBadgeText = new TextBlock { Text = "已装", FontSize = 9, FontWeight = FontWeights.Bold };
+        var installedBadge = new Border
         {
-            titleRow.Children.Add(new Border
-            {
-                Background = new SolidColorBrush(Color.FromArgb(0x30, accentCol.R, accentCol.G, accentCol.B)),
-                CornerRadius = new CornerRadius(4),
-                Padding = new Thickness(5, 1, 5, 1),
-                VerticalAlignment = VerticalAlignment.Center,
-                Child = new TextBlock { Text = "已装", FontSize = 9, Foreground = new SolidColorBrush(accentCol), FontWeight = FontWeights.Bold }
-            });
-        }
+            Background = new SolidColorBrush(Color.FromArgb(0x2E, accentCol.R, accentCol.G, accentCol.B)),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(5, 1, 5, 1),
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = installedBadgeText
+        };
+        titleRow.Children.Add(installedBadge);
         infoStack.Children.Add(titleRow);
 
-        infoStack.Children.Add(new TextBlock
+        var authorBlock = new TextBlock
         {
             Text = $"By {t.Author} · {item.SourceName}",
-            FontSize = 11,
-            Foreground = new SolidColorBrush(subColor)
-        });
+            FontSize = 11
+        };
+        infoStack.Children.Add(authorBlock);
 
-        infoStack.Children.Add(new TextBlock
+        var descBlock = new TextBlock
         {
             Text = t.Description,
             FontSize = 12,
-            Foreground = new SolidColorBrush(titleColor),
             MaxLines = 2,
             TextTrimming = TextTrimming.CharacterEllipsis,
             Height = 32
-        });
+        };
+        infoStack.Children.Add(descBlock);
         mainStack.Children.Add(infoStack);
 
         // 3. 底部操作按钮：预览试用 & 安装应用
@@ -1151,44 +1650,624 @@ public sealed partial class MainWindow
             CornerRadius = new CornerRadius(6),
             Padding = new Thickness(8, 5, 8, 5),
             FontSize = 11,
+            FontWeight = FontWeights.Medium,
+            IsTabStop = false,
             HorizontalAlignment = HorizontalAlignment.Stretch
         };
-        previewBtn.Click += async (_, _) =>
-        {
-            _themeDraft = item.Theme.Clone();
-            ViewModel.Theme.NotifyPreviewUpdated(_themeDraft);
-            LoadThemeDraftToEditorUi();
-            ViewModel.StatusToast = $"正在预览试用市场主题：{t.Name}";
-            await Task.CompletedTask;
-        };
+        previewBtn.Click += (_, _) => PreviewThisMarketItem();
         Grid.SetColumn(previewBtn, 0);
         actionsRow.Children.Add(previewBtn);
 
         var installBtn = new Button
         {
-            Content = isInstalled ? "更新并应用" : "安装并应用",
             Style = (Style)Application.Current.Resources["BrandPrimaryButtonStyle"],
             CornerRadius = new CornerRadius(6),
             Padding = new Thickness(8, 5, 8, 5),
             FontSize = 11,
             FontWeight = FontWeights.SemiBold,
+            IsTabStop = false,
             HorizontalAlignment = HorizontalAlignment.Stretch
         };
         installBtn.Click += async (_, _) =>
         {
+            var settingsSv = FindAncestorScrollViewer(SettingsThemePanel);
+            double? savedOffset = (SettingsThemePanel.Visibility == Visibility.Visible && settingsSv != null)
+                ? settingsSv.VerticalOffset
+                : null;
+
             var saved = await ViewModel.Theme.InstallMarketplaceThemeAsync(item);
             _themeDraft = saved.Clone();
             RebuildThemeLibraryCardsUi();
             LoadThemeDraftToEditorUi();
-            RenderMarketplaceCardsUi();
+            RefreshMarketplaceCardsInPlace();
             ViewModel.StatusToast = $"已成功安装并应用：{saved.Name}";
+
+            if (savedOffset.HasValue && settingsSv != null)
+            {
+                settingsSv.ChangeView(null, savedOffset.Value, null, disableAnimation: true);
+            }
         };
         Grid.SetColumn(installBtn, 1);
         actionsRow.Children.Add(installBtn);
 
+        void SyncCardVisualState()
+        {
+            var effProf = ViewModel.Theme.GetEffectiveTheme();
+            bool curUiLight = IsCurrentUiLightMode;
+            bool isLiquid = IsLiquidGlassMode(effProf);
+            bool isCrystal = IsCrystalClearMode(effProf);
+            bool curInstalled = ViewModel.Theme.IsMarketplaceThemeInstalled(item.Id);
+            var readableTagCol = ThemeService.EnsureReadableTextAccent(accentCol, curUiLight);
+
+            if (isLiquid)
+            {
+                card.Background = ThemeService.CreateLiquidGlassSurfaceBrush(accentCol, curUiLight, intensity: 1.12);
+                currentBorderBrush = ThemeService.CreateLiquidGlassBorderBrush(accentCol, intensity: 1.05);
+                card.BorderBrush = currentBorderBrush;
+            }
+            else
+            {
+                Color cardBg = isCrystal
+                    ? Colors.Transparent
+                    : (curUiLight ? Color.FromArgb(72, 255, 255, 255) : Color.FromArgb(20, 255, 255, 255));
+                Color borderCol = isCrystal
+                    ? Color.FromArgb(76, 148, 163, 184)
+                    : (curUiLight ? Color.FromArgb(200, 255, 255, 255) : Color.FromArgb(38, 255, 255, 255));
+                currentBorderBrush = new SolidColorBrush(borderCol);
+                card.Background = new SolidColorBrush(cardBg);
+                card.BorderBrush = currentBorderBrush;
+            }
+
+            Color titleCol = curUiLight ? Color.FromArgb(255, 18, 22, 28) : Color.FromArgb(255, 250, 250, 252);
+            Color subCol = curUiLight ? Color.FromArgb(255, 64, 70, 80) : Color.FromArgb(255, 175, 182, 192);
+            Color descCol = curUiLight ? Color.FromArgb(255, 42, 48, 56) : Color.FromArgb(255, 212, 218, 226);
+
+            titleBlock.Foreground = new SolidColorBrush(titleCol);
+            authorBlock.Foreground = new SolidColorBrush(subCol);
+            descBlock.Foreground = new SolidColorBrush(descCol);
+
+            installedBadge.Visibility = curInstalled ? Visibility.Visible : Visibility.Collapsed;
+            installedBadgeText.Foreground = new SolidColorBrush(readableTagCol);
+            installBtn.Content = curInstalled ? "更新并应用" : "安装并应用";
+
+            if (isLiquid)
+            {
+                previewBtn.ClearValue(Control.ForegroundProperty);
+                previewBtn.Background = ThemeService.CreateLiquidGlassSurfaceBrush(accentCol, curUiLight, intensity: 0.95);
+                previewBtn.BorderBrush = ThemeService.CreateLiquidGlassBorderBrush(accentCol, intensity: 0.9);
+            }
+            else if (isCrystal)
+            {
+                previewBtn.ClearValue(Control.ForegroundProperty);
+                previewBtn.Background = new SolidColorBrush(Colors.Transparent);
+                previewBtn.BorderBrush = new SolidColorBrush(Color.FromArgb(88, 148, 163, 184));
+            }
+            else if (curUiLight)
+            {
+                previewBtn.Foreground = new SolidColorBrush(Color.FromArgb(255, 15, 23, 42));
+                previewBtn.Background = new SolidColorBrush(Color.FromArgb(145, 255, 255, 255));
+                previewBtn.BorderBrush = new SolidColorBrush(Color.FromArgb(48, 15, 23, 42));
+            }
+            else
+            {
+                previewBtn.ClearValue(Control.ForegroundProperty);
+                previewBtn.ClearValue(Control.BackgroundProperty);
+                previewBtn.ClearValue(Control.BorderBrushProperty);
+            }
+        }
+
+        SyncCardVisualState();
+        card.Tag = (Action)SyncCardVisualState;
+
         mainStack.Children.Add(actionsRow);
         card.Child = mainStack;
+
+        card.PointerEntered += (_, _) =>
+        {
+            card.BorderBrush = new SolidColorBrush(Color.FromArgb(195, accentCol.R, accentCol.G, accentCol.B));
+        };
+        card.PointerExited += (_, _) =>
+        {
+            card.BorderBrush = currentBorderBrush;
+        };
+
         return card;
+    }
+
+    /// <summary>
+    /// 根据主题真实参数 1:1 自动渲染微缩桌面播放器实景预览图（含三色流体极光、散点粒子、毛玻璃侧栏、歌单卡片、灵动岛/贴底栏与黑胶唱盘，同时兼容网络 PreviewImageUrl）
+    /// </summary>
+    private static Border BuildThemeLiveMockupPreview(MarketplaceThemeItem item, Color accentCol, bool isThemeLight)
+    {
+        var t = item.Theme;
+        var winBg = ThemeService.ParseColorOrDefault(t.WindowBgColorHex,
+            isThemeLight ? Color.FromArgb(255, 246, 249, 253) : Color.FromArgb(255, 11, 15, 25));
+        var accentEnd = t.EnableAccentGradient && ThemeService.TryParseColor(t.AccentGradientEndHex, out var parsedEnd)
+            ? parsedEnd
+            : ThemeService.AdjustLightness(accentCol, isThemeLight ? 0.16 : -0.14);
+
+        var accentGradBrush = new LinearGradientBrush
+        {
+            StartPoint = new Windows.Foundation.Point(0, 0),
+            EndPoint = new Windows.Foundation.Point(1, 1),
+            GradientStops =
+            {
+                new GradientStop { Color = accentCol, Offset = 0.0 },
+                new GradientStop { Color = accentEnd, Offset = 1.0 }
+            }
+        };
+
+        var outerFrame = new Border
+        {
+            Height = 136,
+            CornerRadius = new CornerRadius(9),
+            Background = new SolidColorBrush(winBg),
+            BorderThickness = new Thickness(1),
+            BorderBrush = new SolidColorBrush(isThemeLight
+                ? Color.FromArgb(190, 226, 232, 240)
+                : Color.FromArgb(65, 255, 255, 255))
+        };
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(outerFrame, SkipAdaptiveTextTag);
+
+        var sceneRoot = new Grid { CornerRadius = new CornerRadius(8) };
+
+        // ==================== 第 1 层：三色流体极光 / 封面流光径向晕染 ====================
+        if (t.BackdropType is "Aurora" or "CoverFlow")
+        {
+            Color c1 = t.BackdropType == "Aurora"
+                ? ThemeService.ParseColorOrDefault(t.AuroraColor1Hex, accentCol)
+                : accentCol;
+            Color c2 = t.BackdropType == "Aurora"
+                ? ThemeService.ParseColorOrDefault(t.AuroraColor2Hex, accentEnd)
+                : ThemeService.HslToColor((ThemeService.RgbToHsl(accentCol.R, accentCol.G, accentCol.B).H + 55) % 360, 0.78, isThemeLight ? 0.80 : 0.48);
+            Color c3 = t.BackdropType == "Aurora"
+                ? ThemeService.ParseColorOrDefault(t.AuroraColor3Hex, Color.FromArgb(255, 99, 102, 241))
+                : ThemeService.HslToColor((ThemeService.RgbToHsl(accentCol.R, accentCol.G, accentCol.B).H + 135) % 360, 0.72, isThemeLight ? 0.84 : 0.44);
+
+            byte centerA = isThemeLight ? (byte)165 : (byte)145;
+            byte midA = isThemeLight ? (byte)75 : (byte)64;
+
+            Microsoft.UI.Xaml.Shapes.Ellipse MakeOrb(Color col, double size, HorizontalAlignment ha, VerticalAlignment va, Thickness margin)
+            {
+                var rb = new RadialGradientBrush
+                {
+                    Center = new Windows.Foundation.Point(0.5, 0.5),
+                    GradientOrigin = new Windows.Foundation.Point(0.5, 0.5),
+                    RadiusX = 0.5,
+                    RadiusY = 0.5
+                };
+                rb.GradientStops.Add(new GradientStop { Color = Color.FromArgb(centerA, col.R, col.G, col.B), Offset = 0.0 });
+                rb.GradientStops.Add(new GradientStop { Color = Color.FromArgb(midA, col.R, col.G, col.B), Offset = 0.52 });
+                rb.GradientStops.Add(new GradientStop { Color = Color.FromArgb(0, col.R, col.G, col.B), Offset = 1.0 });
+
+                return new Microsoft.UI.Xaml.Shapes.Ellipse
+                {
+                    Width = size,
+                    Height = size,
+                    Fill = rb,
+                    HorizontalAlignment = ha,
+                    VerticalAlignment = va,
+                    Margin = margin,
+                    IsHitTestVisible = false
+                };
+            }
+
+            sceneRoot.Children.Add(MakeOrb(c1, 165, HorizontalAlignment.Left, VerticalAlignment.Top, new Thickness(-32, -36, 0, 0)));
+            sceneRoot.Children.Add(MakeOrb(c2, 155, HorizontalAlignment.Right, VerticalAlignment.Bottom, new Thickness(0, 0, -28, -34)));
+            sceneRoot.Children.Add(MakeOrb(c3, 135, HorizontalAlignment.Center, VerticalAlignment.Center, new Thickness(24, 12, 0, 0)));
+        }
+
+        // ==================== 第 2 层：确定性氛围粒子装饰层（落樱/萤火/微雪/音泡/繁星） ====================
+        if (t.EnableParticleOverlay)
+        {
+            var particleCanvas = new Canvas { IsHitTestVisible = false };
+            string pType = string.IsNullOrWhiteSpace(t.ParticleType) ? "Starlight" : t.ParticleType;
+            Color pCol = ThemeService.TryParseColor(t.ParticleColorHex, out var customP)
+                ? customP
+                : pType switch
+                {
+                    "Sakura" => isThemeLight ? Color.FromArgb(255, 244, 114, 182) : Color.FromArgb(255, 253, 164, 175),
+                    "Firefly" => Color.FromArgb(255, 253, 224, 71),
+                    "Snow" => isThemeLight ? Color.FromArgb(255, 148, 163, 184) : Color.FromArgb(255, 241, 245, 249),
+                    _ => accentCol
+                };
+
+            int seed = Math.Abs((item.Id ?? t.Name).GetHashCode());
+            var rng = new Random(seed);
+            for (int p = 0; p < 12; p++)
+            {
+                double px = 14 + rng.NextDouble() * 235;
+                double py = 8 + rng.NextDouble() * 112;
+                FrameworkElement dot;
+
+                if (pType == "Sakura")
+                {
+                    dot = new Border
+                    {
+                        Width = 6.5,
+                        Height = 4.2,
+                        CornerRadius = new CornerRadius(4, 1, 4, 1),
+                        Background = new SolidColorBrush(Color.FromArgb(195, pCol.R, pCol.G, pCol.B)),
+                        RenderTransform = new RotateTransform { Angle = rng.Next(0, 360) }
+                    };
+                }
+                else if (pType == "Bubble")
+                {
+                    double bSize = 5 + rng.NextDouble() * 5.5;
+                    dot = new Border
+                    {
+                        Width = bSize,
+                        Height = bSize,
+                        CornerRadius = new CornerRadius(bSize * 0.5),
+                        Background = new SolidColorBrush(Color.FromArgb(45, pCol.R, pCol.G, pCol.B)),
+                        BorderBrush = new SolidColorBrush(Color.FromArgb(175, pCol.R, pCol.G, pCol.B)),
+                        BorderThickness = new Thickness(1)
+                    };
+                }
+                else
+                {
+                    double sSize = pType == "Firefly" ? 4.2 : 3.0;
+                    dot = new Microsoft.UI.Xaml.Shapes.Ellipse
+                    {
+                        Width = sSize,
+                        Height = sSize,
+                        Fill = new SolidColorBrush(Color.FromArgb(210, pCol.R, pCol.G, pCol.B))
+                    };
+                }
+
+                Canvas.SetLeft(dot, px);
+                Canvas.SetTop(dot, py);
+                particleCanvas.Children.Add(dot);
+            }
+            sceneRoot.Children.Add(particleCanvas);
+        }
+
+        // ==================== 第 3 层：1:1 微缩播放器实景骨架（侧栏 + 顶栏 + 歌单卡片 + 灵动岛/贴底栏） ====================
+        var mockupShell = new Grid { Padding = new Thickness(10, 24, 10, 6) };
+        var appWindowBox = new Border
+        {
+            CornerRadius = new CornerRadius(7),
+            BorderThickness = new Thickness(1),
+            BorderBrush = new SolidColorBrush(isThemeLight
+                ? Color.FromArgb(185, 255, 255, 255)
+                : Color.FromArgb(52, 255, 255, 255)),
+            Background = new SolidColorBrush(isThemeLight
+                ? Color.FromArgb(32, 255, 255, 255)
+                : Color.FromArgb(38, 15, 23, 42))
+        };
+
+        var winGrid = new Grid();
+        winGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(13) });
+        winGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        winGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(21) });
+
+        Color fgLine = isThemeLight ? Color.FromArgb(165, 30, 41, 59) : Color.FromArgb(185, 241, 245, 249);
+        Color subLine = isThemeLight ? Color.FromArgb(85, 71, 85, 105) : Color.FromArgb(90, 148, 163, 184);
+
+        // 3.1 微缩顶栏（品牌点 + 居中胶囊搜索条）
+        var miniTopBar = new Grid { Padding = new Thickness(6, 0, 6, 0) };
+        miniTopBar.Children.Add(new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 4,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children =
+            {
+                new Border { Width = 6, Height = 6, CornerRadius = new CornerRadius(3), Background = accentGradBrush },
+                new Border { Width = 22, Height = 3, CornerRadius = new CornerRadius(1.5), Background = new SolidColorBrush(fgLine) }
+            }
+        });
+        miniTopBar.Children.Add(new Border
+        {
+            Width = 64,
+            Height = 7,
+            CornerRadius = new CornerRadius(3.5),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            Background = new SolidColorBrush(isThemeLight
+                ? Color.FromArgb(115, 255, 255, 255)
+                : Color.FromArgb(85, 30, 41, 59)),
+            BorderThickness = new Thickness(0.6),
+            BorderBrush = new SolidColorBrush(isThemeLight
+                ? Color.FromArgb(170, 255, 255, 255)
+                : Color.FromArgb(45, 255, 255, 255))
+        });
+        Grid.SetRow(miniTopBar, 0);
+        winGrid.Children.Add(miniTopBar);
+
+        // 3.2 微缩中部（左侧毛玻璃导航栏 + 右侧主内容歌单卡片）
+        var bodyGrid = new Grid { Padding = new Thickness(4, 1, 5, 2), ColumnSpacing = 6 };
+        bodyGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(42) });
+        bodyGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        Color paneBg = t.EnableCustomNavPane && ThemeService.TryParseColor(t.NavPaneBgHex, out var customNav)
+            ? Color.FromArgb((byte)(isThemeLight ? 120 : 175), customNav.R, customNav.G, customNav.B)
+            : (isThemeLight ? Color.FromArgb(105, 255, 255, 255) : Color.FromArgb(110, 15, 23, 42));
+
+        var navPane = new Border
+        {
+            CornerRadius = new CornerRadius(5),
+            Background = new SolidColorBrush(paneBg),
+            Padding = new Thickness(4, 4, 4, 4)
+        };
+        var navStack = new StackPanel { Spacing = 3.5 };
+        navStack.Children.Add(new Border
+        {
+            Height = 7,
+            CornerRadius = new CornerRadius(3),
+            Background = new SolidColorBrush(Color.FromArgb(65, accentCol.R, accentCol.G, accentCol.B)),
+            Child = new Border
+            {
+                Width = 2,
+                Height = 4,
+                CornerRadius = new CornerRadius(1),
+                Background = new SolidColorBrush(accentCol),
+                HorizontalAlignment = HorizontalAlignment.Left,
+                Margin = new Thickness(1.5, 0, 0, 0)
+            }
+        });
+        for (int n = 0; n < 3; n++)
+        {
+            navStack.Children.Add(new Border
+            {
+                Height = 3.5,
+                Width = n == 2 ? 22 : 28,
+                HorizontalAlignment = HorizontalAlignment.Left,
+                CornerRadius = new CornerRadius(1.5),
+                Margin = new Thickness(2, 0, 0, 0),
+                Background = new SolidColorBrush(subLine)
+            });
+        }
+        navPane.Child = navStack;
+        Grid.SetColumn(navPane, 0);
+        bodyGrid.Children.Add(navPane);
+
+        // 右侧主工作区：顶部渐变横幅 + 3 张卡片（体现 FrostedGlass / NeonBorder / FlatMinimal 差异）
+        var contentStack = new StackPanel { Spacing = 4, VerticalAlignment = VerticalAlignment.Stretch };
+        contentStack.Children.Add(new Border
+        {
+            Height = 14,
+            CornerRadius = new CornerRadius(4),
+            Background = accentGradBrush,
+            Opacity = 0.88,
+            Padding = new Thickness(6, 0, 6, 0),
+            Child = new Border
+            {
+                Width = 42,
+                Height = 3.5,
+                CornerRadius = new CornerRadius(1.5),
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Center,
+                Background = new SolidColorBrush(Color.FromArgb(225, 255, 255, 255))
+            }
+        });
+
+        var cardsRow = new Grid { ColumnSpacing = 4 };
+        for (int c = 0; c < 3; c++)
+        {
+            cardsRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+            bool isNeon = t.CardVisualStyle == "NeonBorder";
+            bool isFlat = t.CardVisualStyle == "FlatMinimal";
+            Color miniCardBg = isThemeLight
+                ? Color.FromArgb(98, 255, 255, 255)
+                : Color.FromArgb(95, 30, 41, 59);
+            Color miniCardStroke = isNeon
+                ? Color.FromArgb(185, accentCol.R, accentCol.G, accentCol.B)
+                : (isFlat ? Colors.Transparent : (isThemeLight ? Color.FromArgb(195, 255, 255, 255) : Color.FromArgb(55, 255, 255, 255)));
+
+            var miniCard = new Border
+            {
+                Height = 32,
+                CornerRadius = new CornerRadius(Math.Clamp(t.ButtonCornerRadius * 0.3, 2.5, 5.5)),
+                Background = new SolidColorBrush(miniCardBg),
+                BorderBrush = new SolidColorBrush(miniCardStroke),
+                BorderThickness = new Thickness(isFlat ? 0 : 1),
+                Padding = new Thickness(4, 4, 4, 3)
+            };
+
+            var mcStack = new StackPanel { Spacing = 2.5 };
+            mcStack.Children.Add(new Border
+            {
+                Height = 13,
+                CornerRadius = new CornerRadius(2.5),
+                Background = new SolidColorBrush(Color.FromArgb((byte)(55 + c * 22), accentCol.R, accentCol.G, accentCol.B))
+            });
+            mcStack.Children.Add(new Border
+            {
+                Height = 3,
+                Width = 24,
+                HorizontalAlignment = HorizontalAlignment.Left,
+                CornerRadius = new CornerRadius(1.5),
+                Background = new SolidColorBrush(fgLine)
+            });
+            miniCard.Child = mcStack;
+            Grid.SetColumn(miniCard, c);
+            cardsRow.Children.Add(miniCard);
+        }
+        contentStack.Children.Add(cardsRow);
+        Grid.SetColumn(contentStack, 1);
+        bodyGrid.Children.Add(contentStack);
+
+        Grid.SetRow(bodyGrid, 1);
+        winGrid.Children.Add(bodyGrid);
+
+        // 3.3 微缩底部播放栏（1:1 体现 FloatingIsland 悬浮岛 / MinimalGlass / Docked + 黑胶唱盘 + 律动灯带）
+        bool isIsland = t.PlayBarLayoutMode == "FloatingIsland";
+        bool isMinimalBar = t.PlayBarLayoutMode == "MinimalGlass";
+        Color pbBg = t.EnableCustomPlayBar && ThemeService.TryParseColor(t.PlayBarBgHex, out var customPb)
+            ? Color.FromArgb((byte)(isThemeLight ? 145 : 205), customPb.R, customPb.G, customPb.B)
+            : (isThemeLight
+                ? Color.FromArgb((byte)(isMinimalBar ? 85 : 135), 255, 255, 255)
+                : Color.FromArgb((byte)(isMinimalBar ? 95 : 175), 17, 24, 39));
+
+        var miniPlayBar = new Border
+        {
+            Margin = isIsland ? new Thickness(7, 1, 7, 3) : new Thickness(0),
+            CornerRadius = isIsland ? new CornerRadius(8) : new CornerRadius(0, 0, 6, 6),
+            Background = new SolidColorBrush(pbBg),
+            BorderThickness = isMinimalBar ? new Thickness(0) : (isIsland ? new Thickness(1) : new Thickness(0, 1, 0, 0)),
+            BorderBrush = new SolidColorBrush(isThemeLight
+                ? Color.FromArgb(185, 255, 255, 255)
+                : Color.FromArgb(80, accentCol.R, accentCol.G, accentCol.B)),
+            Padding = new Thickness(6, 0, 6, 0)
+        };
+
+        var pbGrid = new Grid();
+        if (t.EnablePlayBarRhythmGlow)
+        {
+            pbGrid.Children.Add(new Border
+            {
+                Height = 1.5,
+                VerticalAlignment = VerticalAlignment.Top,
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                Margin = new Thickness(8, 0, 8, 0),
+                Background = accentGradBrush
+            });
+        }
+
+        // 左下微缩黑胶唱盘 / 封面
+        bool isVinyl = t.CoverArtShape == "VinylSpin";
+        var miniCover = new Border
+        {
+            Width = 11,
+            Height = 11,
+            CornerRadius = new CornerRadius(isVinyl || t.CoverArtShape == "Circle" ? 5.5 : 2.5),
+            Background = isVinyl ? new SolidColorBrush(Color.FromArgb(240, 24, 24, 27)) : accentGradBrush,
+            BorderThickness = isVinyl ? new Thickness(1.5) : new Thickness(0),
+            BorderBrush = new SolidColorBrush(Color.FromArgb(200, 39, 39, 42)),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = isVinyl
+                ? new Border { Width = 4, Height = 4, CornerRadius = new CornerRadius(2), Background = new SolidColorBrush(accentCol) }
+                : null
+        };
+        pbGrid.Children.Add(miniCover);
+
+        // 中央播放圆钮 + 微缩进度条
+        var centerControls = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 5,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        centerControls.Children.Add(new Border
+        {
+            Width = 10,
+            Height = 10,
+            CornerRadius = new CornerRadius(5),
+            Background = accentGradBrush
+        });
+        var miniTrack = new Border
+        {
+            Width = 48,
+            Height = 2.5,
+            CornerRadius = new CornerRadius(1.2),
+            VerticalAlignment = VerticalAlignment.Center,
+            Background = new SolidColorBrush(subLine),
+            Child = new Border
+            {
+                Width = 26,
+                HorizontalAlignment = HorizontalAlignment.Left,
+                CornerRadius = new CornerRadius(1.2),
+                Background = new SolidColorBrush(accentCol)
+            }
+        };
+        centerControls.Children.Add(miniTrack);
+        pbGrid.Children.Add(centerControls);
+
+        miniPlayBar.Child = pbGrid;
+        Grid.SetRow(miniPlayBar, 2);
+        winGrid.Children.Add(miniPlayBar);
+
+        appWindowBox.Child = winGrid;
+        mockupShell.Children.Add(appWindowBox);
+        sceneRoot.Children.Add(mockupShell);
+
+        // ==================== 第 4 层：若远程 JSON 配置了真实预览图 URL 则自动无感覆盖渲染 ====================
+        if (!string.IsNullOrWhiteSpace(item.PreviewImageUrl) &&
+            (item.PreviewImageUrl.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+             item.PreviewImageUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase)))
+        {
+            try
+            {
+                sceneRoot.Children.Add(new Image
+                {
+                    Source = new BitmapImage(new Uri(item.PreviewImageUrl)),
+                    Stretch = Stretch.UniformToFill,
+                    HorizontalAlignment = HorizontalAlignment.Stretch,
+                    VerticalAlignment = VerticalAlignment.Stretch
+                });
+            }
+            catch
+            {
+                // URL 异常时静默保留底层 1:1 矢量实景预览图
+            }
+        }
+
+        // ==================== 第 5 层：顶部悬浮磨砂分类/明暗/动态特效角标 + 右下热度 ====================
+        var topOverlay = new Grid
+        {
+            VerticalAlignment = VerticalAlignment.Top,
+            Padding = new Thickness(7, 5, 7, 0),
+            IsHitTestVisible = false
+        };
+
+        var leftPills = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+        leftPills.Children.Add(new Border
+        {
+            Background = new SolidColorBrush(Color.FromArgb(155, 9, 13, 22)),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(5, 1.5, 5, 1.5),
+            Child = new TextBlock { Text = item.Category, FontSize = 9.5, Foreground = new SolidColorBrush(Colors.White), FontWeight = FontWeights.SemiBold }
+        });
+        leftPills.Children.Add(new Border
+        {
+            Background = new SolidColorBrush(isThemeLight ? Color.FromArgb(190, 255, 255, 255) : Color.FromArgb(155, 15, 23, 42)),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(4.5, 1.5, 4.5, 1.5),
+            Child = new TextBlock
+            {
+                Text = isThemeLight ? "☀ 浅色" : "🌙 深色",
+                FontSize = 9,
+                Foreground = new SolidColorBrush(isThemeLight ? Color.FromArgb(255, 15, 23, 42) : Color.FromArgb(255, 226, 232, 240)),
+                FontWeight = FontWeights.Medium
+            }
+        });
+        topOverlay.Children.Add(leftPills);
+
+        var rightInfoStack = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, HorizontalAlignment = HorizontalAlignment.Right };
+        if (t.HasDynamicEffect)
+        {
+            string fxLabel = (t.BackdropType is "Aurora" or "CoverFlow", t.EnableParticleOverlay) switch
+            {
+                (true, true) => "极光+粒子",
+                (true, false) => t.BackdropType == "CoverFlow" ? "随歌流光" : "流体极光",
+                _ => "氛围粒子"
+            };
+            rightInfoStack.Children.Add(new Border
+            {
+                Background = accentGradBrush,
+                CornerRadius = new CornerRadius(4),
+                Padding = new Thickness(5, 1.5, 5, 1.5),
+                Child = new TextBlock { Text = fxLabel, FontSize = 9, Foreground = new SolidColorBrush(Colors.White), FontWeight = FontWeights.SemiBold }
+            });
+        }
+
+        string dlText = item.Downloads >= 10000 ? $"🔥 {item.Downloads / 10000.0:F1}w" : $"↓ {item.Downloads}";
+        rightInfoStack.Children.Add(new Border
+        {
+            Background = new SolidColorBrush(Color.FromArgb(145, 9, 13, 22)),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(4.5, 1.5, 4.5, 1.5),
+            Child = new TextBlock { Text = dlText, FontSize = 9, Foreground = new SolidColorBrush(Colors.White) }
+        });
+        topOverlay.Children.Add(rightInfoStack);
+
+        sceneRoot.Children.Add(topOverlay);
+        outerFrame.Child = sceneRoot;
+        return outerFrame;
     }
 
     private void UpdateMarketCategoryFilterButtonsUi()
@@ -1243,6 +2322,7 @@ public sealed partial class MainWindow
 
     private void OnMarketSearchTextChanged(object sender, TextChangedEventArgs e)
     {
+        if (!_isInitialized) return;
         if (sender is TextBox tb)
         {
             _marketSearchQuery = tb.Text;
@@ -1413,6 +2493,9 @@ public sealed partial class MainWindow
         PageWallpaperMaskOpacityText.Text = maskLabel;
         PageVideoMaskOpacitySlider.Value = maskVal;
         PageVideoMaskOpacityText.Text = maskLabel;
+
+        ThemeAdaptiveWallpaperTextToggle.IsOn = _themeDraft.EnableAdaptiveWallpaperText;
+        PageAdaptiveWallpaperTextToggle.IsOn = _themeDraft.EnableAdaptiveWallpaperText;
 
         string wallpaperName = string.IsNullOrWhiteSpace(_themeDraft.BackgroundImagePath)
             ? "尚未选择背景图片"
@@ -1830,20 +2913,167 @@ public sealed partial class MainWindow
     private static void BindColorControlPair(Button swatchBtn, TextBox? hexBox, string rawHex, Color fallbackSwatchColor, bool allowEmptyText = false)
     {
         var col = ThemeService.ParseColorOrDefault(rawHex, fallbackSwatchColor);
-        swatchBtn.Background = new SolidColorBrush(col);
+        if (swatchBtn.Background is SolidColorBrush scb)
+        {
+            scb.Color = col;
+        }
+        else
+        {
+            swatchBtn.Background = new SolidColorBrush(col);
+        }
+
         if (hexBox != null)
         {
-            hexBox.Text = allowEmptyText && string.IsNullOrWhiteSpace(rawHex)
+            string targetText = allowEmptyText && string.IsNullOrWhiteSpace(rawHex)
                 ? string.Empty
                 : (string.IsNullOrWhiteSpace(rawHex) ? ThemeService.ToHex(col) : rawHex);
+            if (!string.Equals(hexBox.Text, targetText, StringComparison.Ordinal))
+            {
+                hexBox.Text = targetText;
+            }
+        }
+    }
+
+    private void SyncSingleColorControlByKey(string key, Color resolvedColor, string rawHex)
+    {
+        bool allowEmpty = IsOptionalColorKey(key);
+        switch (key)
+        {
+            case "WindowBgColorHex":
+                BindColorControlPair(SwatchWindowBgBtn, HexWindowBgBox, rawHex, resolvedColor);
+                BindColorControlPair(PageSwatchWindowBgBtn, PageHexWindowBgBox, rawHex, resolvedColor);
+                break;
+            case "BackgroundMaskColorHex":
+                BindColorControlPair(SwatchMaskColorBtn, HexMaskColorBox, rawHex, resolvedColor);
+                BindColorControlPair(PageSwatchMaskColorBtn, PageHexMaskColorBox, rawHex, resolvedColor);
+                BindColorControlPair(PageSwatchVideoMaskBtn, null, rawHex, resolvedColor);
+                break;
+            case "AuroraColor1Hex":
+                BindColorControlPair(SwatchAurora1Btn, null, rawHex, resolvedColor);
+                BindColorControlPair(PageSwatchAurora1Btn, PageHexAurora1Box, rawHex, resolvedColor);
+                break;
+            case "AuroraColor2Hex":
+                BindColorControlPair(SwatchAurora2Btn, null, rawHex, resolvedColor);
+                BindColorControlPair(PageSwatchAurora2Btn, PageHexAurora2Box, rawHex, resolvedColor);
+                break;
+            case "AuroraColor3Hex":
+                BindColorControlPair(SwatchAurora3Btn, null, rawHex, resolvedColor);
+                BindColorControlPair(PageSwatchAurora3Btn, PageHexAurora3Box, rawHex, resolvedColor);
+                break;
+            case "ParticleColorHex":
+                BindColorControlPair(SwatchParticleColorBtn, null, rawHex, resolvedColor, allowEmpty);
+                BindColorControlPair(PageSwatchParticleColorBtn, PageHexParticleColorBox, rawHex, resolvedColor, allowEmpty);
+                break;
+            case "AccentColorHex":
+                // 主强调色会影响自动衍生色块（Hover/Pressed/可选跟随主色的预览块），同步全组但原地改色零 GC
+                SyncAllColorBoxesAndSwatchesFromDraft();
+                break;
+            case "AccentGradientEndHex":
+                BindColorControlPair(SwatchAccentGradEndBtn, HexAccentGradEndBox, rawHex, resolvedColor);
+                BindColorControlPair(PageSwatchAccentGradEndBtn, PageHexAccentGradEndBox, rawHex, resolvedColor);
+                break;
+            case "AccentHoverHex":
+                BindColorControlPair(SwatchAccentHoverBtn, HexAccentHoverBox, rawHex, resolvedColor);
+                BindColorControlPair(PageSwatchAccentHoverBtn, PageHexAccentHoverBox, rawHex, resolvedColor);
+                break;
+            case "AccentPressedHex":
+                BindColorControlPair(SwatchAccentPressedBtn, HexAccentPressedBox, rawHex, resolvedColor);
+                BindColorControlPair(PageSwatchAccentPressedBtn, PageHexAccentPressedBox, rawHex, resolvedColor);
+                break;
+            case "TitleBarBgHex":
+                BindColorControlPair(SwatchTitleBarBgBtn, HexTitleBarBgBox, rawHex, resolvedColor);
+                BindColorControlPair(PageSwatchTitleBarBgBtn, PageHexTitleBarBgBox, rawHex, resolvedColor);
+                break;
+            case "TitleBarGradientEndHex":
+                BindColorControlPair(SwatchTitleBarGradEndBtn, HexTitleBarGradEndBox, rawHex, resolvedColor);
+                BindColorControlPair(PageSwatchTitleBarGradEndBtn, PageHexTitleBarGradEndBox, rawHex, resolvedColor);
+                break;
+            case "TitleBarTextHex":
+                BindColorControlPair(SwatchTitleBarTextBtn, HexTitleBarTextBox, rawHex, resolvedColor, allowEmpty);
+                BindColorControlPair(PageSwatchTitleBarTextBtn, PageHexTitleBarTextBox, rawHex, resolvedColor, allowEmpty);
+                break;
+            case "NavPaneBgHex":
+                BindColorControlPair(SwatchNavPaneBgBtn, HexNavPaneBgBox, rawHex, resolvedColor);
+                BindColorControlPair(PageSwatchNavPaneBgBtn, PageHexNavPaneBgBox, rawHex, resolvedColor);
+                break;
+            case "NavPaneGradientEndHex":
+                BindColorControlPair(SwatchNavPaneGradEndBtn, HexNavPaneGradEndBox, rawHex, resolvedColor);
+                BindColorControlPair(PageSwatchNavPaneGradEndBtn, PageHexNavPaneGradEndBox, rawHex, resolvedColor);
+                break;
+            case "NavPaneTextHex":
+                BindColorControlPair(SwatchNavPaneTextBtn, HexNavPaneTextBox, rawHex, resolvedColor, allowEmpty);
+                BindColorControlPair(PageSwatchNavPaneTextBtn, PageHexNavPaneTextBox, rawHex, resolvedColor, allowEmpty);
+                break;
+            case "NavPaneSelectedBgHex":
+                BindColorControlPair(SwatchNavSelectedBgBtn, HexNavSelectedBgBox, rawHex, resolvedColor, allowEmpty);
+                BindColorControlPair(PageSwatchNavSelectedBgBtn, PageHexNavSelectedBgBox, rawHex, resolvedColor, allowEmpty);
+                break;
+            case "ContentBgHex":
+                BindColorControlPair(SwatchContentBgBtn, HexContentBgBox, rawHex, resolvedColor);
+                BindColorControlPair(PageSwatchContentBgBtn, PageHexContentBgBox, rawHex, resolvedColor);
+                break;
+            case "CardBgHex":
+                BindColorControlPair(SwatchCardBgBtn, HexCardBgBox, rawHex, resolvedColor);
+                BindColorControlPair(PageSwatchCardBgBtn, PageHexCardBgBox, rawHex, resolvedColor);
+                break;
+            case "CardBorderHex":
+                BindColorControlPair(SwatchCardBorderBtn, HexCardBorderBox, rawHex, resolvedColor);
+                BindColorControlPair(PageSwatchCardBorderBtn, PageHexCardBorderBox, rawHex, resolvedColor);
+                break;
+            case "PrimaryTextHex":
+                BindColorControlPair(SwatchPrimaryTextBtn, HexPrimaryTextBox, rawHex, resolvedColor, allowEmpty);
+                BindColorControlPair(PageSwatchPrimaryTextBtn, PageHexPrimaryTextBox, rawHex, resolvedColor, allowEmpty);
+                break;
+            case "SecondaryTextHex":
+                BindColorControlPair(SwatchSecondaryTextBtn, HexSecondaryTextBox, rawHex, resolvedColor, allowEmpty);
+                BindColorControlPair(PageSwatchSecondaryTextBtn, PageHexSecondaryTextBox, rawHex, resolvedColor, allowEmpty);
+                break;
+            case "PlayBarBgHex":
+                BindColorControlPair(SwatchPlayBarBgBtn, HexPlayBarBgBox, rawHex, resolvedColor);
+                BindColorControlPair(PageSwatchPlayBarBgBtn, PageHexPlayBarBgBox, rawHex, resolvedColor);
+                break;
+            case "PlayBarGradientEndHex":
+                BindColorControlPair(SwatchPlayBarGradEndBtn, HexPlayBarGradEndBox, rawHex, resolvedColor);
+                BindColorControlPair(PageSwatchPlayBarGradEndBtn, PageHexPlayBarGradEndBox, rawHex, resolvedColor);
+                break;
+            case "PlayBarBorderHex":
+                BindColorControlPair(SwatchPlayBarBorderBtn, HexPlayBarBorderBox, rawHex, resolvedColor);
+                BindColorControlPair(PageSwatchPlayBarBorderBtn, PageHexPlayBarBorderBox, rawHex, resolvedColor);
+                break;
+            case "PlayBarTextHex":
+                BindColorControlPair(SwatchPlayBarTextBtn, HexPlayBarTextBox, rawHex, resolvedColor, allowEmpty);
+                BindColorControlPair(PageSwatchPlayBarTextBtn, PageHexPlayBarTextBox, rawHex, resolvedColor, allowEmpty);
+                break;
+            case "PlayButtonColorHex":
+                BindColorControlPair(SwatchPlayButtonBtn, HexPlayButtonBox, rawHex, resolvedColor, allowEmpty);
+                BindColorControlPair(PageSwatchPlayButtonBtn, PageHexPlayButtonBox, rawHex, resolvedColor, allowEmpty);
+                break;
+            case "ProgressSliderColorHex":
+                BindColorControlPair(SwatchProgressSliderBtn, HexProgressSliderBox, rawHex, resolvedColor, allowEmpty);
+                BindColorControlPair(PageSwatchProgressSliderBtn, PageHexProgressSliderBox, rawHex, resolvedColor, allowEmpty);
+                break;
+            case "MiniPlayerBgHex":
+                BindColorControlPair(SwatchMiniBgBtn, HexMiniBgBox, rawHex, resolvedColor);
+                BindColorControlPair(PageSwatchMiniBgBtn, PageHexMiniBgBox, rawHex, resolvedColor);
+                break;
+            case "LyricHighlightColorHex":
+                BindColorControlPair(SwatchLyricHighlightBtn, HexLyricHighlightBox, rawHex, resolvedColor, allowEmpty);
+                BindColorControlPair(PageSwatchLyricHighlightBtn, PageHexLyricHighlightBox, rawHex, resolvedColor, allowEmpty);
+                break;
+            default:
+                SyncAllColorBoxesAndSwatchesFromDraft();
+                break;
         }
     }
 
     /// <summary>
-    /// 实时刷新弹窗右上角 1:1 四大分区微缩仿真窗口（含微缩极光与悬浮灵动岛预览）
+    /// 实时刷新弹窗右上角 1:1 四大分区微缩仿真窗口（仅在独立主题弹窗可见时更新，并缓存壁纸位图避免重复解码）
     /// </summary>
     private void UpdateMiniPreviewWindow()
     {
+        if (ThemeCenterModalOverlay.Visibility != Visibility.Visible)
+            return;
+
         bool isLight = ThemeService.IsEffectiveLightMode(_themeDraft.BaseMode);
         var previewDraft = ThemeService.ResolveModeAdaptedProfile(_themeDraft, isLight);
         var (accent, _, _, subtle) = ViewModel.Theme.DeriveAccentColors(previewDraft);
@@ -1875,17 +3105,22 @@ public sealed partial class MainWindow
 
         if (previewDraft.BackdropType == "Image" && !string.IsNullOrWhiteSpace(previewDraft.BackgroundImagePath) && File.Exists(previewDraft.BackgroundImagePath))
         {
-            try
+            if (!string.Equals(_cachedMiniPreviewWallPath, previewDraft.BackgroundImagePath, StringComparison.OrdinalIgnoreCase))
             {
-                MiniPreviewWallpaperImg.Source = new BitmapImage(new Uri(previewDraft.BackgroundImagePath));
-                MiniPreviewWallpaperImg.Visibility = Visibility.Visible;
+                try
+                {
+                    MiniPreviewWallpaperImg.Source = new BitmapImage(new Uri(previewDraft.BackgroundImagePath));
+                    _cachedMiniPreviewWallPath = previewDraft.BackgroundImagePath;
+                }
+                catch
+                {
+                    _cachedMiniPreviewWallPath = string.Empty;
+                    MiniPreviewWallpaperImg.Visibility = Visibility.Collapsed;
+                }
             }
-            catch
-            {
-                MiniPreviewWallpaperImg.Visibility = Visibility.Collapsed;
-            }
+            MiniPreviewWallpaperImg.Visibility = Visibility.Visible;
             var maskCol = ThemeService.ParseColorOrDefault(previewDraft.BackgroundMaskColorHex, Color.FromArgb(255, 9, 13, 22));
-            MiniPreviewWallpaperMask.Background = new SolidColorBrush(ThemeService.WithOpacity(maskCol, previewDraft.BackgroundMaskOpacity));
+            MiniPreviewWallpaperMask.Background = ThemeService.UpdateOrCreateSectionBrush(MiniPreviewWallpaperMask.Background, maskCol, false, null, previewDraft.BackgroundMaskOpacity, 0);
             MiniPreviewWallpaperMask.Visibility = Visibility.Visible;
         }
         else
@@ -1985,7 +3220,7 @@ public sealed partial class MainWindow
 
     private void OnThemeDraftMetadataChanged(object sender, TextChangedEventArgs e)
     {
-        if (_isLoadingThemeCenterUi) return;
+        if (_isLoadingThemeCenterUi || !_isInitialized) return;
         _themeDraft.Name = ThemeDraftNameBox.Text.Trim();
         _themeDraft.Author = ThemeDraftAuthorBox.Text.Trim();
         _themeDraft.Description = ThemeDraftDescBox.Text.Trim();
@@ -1999,7 +3234,7 @@ public sealed partial class MainWindow
 
     private void OnPageThemeMetadataChanged(object sender, TextChangedEventArgs e)
     {
-        if (_isLoadingThemeCenterUi) return;
+        if (_isLoadingThemeCenterUi || !_isInitialized) return;
         _themeDraft.Name = PageThemeNameBox.Text.Trim();
         _themeDraft.Author = PageThemeAuthorBox.Text.Trim();
         _themeDraft.Description = PageThemeDescBox.Text.Trim();
@@ -2023,9 +3258,33 @@ public sealed partial class MainWindow
     private void OnThemeBackdropTypeBtnClick(object sender, RoutedEventArgs e)
     {
         if (_isLoadingThemeCenterUi || sender is not Button btn || btn.Tag is not string kind) return;
+        bool switchingToImage = !string.Equals(_themeDraft.BackdropType, "Image", StringComparison.OrdinalIgnoreCase) &&
+                                string.Equals(kind, "Image", StringComparison.OrdinalIgnoreCase);
         _themeDraft.BackdropType = kind;
-        SyncBaseModeAndBackdropButtons();
+        if (switchingToImage)
+        {
+            ApplyCrystalClearWallpaperDefaults(_themeDraft);
+            LoadThemeDraftToEditorUi();
+        }
+        else
+        {
+            SyncBaseModeAndBackdropButtons();
+        }
         PushDraftLivePreview();
+    }
+
+    private static void ApplyCrystalClearWallpaperDefaults(CustomThemeProfile draft)
+    {
+        draft.BackgroundBlur = 0.0;
+        draft.BackgroundMaskOpacity = 0.0;
+        draft.EnableAdaptiveWallpaperText = true;
+        draft.CardVisualStyle = "LiquidGlass";
+        draft.CardCornerRadius = 16.0;
+        draft.ButtonCornerRadius = 12.0;
+        draft.EnableCustomTitleBar = false;
+        draft.EnableCustomNavPane = false;
+        draft.EnableCustomContent = false;
+        draft.EnableCustomPlayBar = false;
     }
 
     private void OnQuickAccentDotClick(object sender, RoutedEventArgs e)
@@ -2040,7 +3299,7 @@ public sealed partial class MainWindow
 
     private void OnThemeSectionSwitchToggled(object sender, RoutedEventArgs e)
     {
-        if (_isLoadingThemeCenterUi) return;
+        if (_isLoadingThemeCenterUi || !_isInitialized) return;
 
         _themeDraft.UseCustomAccentStates = UseCustomAccentStatesToggle.IsOn;
         _themeDraft.EnableCustomTitleBar = EnableCustomTitleBarToggle.IsOn;
@@ -2070,7 +3329,7 @@ public sealed partial class MainWindow
 
     private void OnTaggedThemeSwitchToggled(object sender, RoutedEventArgs e)
     {
-        if (_isLoadingThemeCenterUi || sender is not ToggleSwitch ts || ts.Tag is not string tag) return;
+        if (_isLoadingThemeCenterUi || !_isInitialized || sender is not ToggleSwitch ts || ts.Tag is not string tag) return;
 
         bool isOn = ts.IsOn;
         switch (tag)
@@ -2078,6 +3337,20 @@ public sealed partial class MainWindow
             case "UseCustomAccentStates": _themeDraft.UseCustomAccentStates = isOn; break;
             case "EnableAccentGradient": _themeDraft.EnableAccentGradient = isOn; break;
             case "EnableParticleOverlay": _themeDraft.EnableParticleOverlay = isOn; break;
+            case "EnableAdaptiveWallpaperText":
+                _themeDraft.EnableAdaptiveWallpaperText = isOn;
+                if (isOn && string.Equals(_themeDraft.BackdropType, "Image", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (_themeDraft.CardVisualStyle is null or "" or "Default" or "FrostedGlass")
+                    {
+                        _themeDraft.CardVisualStyle = "LiquidGlass";
+                    }
+                    _themeDraft.EnableCustomTitleBar = false;
+                    _themeDraft.EnableCustomNavPane = false;
+                    _themeDraft.EnableCustomContent = false;
+                    _themeDraft.EnableCustomPlayBar = false;
+                }
+                break;
             case "EnableCustomTitleBar": _themeDraft.EnableCustomTitleBar = isOn; break;
             case "EnableTitleBarGradient": _themeDraft.EnableTitleBarGradient = isOn; break;
             case "EnableCustomNavPane": _themeDraft.EnableCustomNavPane = isOn; break;
@@ -2099,6 +3372,8 @@ public sealed partial class MainWindow
         PageEnableAccentGradToggle.IsOn = _themeDraft.EnableAccentGradient;
         ThemeEnableParticleToggle.IsOn = _themeDraft.EnableParticleOverlay;
         PageEnableParticleToggle.IsOn = _themeDraft.EnableParticleOverlay;
+        ThemeAdaptiveWallpaperTextToggle.IsOn = _themeDraft.EnableAdaptiveWallpaperText;
+        PageAdaptiveWallpaperTextToggle.IsOn = _themeDraft.EnableAdaptiveWallpaperText;
 
         EnableCustomTitleBarToggle.IsOn = _themeDraft.EnableCustomTitleBar;
         PageEnableCustomTitleBarToggle.IsOn = _themeDraft.EnableCustomTitleBar;
@@ -2136,13 +3411,13 @@ public sealed partial class MainWindow
 
     private async void OnFollowCoverAccentToggled(object sender, RoutedEventArgs e)
     {
-        if (_isLoadingThemeCenterUi) return;
+        if (_isLoadingThemeCenterUi || !_isInitialized) return;
         await UpdateFollowCoverAccentSettingAsync(FollowSongCoverAccentToggle.IsOn);
     }
 
     private async void OnPageFollowCoverAccentToggled(object sender, RoutedEventArgs e)
     {
-        if (_isLoadingThemeCenterUi) return;
+        if (_isLoadingThemeCenterUi || !_isInitialized) return;
         await UpdateFollowCoverAccentSettingAsync(PageFollowCoverAccentToggle.IsOn);
     }
 
@@ -2164,133 +3439,466 @@ public sealed partial class MainWindow
 
     private void OnThemeSliderValueChanged(object sender, RangeBaseValueChangedEventArgs e)
     {
-        if (_isLoadingThemeCenterUi || !_isInitialized) return;
+        if (_isLoadingThemeCenterUi || !_isInitialized || sender is not Slider sl) return;
 
-        _themeDraft.BackgroundMaskOpacity = Math.Round(ThemeWallpaperMaskOpacitySlider.Value);
-        _themeDraft.TitleBarOpacity = Math.Round(TitleBarOpacitySlider.Value);
-        _themeDraft.NavPaneOpacity = Math.Round(NavPaneOpacitySlider.Value);
-        _themeDraft.ContentOpacity = Math.Round(ContentOpacitySlider.Value);
-        _themeDraft.CardOpacity = Math.Round(CardOpacitySlider.Value);
-        _themeDraft.CardCornerRadius = Math.Round(CardCornerRadiusSlider.Value);
-        _themeDraft.PlayBarOpacity = Math.Round(PlayBarOpacitySlider.Value);
-        _themeDraft.MiniPlayerOpacity = Math.Round(MiniPlayerOpacitySlider.Value);
+        string? tag = null;
+        if (ReferenceEquals(sl, ThemeWallpaperMaskOpacitySlider)) tag = "BackgroundMaskOpacity";
+        else if (ReferenceEquals(sl, TitleBarOpacitySlider)) tag = "TitleBarOpacity";
+        else if (ReferenceEquals(sl, NavPaneOpacitySlider)) tag = "NavPaneOpacity";
+        else if (ReferenceEquals(sl, ContentOpacitySlider)) tag = "ContentOpacity";
+        else if (ReferenceEquals(sl, CardOpacitySlider)) tag = "CardOpacity";
+        else if (ReferenceEquals(sl, CardCornerRadiusSlider)) tag = "CardCornerRadius";
+        else if (ReferenceEquals(sl, PlayBarOpacitySlider)) tag = "PlayBarOpacity";
+        else if (ReferenceEquals(sl, MiniPlayerOpacitySlider)) tag = "MiniPlayerOpacity";
 
-        SyncSliderLabelsAndCrossControls();
-        PushDraftLivePreview();
+        if (tag != null)
+        {
+            ApplySingleSliderDragChange(sl, tag);
+        }
     }
 
     private void OnThemeWallpaperBlurChanged(object sender, RangeBaseValueChangedEventArgs e)
     {
-        if (_isLoadingThemeCenterUi || !_isInitialized) return;
-        _themeDraft.BackgroundBlur = Math.Round(ThemeWallpaperBlurSlider.Value);
-        SyncSliderLabelsAndCrossControls();
-        PushDraftLivePreview();
+        if (_isLoadingThemeCenterUi || !_isInitialized || sender is not Slider sl) return;
+        ApplySingleSliderDragChange(sl, "BackgroundBlur");
     }
 
     private void OnTaggedThemeSliderChanged(object sender, RangeBaseValueChangedEventArgs e)
     {
         if (_isLoadingThemeCenterUi || !_isInitialized || sender is not Slider sl || sl.Tag is not string tag) return;
-
-        double val = sl.Value;
-        switch (tag)
-        {
-            case "BackgroundBlur": _themeDraft.BackgroundBlur = Math.Round(val); break;
-            case "BackgroundMaskOpacity": _themeDraft.BackgroundMaskOpacity = Math.Round(val); break;
-            case "AuroraSpeed": _themeDraft.AuroraSpeed = Math.Round(val / 100.0, 2); break;
-            case "AuroraIntensity": _themeDraft.AuroraIntensity = Math.Round(val); break;
-            case "ParticleDensity": _themeDraft.ParticleDensity = (int)Math.Round(val); break;
-            case "ParticleSpeed": _themeDraft.ParticleSpeed = Math.Round(val / 100.0, 2); break;
-            case "TitleBarOpacity": _themeDraft.TitleBarOpacity = Math.Round(val); break;
-            case "NavPaneOpacity": _themeDraft.NavPaneOpacity = Math.Round(val); break;
-            case "ContentOpacity": _themeDraft.ContentOpacity = Math.Round(val); break;
-            case "CardOpacity": _themeDraft.CardOpacity = Math.Round(val); break;
-            case "CardCornerRadius": _themeDraft.CardCornerRadius = Math.Round(val); break;
-            case "PlayBarOpacity": _themeDraft.PlayBarOpacity = Math.Round(val); break;
-            case "MiniPlayerOpacity": _themeDraft.MiniPlayerOpacity = Math.Round(val); break;
-            case "ButtonCornerRadius": _themeDraft.ButtonCornerRadius = Math.Round(val); break;
-        }
-
-        SyncSliderLabelsAndCrossControls();
-        PushDraftLivePreview();
+        ApplySingleSliderDragChange(sl, tag);
     }
 
-    private void SyncSliderLabelsAndCrossControls()
+    /// <summary>
+    /// 统一处理所有 DIY 滑块拖动：先对目标精度做相等短路去重；保持当前拖动滑块 Thumb 连续顺滑不回写，
+    /// 0 延迟更新配对百分比文字与镜像滑块，并将实际渲染合并到 16ms 局部快速通道
+    /// </summary>
+    private void ApplySingleSliderDragChange(Slider activeSlider, string tag)
+    {
+        double val = activeSlider.Value;
+        bool changed = false;
+
+        switch (tag)
+        {
+            case "BackgroundBlur":
+            {
+                double next = Math.Round(val);
+                if (Math.Abs(_themeDraft.BackgroundBlur - next) >= 0.001) { _themeDraft.BackgroundBlur = next; changed = true; }
+                break;
+            }
+            case "BackgroundMaskOpacity":
+            {
+                double next = Math.Round(val);
+                if (Math.Abs(_themeDraft.BackgroundMaskOpacity - next) >= 0.001) { _themeDraft.BackgroundMaskOpacity = next; changed = true; }
+                break;
+            }
+            case "AuroraSpeed":
+            {
+                double next = Math.Round(val / 100.0, 2);
+                if (Math.Abs(_themeDraft.AuroraSpeed - next) >= 0.001) { _themeDraft.AuroraSpeed = next; changed = true; }
+                break;
+            }
+            case "AuroraIntensity":
+            {
+                double next = Math.Round(val);
+                if (Math.Abs(_themeDraft.AuroraIntensity - next) >= 0.001) { _themeDraft.AuroraIntensity = next; changed = true; }
+                break;
+            }
+            case "ParticleDensity":
+            {
+                int next = (int)Math.Round(val);
+                if (_themeDraft.ParticleDensity != next) { _themeDraft.ParticleDensity = next; changed = true; }
+                break;
+            }
+            case "ParticleSpeed":
+            {
+                double next = Math.Round(val / 100.0, 2);
+                if (Math.Abs(_themeDraft.ParticleSpeed - next) >= 0.001) { _themeDraft.ParticleSpeed = next; changed = true; }
+                break;
+            }
+            case "TitleBarOpacity":
+            {
+                double next = Math.Round(val);
+                if (Math.Abs(_themeDraft.TitleBarOpacity - next) >= 0.001) { _themeDraft.TitleBarOpacity = next; changed = true; }
+                break;
+            }
+            case "NavPaneOpacity":
+            {
+                double next = Math.Round(val);
+                if (Math.Abs(_themeDraft.NavPaneOpacity - next) >= 0.001) { _themeDraft.NavPaneOpacity = next; changed = true; }
+                break;
+            }
+            case "ContentOpacity":
+            {
+                double next = Math.Round(val);
+                if (Math.Abs(_themeDraft.ContentOpacity - next) >= 0.001) { _themeDraft.ContentOpacity = next; changed = true; }
+                break;
+            }
+            case "CardOpacity":
+            {
+                double next = Math.Round(val);
+                if (Math.Abs(_themeDraft.CardOpacity - next) >= 0.001) { _themeDraft.CardOpacity = next; changed = true; }
+                break;
+            }
+            case "CardCornerRadius":
+            {
+                double next = Math.Round(val);
+                if (Math.Abs(_themeDraft.CardCornerRadius - next) >= 0.001) { _themeDraft.CardCornerRadius = next; changed = true; }
+                break;
+            }
+            case "PlayBarOpacity":
+            {
+                double next = Math.Round(val);
+                if (Math.Abs(_themeDraft.PlayBarOpacity - next) >= 0.001) { _themeDraft.PlayBarOpacity = next; changed = true; }
+                break;
+            }
+            case "MiniPlayerOpacity":
+            {
+                double next = Math.Round(val);
+                if (Math.Abs(_themeDraft.MiniPlayerOpacity - next) >= 0.001) { _themeDraft.MiniPlayerOpacity = next; changed = true; }
+                break;
+            }
+            case "ButtonCornerRadius":
+            {
+                double next = Math.Round(val);
+                if (Math.Abs(_themeDraft.ButtonCornerRadius - next) >= 0.001) { _themeDraft.ButtonCornerRadius = next; changed = true; }
+                break;
+            }
+        }
+
+        if (!changed)
+            return;
+
+        SyncSingleSliderLabelAndMirror(tag, activeSlider);
+        QueueFastDraftPreview(tag);
+    }
+
+    private void SyncSingleSliderLabelAndMirror(string tag, Slider activeSlider)
     {
         _isLoadingThemeCenterUi = true;
+        void SetMirror(Slider target, double v)
+        {
+            if (!ReferenceEquals(target, activeSlider)) target.Value = v;
+        }
 
-        ThemeWallpaperBlurSlider.Value = _themeDraft.BackgroundBlur;
-        PageWallpaperBlurSlider.Value = _themeDraft.BackgroundBlur;
-        ThemeWallpaperBlurText.Text = $"{_themeDraft.BackgroundBlur:0}px";
-        PageWallpaperBlurText.Text = $"{_themeDraft.BackgroundBlur:0}px";
-
-        ThemeWallpaperMaskOpacitySlider.Value = _themeDraft.BackgroundMaskOpacity;
-        PageWallpaperMaskOpacitySlider.Value = _themeDraft.BackgroundMaskOpacity;
-        PageVideoMaskOpacitySlider.Value = _themeDraft.BackgroundMaskOpacity;
-        ThemeWallpaperMaskOpacityText.Text = $"{_themeDraft.BackgroundMaskOpacity:0}%";
-        PageWallpaperMaskOpacityText.Text = $"{_themeDraft.BackgroundMaskOpacity:0}%";
-        PageVideoMaskOpacityText.Text = $"{_themeDraft.BackgroundMaskOpacity:0}%";
-
-        double aSpeed = Math.Clamp(_themeDraft.AuroraSpeed * 100, 20, 300);
-        ThemeAuroraSpeedSlider.Value = aSpeed;
-        PageAuroraSpeedSlider.Value = aSpeed;
-        ThemeAuroraSpeedText.Text = $"{_themeDraft.AuroraSpeed:0.0}x";
-        PageAuroraSpeedText.Text = $"{_themeDraft.AuroraSpeed:0.0}x";
-
-        ThemeAuroraIntensitySlider.Value = _themeDraft.AuroraIntensity;
-        PageAuroraIntensitySlider.Value = _themeDraft.AuroraIntensity;
-        ThemeAuroraIntensityText.Text = $"{_themeDraft.AuroraIntensity:0}%";
-        PageAuroraIntensityText.Text = $"{_themeDraft.AuroraIntensity:0}%";
-
-        ThemeParticleDensitySlider.Value = _themeDraft.ParticleDensity;
-        PageParticleDensitySlider.Value = _themeDraft.ParticleDensity;
-        ThemeParticleDensityText.Text = $"{_themeDraft.ParticleDensity:0}";
-        PageParticleDensityText.Text = $"{_themeDraft.ParticleDensity:0}";
-
-        double pSpeed = Math.Clamp(_themeDraft.ParticleSpeed * 100, 30, 250);
-        ThemeParticleSpeedSlider.Value = pSpeed;
-        PageParticleSpeedSlider.Value = pSpeed;
-        ThemeParticleSpeedText.Text = $"{_themeDraft.ParticleSpeed:0.0}x";
-        PageParticleSpeedText.Text = $"{_themeDraft.ParticleSpeed:0.0}x";
-
-        TitleBarOpacitySlider.Value = _themeDraft.TitleBarOpacity;
-        PageTitleBarOpacitySlider.Value = _themeDraft.TitleBarOpacity;
-        TitleBarOpacityText.Text = $"{_themeDraft.TitleBarOpacity:0}%";
-        PageTitleBarOpacityText.Text = $"{_themeDraft.TitleBarOpacity:0}%";
-
-        NavPaneOpacitySlider.Value = _themeDraft.NavPaneOpacity;
-        PageNavPaneOpacitySlider.Value = _themeDraft.NavPaneOpacity;
-        NavPaneOpacityText.Text = $"{_themeDraft.NavPaneOpacity:0}%";
-        PageNavPaneOpacityText.Text = $"{_themeDraft.NavPaneOpacity:0}%";
-
-        ContentOpacitySlider.Value = _themeDraft.ContentOpacity;
-        PageContentOpacitySlider.Value = _themeDraft.ContentOpacity;
-        ContentOpacityText.Text = $"{_themeDraft.ContentOpacity:0}%";
-        PageContentOpacityText.Text = $"{_themeDraft.ContentOpacity:0}%";
-
-        CardOpacitySlider.Value = _themeDraft.CardOpacity;
-        PageCardOpacitySlider.Value = _themeDraft.CardOpacity;
-        CardOpacityText.Text = $"{_themeDraft.CardOpacity:0}%";
-        PageCardOpacityText.Text = $"{_themeDraft.CardOpacity:0}%";
-
-        CardCornerRadiusSlider.Value = _themeDraft.CardCornerRadius;
-        PageCardCornerRadiusSlider.Value = _themeDraft.CardCornerRadius;
-        CardCornerRadiusText.Text = $"{_themeDraft.CardCornerRadius:0}px";
-        PageCardCornerRadiusText.Text = $"{_themeDraft.CardCornerRadius:0}px";
-
-        PlayBarOpacitySlider.Value = _themeDraft.PlayBarOpacity;
-        PagePlayBarOpacitySlider.Value = _themeDraft.PlayBarOpacity;
-        PlayBarOpacityText.Text = $"{_themeDraft.PlayBarOpacity:0}%";
-        PagePlayBarOpacityText.Text = $"{_themeDraft.PlayBarOpacity:0}%";
-
-        MiniPlayerOpacitySlider.Value = _themeDraft.MiniPlayerOpacity;
-        PageMiniPlayerOpacitySlider.Value = _themeDraft.MiniPlayerOpacity;
-
-        ThemeButtonRadiusSlider.Value = _themeDraft.ButtonCornerRadius;
-        PageButtonRadiusSlider.Value = _themeDraft.ButtonCornerRadius;
-        ThemeButtonRadiusText.Text = $"{_themeDraft.ButtonCornerRadius:0}px";
-        PageButtonRadiusText.Text = $"{_themeDraft.ButtonCornerRadius:0}px";
-
+        switch (tag)
+        {
+            case "BackgroundBlur":
+                SetMirror(ThemeWallpaperBlurSlider, _themeDraft.BackgroundBlur);
+                SetMirror(PageWallpaperBlurSlider, _themeDraft.BackgroundBlur);
+                ThemeWallpaperBlurText.Text = PageWallpaperBlurText.Text = $"{_themeDraft.BackgroundBlur:0}px";
+                break;
+            case "BackgroundMaskOpacity":
+                SetMirror(ThemeWallpaperMaskOpacitySlider, _themeDraft.BackgroundMaskOpacity);
+                SetMirror(PageWallpaperMaskOpacitySlider, _themeDraft.BackgroundMaskOpacity);
+                SetMirror(PageVideoMaskOpacitySlider, _themeDraft.BackgroundMaskOpacity);
+                ThemeWallpaperMaskOpacityText.Text = PageWallpaperMaskOpacityText.Text = PageVideoMaskOpacityText.Text = $"{_themeDraft.BackgroundMaskOpacity:0}%";
+                break;
+            case "AuroraSpeed":
+            {
+                double s = Math.Clamp(_themeDraft.AuroraSpeed * 100, 20, 300);
+                SetMirror(ThemeAuroraSpeedSlider, s);
+                SetMirror(PageAuroraSpeedSlider, s);
+                ThemeAuroraSpeedText.Text = PageAuroraSpeedText.Text = $"{_themeDraft.AuroraSpeed:0.0}x";
+                break;
+            }
+            case "AuroraIntensity":
+                SetMirror(ThemeAuroraIntensitySlider, _themeDraft.AuroraIntensity);
+                SetMirror(PageAuroraIntensitySlider, _themeDraft.AuroraIntensity);
+                ThemeAuroraIntensityText.Text = PageAuroraIntensityText.Text = $"{_themeDraft.AuroraIntensity:0}%";
+                break;
+            case "ParticleDensity":
+                SetMirror(ThemeParticleDensitySlider, _themeDraft.ParticleDensity);
+                SetMirror(PageParticleDensitySlider, _themeDraft.ParticleDensity);
+                ThemeParticleDensityText.Text = PageParticleDensityText.Text = $"{_themeDraft.ParticleDensity:0}";
+                break;
+            case "ParticleSpeed":
+            {
+                double s = Math.Clamp(_themeDraft.ParticleSpeed * 100, 30, 250);
+                SetMirror(ThemeParticleSpeedSlider, s);
+                SetMirror(PageParticleSpeedSlider, s);
+                ThemeParticleSpeedText.Text = PageParticleSpeedText.Text = $"{_themeDraft.ParticleSpeed:0.0}x";
+                break;
+            }
+            case "TitleBarOpacity":
+                SetMirror(TitleBarOpacitySlider, _themeDraft.TitleBarOpacity);
+                SetMirror(PageTitleBarOpacitySlider, _themeDraft.TitleBarOpacity);
+                TitleBarOpacityText.Text = PageTitleBarOpacityText.Text = $"{_themeDraft.TitleBarOpacity:0}%";
+                break;
+            case "NavPaneOpacity":
+                SetMirror(NavPaneOpacitySlider, _themeDraft.NavPaneOpacity);
+                SetMirror(PageNavPaneOpacitySlider, _themeDraft.NavPaneOpacity);
+                NavPaneOpacityText.Text = PageNavPaneOpacityText.Text = $"{_themeDraft.NavPaneOpacity:0}%";
+                break;
+            case "ContentOpacity":
+                SetMirror(ContentOpacitySlider, _themeDraft.ContentOpacity);
+                SetMirror(PageContentOpacitySlider, _themeDraft.ContentOpacity);
+                ContentOpacityText.Text = PageContentOpacityText.Text = $"{_themeDraft.ContentOpacity:0}%";
+                break;
+            case "CardOpacity":
+                SetMirror(CardOpacitySlider, _themeDraft.CardOpacity);
+                SetMirror(PageCardOpacitySlider, _themeDraft.CardOpacity);
+                CardOpacityText.Text = PageCardOpacityText.Text = $"{_themeDraft.CardOpacity:0}%";
+                break;
+            case "CardCornerRadius":
+                SetMirror(CardCornerRadiusSlider, _themeDraft.CardCornerRadius);
+                SetMirror(PageCardCornerRadiusSlider, _themeDraft.CardCornerRadius);
+                CardCornerRadiusText.Text = PageCardCornerRadiusText.Text = $"{_themeDraft.CardCornerRadius:0}px";
+                break;
+            case "PlayBarOpacity":
+                SetMirror(PlayBarOpacitySlider, _themeDraft.PlayBarOpacity);
+                SetMirror(PagePlayBarOpacitySlider, _themeDraft.PlayBarOpacity);
+                PlayBarOpacityText.Text = PagePlayBarOpacityText.Text = $"{_themeDraft.PlayBarOpacity:0}%";
+                break;
+            case "MiniPlayerOpacity":
+                SetMirror(MiniPlayerOpacitySlider, _themeDraft.MiniPlayerOpacity);
+                SetMirror(PageMiniPlayerOpacitySlider, _themeDraft.MiniPlayerOpacity);
+                break;
+            case "ButtonCornerRadius":
+                SetMirror(ThemeButtonRadiusSlider, _themeDraft.ButtonCornerRadius);
+                SetMirror(PageButtonRadiusSlider, _themeDraft.ButtonCornerRadius);
+                ThemeButtonRadiusText.Text = PageButtonRadiusText.Text = $"{_themeDraft.ButtonCornerRadius:0}px";
+                break;
+        }
         _isLoadingThemeCenterUi = false;
+    }
+
+    private void QueueFastDraftPreview(string changedKey)
+    {
+        ViewModel.Theme.SetPreviewDraft(_themeDraft, updateAccentBrushes: false);
+
+        if (changedKey == "BackgroundBlur")
+        {
+            UpdateMiniPreviewWindow();
+            if (_diyBlurPreviewTimer != null && !_diyBlurPreviewTimer.IsRunning)
+            {
+                _diyBlurPreviewTimer.Start();
+            }
+            return;
+        }
+
+        _pendingFastPreviewKeys.Add(changedKey);
+        if (!_isDiyVsyncPending)
+        {
+            _isDiyVsyncPending = true;
+            CompositionTarget.Rendering += OnDiyFastPreviewVsyncTick;
+        }
+    }
+
+    private void OnDiyFastPreviewVsyncTick(object? sender, object e)
+    {
+        CompositionTarget.Rendering -= OnDiyFastPreviewVsyncTick;
+        _isDiyVsyncPending = false;
+        FlushPendingFastPreviews();
+    }
+
+    /// <summary>
+    /// 原生 VSync 高刷帧合并局部快速刷新（自动匹配 60Hz~240Hz+ 屏幕刷新率）：按实际变动的 DIY 字段原地更新对应分区画刷，
+    /// 彻底绕开 RefreshRootElementTheme 全窗口主题双重翻转与 RebuildThemeLibraryCardsUi 主题卡片树销毁重建
+    /// </summary>
+    private void FlushPendingFastPreviews()
+    {
+        if (_pendingFastPreviewKeys.Count == 0)
+            return;
+
+        bool isLight = ThemeService.IsEffectiveLightMode(_themeDraft.BaseMode);
+        var adapted = ThemeService.ResolveModeAdaptedProfile(_themeDraft, isLight);
+        var (accent, hover, pressed, _) = ViewModel.Theme.DeriveAccentColors(adapted);
+
+        string badgeText = $"实时预览中：{adapted.Name}";
+        if (PageActiveThemeNameBadge != null && PageActiveThemeNameBadge.Text != badgeText) PageActiveThemeNameBadge.Text = badgeText;
+        if (ThemeModalActiveNameBadge != null && ThemeModalActiveNameBadge.Text != badgeText) ThemeModalActiveNameBadge.Text = badgeText;
+
+        UpdateMiniPreviewWindow();
+
+        bool doAccent = false, doTitleBar = false, doNavPane = false, doContentCards = false;
+        bool doPlayBar = false, doWindowBg = false, doMask = false, doAurora = false;
+        bool doParticles = false, doCardRadius = false, doBtnRadius = false, doMini = false, doLyric = false;
+
+        foreach (var k in _pendingFastPreviewKeys)
+        {
+            switch (k)
+            {
+                case "AccentColorHex" or "AccentGradientEndHex" or "AccentHoverHex" or "AccentPressedHex":
+                    doAccent = true; break;
+                case "TitleBarOpacity" or "TitleBarBgHex" or "TitleBarGradientEndHex" or "TitleBarTextHex":
+                    doTitleBar = true; break;
+                case "NavPaneOpacity" or "NavPaneBgHex" or "NavPaneGradientEndHex" or "NavPaneTextHex" or "NavPaneSelectedBgHex":
+                    doNavPane = true; break;
+                case "ContentOpacity" or "CardOpacity" or "ContentBgHex" or "CardBgHex" or "CardBorderHex" or "PrimaryTextHex" or "SecondaryTextHex":
+                    doContentCards = true; break;
+                case "PlayBarOpacity" or "PlayBarBgHex" or "PlayBarGradientEndHex" or "PlayBarBorderHex" or "PlayBarTextHex" or "PlayButtonColorHex" or "ProgressSliderColorHex":
+                    doPlayBar = true; break;
+                case "WindowBgColorHex":
+                    doWindowBg = true; break;
+                case "BackgroundMaskOpacity" or "BackgroundMaskColorHex":
+                    doMask = true; break;
+                case "AuroraSpeed" or "AuroraIntensity" or "AuroraColor1Hex" or "AuroraColor2Hex" or "AuroraColor3Hex":
+                    doAurora = true; break;
+                case "ParticleSpeed" or "ParticleDensity" or "ParticleColorHex":
+                    doParticles = true; break;
+                case "CardCornerRadius":
+                    doCardRadius = true; break;
+                case "ButtonCornerRadius":
+                    doBtnRadius = true; break;
+                case "MiniPlayerOpacity" or "MiniPlayerBgHex":
+                    doMini = true; break;
+                case "LyricHighlightColorHex":
+                    doLyric = true; break;
+            }
+        }
+        _pendingFastPreviewKeys.Clear();
+
+        if (doAccent)
+        {
+            ViewModel.Theme.UpdateGlobalAccentBrushes(adapted);
+            ApplySystemControlAndHeroThemeResources(adapted, accent, hover, pressed, isLight);
+            ApplyCardVisualStyleOverlay(adapted, accent, isLight);
+            ApplyNavigationPaneSectionTheme(adapted, accent, isLight);
+            if (!adapted.EnableCustomTitleBar) ApplyTitleBarSectionTheme(adapted, accent, isLight);
+            if (!adapted.EnableCustomPlayBar)
+            {
+                ApplySliderAccentResources(SeekSlider, ThemeService.EnsureReadableButtonFill(accent, isLight), hover, pressed);
+                ApplySliderAccentResources(VolumeSlider, ThemeService.EnsureReadableButtonFill(accent, isLight), hover, pressed);
+                ApplySliderAccentResources(SimplePlayBarSeekSlider, ThemeService.EnsureReadableButtonFill(accent, isLight), hover, pressed);
+                ApplySliderAccentResources(SimplePlayBarVolumeSlider, ThemeService.EnsureReadableButtonFill(accent, isLight), hover, pressed);
+            }
+            if (adapted.EnableParticleOverlay && string.IsNullOrWhiteSpace(adapted.ParticleColorHex))
+            {
+                RebuildParticlePoolIfNeeded(adapted, accent, isLight);
+            }
+            SyncLyricLinesTypographyAndEmptyState();
+            _miniPlayerWindow?.ApplyThemeProfile(_themeDraft);
+            _desktopLyricWindow?.ApplyConfigToVisuals();
+        }
+
+        if (doWindowBg)
+        {
+            var fallbackBg = isLight ? Color.FromArgb(255, 248, 250, 252) : Color.FromArgb(255, 15, 23, 42);
+            var winBg = ThemeService.ParseColorOrDefault(adapted.WindowBgColorHex, fallbackBg);
+            GlobalWindowBaseBgLayer.Background = ThemeService.UpdateOrCreateSectionBrush(GlobalWindowBaseBgLayer.Background, winBg, false, null, 100, 0);
+        }
+
+        if (doMask)
+        {
+            var maskBase = ThemeService.ParseColorOrDefault(adapted.BackgroundMaskColorHex, Color.FromArgb(255, 9, 13, 22));
+            GlobalWallpaperMaskBorder.Background = ThemeService.UpdateOrCreateSectionBrush(GlobalWallpaperMaskBorder.Background, maskBase, false, null, adapted.BackgroundMaskOpacity, 0);
+            _activeAdaptiveRenderedProfile = adapted;
+            ScheduleAdaptiveWallpaperTextPass(immediate: false);
+        }
+
+        if (doAurora)
+        {
+            if (adapted.BackdropType == "Aurora")
+            {
+                _curAuroraC1 = ThemeService.ParseColorOrDefault(adapted.AuroraColor1Hex, accent);
+                _curAuroraC2 = ThemeService.ParseColorOrDefault(adapted.AuroraColor2Hex, Color.FromArgb(255, 99, 102, 241));
+                _curAuroraC3 = ThemeService.ParseColorOrDefault(adapted.AuroraColor3Hex, Color.FromArgb(255, 236, 72, 153));
+            }
+            ApplyAuroraOrbColors(adapted.AuroraIntensity, isLight);
+            UpdateDynamicEnginePowerState();
+        }
+
+        if (doParticles)
+        {
+            RebuildParticlePoolIfNeeded(adapted, accent, isLight);
+            UpdateDynamicEnginePowerState();
+        }
+
+        if (doTitleBar)
+        {
+            ApplyTitleBarSectionTheme(adapted, accent, isLight);
+            ConfigureTitleBarButtonsTheme();
+        }
+
+        if (doNavPane)
+        {
+            ApplyNavigationPaneSectionTheme(adapted, accent, isLight);
+        }
+
+        if (doContentCards)
+        {
+            RootLayout.Resources.TryGetValue("CardBackgroundFillColorDefaultBrush", out var prevCardBrush);
+            ApplyContentAndCardsSectionTheme(adapted, isLight);
+            RootLayout.Resources.TryGetValue("CardBackgroundFillColorDefaultBrush", out var nextCardBrush);
+            // 仅当卡片主画刷跨越 96% 阈值发生类型切换（AcrylicBrush <-> SolidColorBrush）时才触发一次资源树重绑
+            if (!ReferenceEquals(prevCardBrush, nextCardBrush))
+            {
+                ElementTheme targetTheme = adapted.BaseMode switch
+                {
+                    "Light" => ElementTheme.Light,
+                    "System" => ElementTheme.Default,
+                    _ => ElementTheme.Dark
+                };
+                RefreshRootElementTheme(targetTheme);
+            }
+        }
+
+        if (doPlayBar)
+        {
+            ViewModel.Theme.UpdateGlobalAccentBrushes(adapted);
+            ApplyBottomPlayBarSectionTheme(adapted, accent, hover, pressed, isLight);
+        }
+
+        if (doCardRadius)
+        {
+            double cardRadius = Math.Clamp(adapted.CardCornerRadius, 4, 24);
+            RootLayout.Resources["OverlayCornerRadius"] = new CornerRadius(cardRadius);
+            ApplyCustomCornerRadiusToVisibleCards(MainContentWorkspaceGrid, new CornerRadius(cardRadius));
+            if (IsAdaptiveWallpaperTextActive)
+            {
+                ScheduleAdaptiveWallpaperTextPass(immediate: false);
+            }
+        }
+
+        if (doBtnRadius)
+        {
+            double btnRadius = Math.Clamp(adapted.ButtonCornerRadius, 4, 22);
+            var cr = new CornerRadius(btnRadius);
+            RootLayout.Resources["ControlCornerRadius"] = cr;
+            if (FmPlayBtn != null) FmPlayBtn.CornerRadius = cr;
+            ApplyButtonCornerRadiusInSubtree(SettingsThemePanel.Visibility == Visibility.Visible ? SettingsThemePanel : ThemeCenterModalCard, cr);
+            if (IsAdaptiveWallpaperTextActive)
+            {
+                ScheduleAdaptiveWallpaperTextPass(immediate: false);
+            }
+        }
+
+        if (doMini)
+        {
+            _miniPlayerWindow?.ApplyThemeProfile(_themeDraft);
+        }
+
+        if (doLyric)
+        {
+            SyncLyricLinesTypographyAndEmptyState();
+            _desktopLyricWindow?.ApplyConfigToVisuals();
+        }
+    }
+
+    private static void ApplyButtonCornerRadiusInSubtree(DependencyObject? root, CornerRadius cr)
+    {
+        if (root == null) return;
+        int count = VisualTreeHelper.GetChildrenCount(root);
+        for (int i = 0; i < count; i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            if (child is Button btn && btn.ActualHeight > 20 && Math.Abs(btn.ActualWidth - btn.ActualHeight) > 4)
+            {
+                // 跳过固定大胶囊筛选签（16/18）以外的标准圆角控制按钮
+                if (btn.CornerRadius.TopLeft is >= 4 and <= 22 && btn.ReadLocalValue(Control.CornerRadiusProperty) == DependencyProperty.UnsetValue)
+                {
+                    // 仅对依赖样式 ControlCornerRadius 的按钮通过轻量重绑样式使其圆角即时更新
+                    var s = btn.Style;
+                    if (s != null)
+                    {
+                        btn.Style = null;
+                        btn.Style = s;
+                    }
+                }
+            }
+            ApplyButtonCornerRadiusInSubtree(child, cr);
+        }
     }
 
     // 形态/质感/粒子/角度按钮点击事件
@@ -2404,13 +4012,16 @@ public sealed partial class MainWindow
             return;
 
         string hex = ThemeService.ToHex(args.NewColor);
+        if (string.Equals(GetDraftColorHexByKey(_activeColorFieldKey), hex, StringComparison.OrdinalIgnoreCase))
+            return;
+
         SetDraftColorHexByKey(_activeColorFieldKey, hex);
 
         _isLoadingThemeCenterUi = true;
-        SyncAllColorBoxesAndSwatchesFromDraft();
+        SyncSingleColorControlByKey(_activeColorFieldKey, args.NewColor, hex);
         _isLoadingThemeCenterUi = false;
 
-        PushDraftLivePreview();
+        QueueFastDraftPreview(_activeColorFieldKey);
     }
 
     private void OnThemeHexBoxKeyDown(object sender, KeyRoutedEventArgs e)
@@ -2632,10 +4243,11 @@ public sealed partial class MainWindow
             string localPath = await ViewModel.Theme.CopyWallpaperToAppDataAsync(file.Path);
             _themeDraft.BackgroundImagePath = localPath;
             _themeDraft.BackdropType = "Image";
+            ApplyCrystalClearWallpaperDefaults(_themeDraft);
 
             LoadThemeDraftToEditorUi();
             PushDraftLivePreview();
-            ViewModel.StatusToast = $"已加载背景图片：{file.Name}";
+            ViewModel.StatusToast = $"已加载原画全透明壁纸：{file.Name}";
         }
         catch (Exception ex)
         {

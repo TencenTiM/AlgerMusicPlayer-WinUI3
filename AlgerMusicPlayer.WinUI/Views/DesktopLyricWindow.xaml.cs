@@ -259,7 +259,7 @@ public sealed partial class DesktopLyricWindow : Window
         _karaokeStopBaseEnd.Color = baseColor;
     }
 
-    private void ApplyConfigToVisuals()
+    public void ApplyConfigToVisuals()
     {
         var cfg = _vm.Config.Settings.DesktopLyric;
         var highlightColor = GetActiveHighlightColor();

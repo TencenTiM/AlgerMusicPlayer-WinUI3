@@ -44,6 +44,10 @@ public class ThemeService
     private int _cachedBlurWidth;
     private int _cachedBlurHeight;
 
+    // 最近一次生成的壁纸高精度局部色彩/亮度采样网格缓存（96x54 双线性插值）
+    private string _cachedWallGridKey = string.Empty;
+    private WallpaperColorGrid? _cachedWallGrid;
+
     // 远程订阅源主题内存缓存
     private List<MarketplaceThemeItem>? _cachedRemoteMarketItems;
 
@@ -221,15 +225,15 @@ public class ThemeService
 
         var winBg = ParseColorOrDefault(source.WindowBgColorHex, Color.FromArgb(255, 15, 23, 42));
         var (winH, winS, winL) = RgbToHsl(winBg.R, winBg.G, winBg.B);
+        double themeHue = winS >= 0.10 ? winH : accH;
 
         bool designedForLight = winL >= 0.50;
         if (designedForLight == targetIsLight)
         {
-            return source;
+            return SanitizeTextContrastIfNeeded(source, targetIsLight, themeHue);
         }
 
         var adapted = source.Clone();
-        double themeHue = winS >= 0.10 ? winH : accH;
 
         if (targetIsLight)
         {
@@ -237,17 +241,17 @@ public class ThemeService
             adapted.BaseMode = "Light";
             double tintSat = Math.Clamp(Math.Max(winS * 0.60, accS * 0.35), 0.14, 0.36);
 
-            // 1. 守护白底上的强调色可读性（过亮荧光色适度压实）
-            if (accL > 0.62)
+            // 1. 守护白底与白字按钮上的强调色对比度（过亮荧光色适度压实）
+            if (accL > 0.52)
             {
-                adapted.AccentColorHex = ToHex(HslToColor(accH, Math.Clamp(accS, 0.60, 0.90), 0.46));
+                adapted.AccentColorHex = ToHex(HslToColor(accH, Math.Clamp(accS, 0.62, 0.90), 0.44));
             }
             if (adapted.EnableAccentGradient && TryParseColor(adapted.AccentGradientEndHex, out var gradEnd))
             {
                 var (eh, es, el) = RgbToHsl(gradEnd.R, gradEnd.G, gradEnd.B);
-                if (el > 0.64)
+                if (el > 0.55)
                 {
-                    adapted.AccentGradientEndHex = ToHex(HslToColor(eh, Math.Clamp(es, 0.60, 0.90), 0.48));
+                    adapted.AccentGradientEndHex = ToHex(HslToColor(eh, Math.Clamp(es, 0.62, 0.90), 0.46));
                 }
             }
 
@@ -256,14 +260,16 @@ public class ThemeService
             if (TryParseColor(adapted.BackgroundMaskColorHex, out var maskCol) && RgbToHsl(maskCol.R, maskCol.G, maskCol.B).L < 0.50)
             {
                 adapted.BackgroundMaskColorHex = ToHex(HslToColor(themeHue, tintSat * 0.75, 0.96));
-                adapted.BackgroundMaskOpacity = Math.Clamp(adapted.BackgroundMaskOpacity, 24, 54);
+                adapted.BackgroundMaskOpacity = adapted.EnableAdaptiveWallpaperText
+                    ? Math.Min(adapted.BackgroundMaskOpacity, 54)
+                    : Math.Clamp(adapted.BackgroundMaskOpacity, 24, 54);
             }
 
             // 3. 极光光斑转为水彩晨曦粉彩，粒子提升在白底上的辨识度
             adapted.AuroraColor1Hex = ToHex(AdaptAuroraColorForMode(ParseColorOrDefault(adapted.AuroraColor1Hex, accent), true));
             adapted.AuroraColor2Hex = ToHex(AdaptAuroraColorForMode(ParseColorOrDefault(adapted.AuroraColor2Hex, Color.FromArgb(255, 99, 102, 241)), true));
             adapted.AuroraColor3Hex = ToHex(AdaptAuroraColorForMode(ParseColorOrDefault(adapted.AuroraColor3Hex, Color.FromArgb(255, 236, 72, 153)), true));
-            adapted.AuroraIntensity = Math.Clamp(adapted.AuroraIntensity, 42, 62);
+            adapted.AuroraIntensity = Math.Clamp(adapted.AuroraIntensity, 38, 56);
 
             if (TryParseColor(adapted.ParticleColorHex, out var pCol))
             {
@@ -283,36 +289,37 @@ public class ThemeService
                 return ToHex(HslToColor(useH, Math.Clamp(tintSat * satScale, 0.08, 0.36), targetL));
             }
 
-            string MapTextToLight(string hex, double targetL)
+            string MapTextToLight(string hex, double targetL, double maxAllowedL = 0.42)
             {
                 if (string.IsNullOrWhiteSpace(hex) || !TryParseColor(hex, out var c)) return hex;
-                var (_, _, l) = RgbToHsl(c.R, c.G, c.B);
-                return l > 0.50 ? ToHex(HslToColor(themeHue, 0.20, targetL)) : hex;
+                var (th, ts, l) = RgbToHsl(c.R, c.G, c.B);
+                double useH = ts >= 0.10 ? th : themeHue;
+                return l > maxAllowedL ? ToHex(HslToColor(useH, 0.22, targetL)) : hex;
             }
 
-            // 4. 各自定义区域与文字对比度白昼化
+            // 4. 各自定义区域与文字对比度白昼化（确保透过毛玻璃与极光依然深邃锐利）
             adapted.TitleBarBgHex = MapSurfaceToLight(adapted.TitleBarBgHex, 0.945);
             adapted.TitleBarGradientEndHex = MapSurfaceToLight(adapted.TitleBarGradientEndHex, 0.925);
-            adapted.TitleBarTextHex = MapTextToLight(adapted.TitleBarTextHex, 0.16);
+            adapted.TitleBarTextHex = MapTextToLight(adapted.TitleBarTextHex, 0.12, 0.36);
 
             adapted.NavPaneBgHex = MapSurfaceToLight(adapted.NavPaneBgHex, 0.965);
             adapted.NavPaneGradientEndHex = MapSurfaceToLight(adapted.NavPaneGradientEndHex, 0.945);
-            adapted.NavPaneOpacity = Math.Min(adapted.NavPaneOpacity, 46);
-            adapted.NavPaneTextHex = MapTextToLight(adapted.NavPaneTextHex, 0.18);
+            adapted.NavPaneOpacity = Math.Min(adapted.NavPaneOpacity, 26);
+            adapted.NavPaneTextHex = MapTextToLight(adapted.NavPaneTextHex, 0.12, 0.36);
 
             adapted.ContentBgHex = MapSurfaceToLight(adapted.ContentBgHex, 0.975);
-            adapted.ContentOpacity = Math.Min(adapted.ContentOpacity, 12);
-            adapted.CardBgHex = MapSurfaceToLight(adapted.CardBgHex, 0.992, 0.28);
-            adapted.CardOpacity = Math.Min(adapted.CardOpacity, 44);
+            adapted.ContentOpacity = 0;
+            adapted.CardBgHex = MapSurfaceToLight(adapted.CardBgHex, 0.992, 0.25);
+            adapted.CardOpacity = Math.Min(adapted.CardOpacity, 20);
             adapted.CardBorderHex = "#FFFFFF";
-            adapted.PrimaryTextHex = MapTextToLight(adapted.PrimaryTextHex, 0.14);
-            adapted.SecondaryTextHex = MapTextToLight(adapted.SecondaryTextHex, 0.40);
+            adapted.PrimaryTextHex = MapTextToLight(adapted.PrimaryTextHex, 0.11, 0.34);
+            adapted.SecondaryTextHex = MapTextToLight(adapted.SecondaryTextHex, 0.26, 0.40);
 
-            adapted.PlayBarBgHex = MapSurfaceToLight(adapted.PlayBarBgHex, 0.985, 0.45);
-            adapted.PlayBarGradientEndHex = MapSurfaceToLight(adapted.PlayBarGradientEndHex, 0.962, 0.65);
-            adapted.PlayBarOpacity = Math.Min(adapted.PlayBarOpacity, 50);
+            adapted.PlayBarBgHex = MapSurfaceToLight(adapted.PlayBarBgHex, 0.985, 0.40);
+            adapted.PlayBarGradientEndHex = MapSurfaceToLight(adapted.PlayBarGradientEndHex, 0.962, 0.60);
+            adapted.PlayBarOpacity = Math.Min(adapted.PlayBarOpacity, 28);
             adapted.PlayBarBorderHex = "#FFFFFF";
-            adapted.PlayBarTextHex = MapTextToLight(adapted.PlayBarTextHex, 0.15);
+            adapted.PlayBarTextHex = MapTextToLight(adapted.PlayBarTextHex, 0.12, 0.36);
 
             adapted.MiniPlayerBgHex = MapSurfaceToLight(adapted.MiniPlayerBgHex, 0.975, 0.55);
         }
@@ -380,6 +387,88 @@ public class ThemeService
     }
 
     /// <summary>
+    /// 对同明暗基调主题中的自定义分栏文字颜色进行可读性对比度兜底（防止浅色底误配浅灰白字，或深色底误配深暗黑字）
+    /// </summary>
+    private static CustomThemeProfile SanitizeTextContrastIfNeeded(CustomThemeProfile source, bool isLight, double fallbackHue)
+    {
+        string CheckField(string hex, bool isSecondary)
+        {
+            if (string.IsNullOrWhiteSpace(hex) || !TryParseColor(hex, out var c)) return hex;
+            var (h, s, l) = RgbToHsl(c.R, c.G, c.B);
+            double useH = s >= 0.08 ? h : fallbackHue;
+            double useS = Math.Clamp(s, 0.14, 0.36);
+
+            if (isLight)
+            {
+                double maxL = isSecondary ? 0.40 : 0.34;
+                if (l > maxL)
+                {
+                    return ToHex(HslToColor(useH, useS, isSecondary ? 0.26 : 0.12));
+                }
+            }
+            else
+            {
+                double minL = isSecondary ? 0.50 : 0.58;
+                if (l < minL)
+                {
+                    return ToHex(HslToColor(useH, Math.Min(useS, 0.22), isSecondary ? 0.72 : 0.94));
+                }
+            }
+            return hex;
+        }
+
+        string tb = CheckField(source.TitleBarTextHex, false);
+        string np = CheckField(source.NavPaneTextHex, false);
+        string pt = CheckField(source.PrimaryTextHex, false);
+        string st = CheckField(source.SecondaryTextHex, true);
+        string pb = CheckField(source.PlayBarTextHex, false);
+
+        if (tb == source.TitleBarTextHex && np == source.NavPaneTextHex &&
+            pt == source.PrimaryTextHex && st == source.SecondaryTextHex && pb == source.PlayBarTextHex)
+        {
+            return source;
+        }
+
+        var copy = source.Clone();
+        copy.TitleBarTextHex = tb;
+        copy.NavPaneTextHex = np;
+        copy.PrimaryTextHex = pt;
+        copy.SecondaryTextHex = st;
+        copy.PlayBarTextHex = pb;
+        return copy;
+    }
+
+    /// <summary>
+    /// 将任意强调色转换为当前明暗背景（特别是浅色毛玻璃与极光底）下高可读的彩色文字/图标前景色
+    /// </summary>
+    public static Color EnsureReadableTextAccent(Color accent, bool isLight)
+    {
+        var (h, s, l) = RgbToHsl(accent.R, accent.G, accent.B);
+        if (isLight)
+        {
+            return l > 0.37
+                ? HslToColor(h, Math.Clamp(Math.Max(s, 0.65), 0.55, 0.92), 0.35)
+                : accent;
+        }
+
+        return l < 0.54
+            ? HslToColor(h, Math.Clamp(Math.Max(s, 0.62), 0.50, 0.92), 0.62)
+            : accent;
+    }
+
+    /// <summary>
+    /// 保障承载纯白文字（Foreground="White"）的主操作按钮填充色在浅色模式下具备充足对比度，不刺眼发白
+    /// </summary>
+    public static Color EnsureReadableButtonFill(Color fill, bool isLight)
+    {
+        if (!isLight) return fill;
+        var (h, s, l) = RgbToHsl(fill.R, fill.G, fill.B);
+        return l > 0.48
+            ? HslToColor(h, Math.Clamp(Math.Max(s, 0.65), 0.55, 0.92), 0.44)
+            : fill;
+    }
+
+    /// <summary>
     /// 通知外部监听器当前预览主题的属性已微调
     /// </summary>
     public void NotifyPreviewUpdated(CustomThemeProfile draft)
@@ -387,6 +476,18 @@ public class ThemeService
         PreviewProfile = draft;
         UpdateGlobalAccentBrushes(draft);
         ThemeApplied?.Invoke(draft);
+    }
+
+    /// <summary>
+    /// 轻量更新预览草稿引用（供 DIY 滑块与调色盘高频拖动局部刷新通道使用，避免触发全窗口重绘）
+    /// </summary>
+    public void SetPreviewDraft(CustomThemeProfile draft, bool updateAccentBrushes = false)
+    {
+        PreviewProfile = draft;
+        if (updateAccentBrushes)
+        {
+            UpdateGlobalAccentBrushes(draft);
+        }
     }
 
     /// <summary>
@@ -481,33 +582,61 @@ public class ThemeService
     }
 
     /// <summary>
-    /// 动态原地更新 Application.Current.Resources 中的品牌色与双色线性渐变画刷
+    /// 动态原地更新 Application.Current.Resources 中的品牌纯色与双色线性渐变画刷（保持引用类型严格一致，确保全窗口 StaticResource 100% 实时变色）
     /// </summary>
     public void UpdateGlobalAccentBrushes(CustomThemeProfile profile)
     {
-        profile = ResolveModeAdaptedProfile(profile, IsEffectiveLightMode(profile.BaseMode));
+        bool isLight = IsEffectiveLightMode(profile.BaseMode);
+        profile = ResolveModeAdaptedProfile(profile, isLight);
         var (accent, hover, pressed, subtle) = DeriveAccentColors(profile);
         var accentEnd = profile.EnableAccentGradient
             ? ParseColorOrDefault(profile.AccentGradientEndHex, accent)
             : accent;
-        var hoverEnd = profile.EnableAccentGradient ? AdjustLightness(accentEnd, -0.08) : hover;
-        var pressedEnd = profile.EnableAccentGradient ? AdjustLightness(accentEnd, -0.15) : pressed;
+
+        // 彩色文字前景色在浅色毛玻璃下自动压深至高可读区间；黑底角标专用 LightText 始终保持清亮高明度
+        var textAccent = EnsureReadableTextAccent(accent, isLight);
+        var textHover = AdjustLightness(textAccent, -0.07);
+        var textPressed = AdjustLightness(textAccent, -0.13);
+        var (ah, aSat, al) = RgbToHsl(accent.R, accent.G, accent.B);
+        var darkSurfaceLightText = HslToColor(ah, Math.Clamp(Math.Max(aSat, 0.60), 0.50, 0.90), Math.Clamp(al + 0.16, 0.68, 0.84));
+
+        // 承载纯白文字的主操作按钮填充色在浅色模式下做护眼对比度钳制
+        var fillStart = EnsureReadableButtonFill(accent, isLight);
+        var fillEnd = EnsureReadableButtonFill(accentEnd, isLight);
+        var fillHoverStart = profile.UseCustomAccentStates ? EnsureReadableButtonFill(hover, isLight) : AdjustLightness(fillStart, -0.07);
+        var fillHoverEnd = profile.EnableAccentGradient ? AdjustLightness(fillEnd, -0.07) : fillHoverStart;
+        var fillPressedStart = profile.UseCustomAccentStates ? EnsureReadableButtonFill(pressed, isLight) : AdjustLightness(fillStart, -0.14);
+        var fillPressedEnd = profile.EnableAccentGradient ? AdjustLightness(fillEnd, -0.14) : fillPressedStart;
+
+        var borderSubtle = Color.FromArgb(isLight ? (byte)0x68 : (byte)0x56, textAccent.R, textAccent.G, textAccent.B);
+        var pressedSubtle = Color.FromArgb(0x3A, accent.R, accent.G, accent.B);
 
         var res = Application.Current.Resources;
 
-        SetOrUpdateGradientBrush(res, "BrandAccentBrush", accent, accentEnd, profile.GradientAngle);
-        SetOrUpdateGradientBrush(res, "BrandAccentHoverBrush", hover, hoverEnd, profile.GradientAngle);
-        SetOrUpdateGradientBrush(res, "BrandAccentPressedBrush", pressed, pressedEnd, profile.GradientAngle);
+        // 1. 原地更新纯色画刷（覆盖全窗口文字、FontIcon、徽章、进度环、迷你播放器等）
+        SetOrUpdateSolidBrush(res, "BrandAccentBrush", textAccent);
+        SetOrUpdateSolidBrush(res, "BrandAccentHoverBrush", textHover);
+        SetOrUpdateSolidBrush(res, "BrandAccentPressedBrush", textPressed);
+        SetOrUpdateSolidBrush(res, "BrandAccentLightTextBrush", darkSurfaceLightText);
         SetOrUpdateSolidBrush(res, "BrandAccentSubtleBrush", subtle);
+        SetOrUpdateSolidBrush(res, "BrandAccentBorderSubtleBrush", borderSubtle);
+        SetOrUpdateSolidBrush(res, "BrandAccentPressedSubtleBrush", pressedSubtle);
 
-        var sliderColor = (profile.EnableCustomPlayBar && !string.IsNullOrWhiteSpace(profile.ProgressSliderColorHex))
+        // 2. 原地更新双色流光渐变填充画刷（覆盖主操作按钮、选中态胶囊、上下曲悬停）
+        SetOrUpdateGradientBrush(res, "BrandAccentFillBrush", fillStart, fillEnd, profile.GradientAngle);
+        SetOrUpdateGradientBrush(res, "BrandAccentHoverFillBrush", fillHoverStart, fillHoverEnd, profile.GradientAngle);
+        SetOrUpdateGradientBrush(res, "BrandAccentPressedFillBrush", fillPressedStart, fillPressedEnd, profile.GradientAngle);
+
+        var sliderRaw = (profile.EnableCustomPlayBar && !string.IsNullOrWhiteSpace(profile.ProgressSliderColorHex))
             ? ParseColorOrDefault(profile.ProgressSliderColorHex, accent)
             : accent;
+        var sliderColor = EnsureReadableButtonFill(sliderRaw, isLight);
         SetOrUpdateSolidBrush(res, "ThemePlayBarSliderBrush", sliderColor);
 
+        // 3. 原地更新底部圆形主播放按钮渐变画刷（支持独立播放键配色或跟随品牌双色流光）
         bool customPlayBtn = profile.EnableCustomPlayBar && !string.IsNullOrWhiteSpace(profile.PlayButtonColorHex);
-        var playBtnStart = customPlayBtn ? ParseColorOrDefault(profile.PlayButtonColorHex, accent) : accent;
-        var playBtnEnd = customPlayBtn ? playBtnStart : accentEnd;
+        var playBtnStart = customPlayBtn ? EnsureReadableButtonFill(ParseColorOrDefault(profile.PlayButtonColorHex, accent), isLight) : fillStart;
+        var playBtnEnd = customPlayBtn ? playBtnStart : fillEnd;
         SetOrUpdateGradientBrush(res, "ThemePlayButtonBrush", playBtnStart, playBtnEnd, profile.GradientAngle);
         SetOrUpdateGradientBrush(res, "ThemePlayButtonHoverBrush", AdjustLightness(playBtnStart, -0.08), AdjustLightness(playBtnEnd, -0.08), profile.GradientAngle);
         SetOrUpdateGradientBrush(res, "ThemePlayButtonPressedBrush", AdjustLightness(playBtnStart, -0.15), AdjustLightness(playBtnEnd, -0.15), profile.GradientAngle);
@@ -530,7 +659,7 @@ public class ThemeService
     /// </summary>
     public static Color CreateTintedIceWhite(Color accent, double accentWeight = 0.055)
     {
-        double w = Math.Clamp(accentWeight, 0.0, 0.25);
+        double w = Math.Clamp(accentWeight, 0.0, 0.30);
         byte r = (byte)Math.Round(255 * (1 - w) + accent.R * w);
         byte g = (byte)Math.Round(255 * (1 - w) + accent.G * w);
         byte b = (byte)Math.Round(255 * (1 - w) + accent.B * w);
@@ -538,17 +667,122 @@ public class ThemeService
     }
 
     /// <summary>
-    /// 构建应用内实时高斯模糊亚克力毛玻璃画刷（透出底层浅色/深色动态极光与粒子虚化光晕，失焦回退仍保持半透明不泛死白）
+    /// 结合主题窗口底色、极光主色与灵魂强调色，调配带有鲜明主题性格的深/浅表面色调（供导航栏、毛玻璃卡片、底栏、弹窗与抽屉统一染色）
     /// </summary>
-    public static AcrylicBrush CreateFrostedGlassBrush(Color tintColor, double tintOpacity, double luminosityOpacity, byte fallbackAlpha = 115)
+    public static Color CreateThemeTintedSurfaceColor(CustomThemeProfile profile, Color accent, bool isLight, double tintWeight = 0.14)
+    {
+        Color soul = accent;
+        if (string.Equals(profile.BackdropType, "Aurora", StringComparison.OrdinalIgnoreCase) &&
+            TryParseColor(profile.AuroraColor1Hex, out var aur1))
+        {
+            soul = LerpColor(accent, aur1, 0.45);
+        }
+
+        if (isLight)
+        {
+            return CreateTintedIceWhite(soul, Math.Clamp(tintWeight, 0.05, 0.24));
+        }
+
+        var winBg = ParseColorOrDefault(profile.WindowBgColorHex, Color.FromArgb(255, 15, 23, 42));
+        var liftedBase = AdjustLightness(winBg, 0.045);
+        return LerpColor(liftedBase, soul, Math.Clamp(tintWeight, 0.08, 0.28));
+    }
+
+    /// <summary>
+    /// 构建应用内实时高斯模糊亚克力毛玻璃画刷（透出底层浅色/深色动态极光与粒子虚化光晕，失焦回退仍保持高通透不泛死白）
+    /// </summary>
+    public static AcrylicBrush CreateFrostedGlassBrush(Color tintColor, double tintOpacity, double luminosityOpacity, byte fallbackAlpha = 48)
     {
         return new AcrylicBrush
         {
             TintColor = Color.FromArgb(255, tintColor.R, tintColor.G, tintColor.B),
-            TintOpacity = Math.Clamp(tintOpacity, 0.08, 0.92),
-            TintLuminosityOpacity = Math.Clamp(luminosityOpacity, 0.15, 0.92),
+            TintOpacity = Math.Clamp(tintOpacity, 0.02, 0.92),
+            TintLuminosityOpacity = Math.Clamp(luminosityOpacity, 0.04, 0.92),
             FallbackColor = Color.FromArgb(fallbackAlpha, tintColor.R, tintColor.G, tintColor.B)
         };
+    }
+
+    /// <summary>
+    /// 构建原生 Windows DWM 合成器级 iOS 27「液态玻璃 (Liquid Glass)」实时 GPU 着色画刷（随 ScrollViewer 120Hz 零延迟硬件同步滚动与精准裁剪）
+    /// </summary>
+    public static Brush CreateLiquidGlassSurfaceBrush(Color accent, bool isLight, double intensity = 1.0, float blurAmount = 14.0f)
+    {
+        return new LiquidGlassCompositionBrush(accent, isLight, intensity, blurAmount);
+    }
+
+    /// <summary>
+    /// 构建「液态玻璃 (Liquid Glass)」无白边透明边框画刷（去除外圈高反差白边，消除圆角阶梯像素与内外沿接缝）
+    /// </summary>
+    public static Brush CreateLiquidGlassBorderBrush(Color accent, double intensity = 1.0)
+    {
+        return new SolidColorBrush(Color.FromArgb(0, 0, 0, 0));
+    }
+
+    /// <summary>
+    /// 原地复用并更新现有分区画刷（AcrylicBrush / SolidColorBrush / LinearGradientBrush），避免拖动透明度或调色时频繁重建 DWM 合成画刷
+    /// </summary>
+    public static Brush UpdateOrCreateSectionBrush(
+        Brush? currentBrush,
+        Color primaryColor,
+        bool enableGradient,
+        string? gradientEndHex,
+        double opacityPercent,
+        double angleDegrees,
+        bool useAcrylicBlur = false)
+    {
+        if (!enableGradient || !TryParseColor(gradientEndHex, out var rawEnd))
+        {
+            if (useAcrylicBlur && opacityPercent < 96)
+            {
+                double normOp = Math.Clamp(opacityPercent / 100.0, 0.06, 0.88);
+                double tintOp = Math.Clamp(normOp * 0.55, 0.06, 0.68);
+                double lumOp = Math.Clamp(normOp * 0.72 + 0.04, 0.10, 0.78);
+                byte fbAlpha = (byte)Math.Round(Math.Clamp(normOp * 0.65, 0.12, 0.70) * 255);
+                if (currentBrush is AcrylicBrush existingAcrylic)
+                {
+                    existingAcrylic.TintColor = Color.FromArgb(255, primaryColor.R, primaryColor.G, primaryColor.B);
+                    existingAcrylic.TintOpacity = tintOp;
+                    existingAcrylic.TintLuminosityOpacity = lumOp;
+                    existingAcrylic.FallbackColor = Color.FromArgb(fbAlpha, primaryColor.R, primaryColor.G, primaryColor.B);
+                    return existingAcrylic;
+                }
+                return CreateFrostedGlassBrush(primaryColor, tintOp, lumOp, fbAlpha);
+            }
+
+            var solidCol = WithOpacity(primaryColor, opacityPercent);
+            if (currentBrush is SolidColorBrush existingSolid)
+            {
+                try
+                {
+                    existingSolid.Color = solidCol;
+                    return existingSolid;
+                }
+                catch
+                {
+                }
+            }
+            return new SolidColorBrush(solidCol);
+        }
+
+        var c1 = WithOpacity(primaryColor, opacityPercent);
+        var c2 = WithOpacity(rawEnd, opacityPercent);
+        var (start, end) = GetGradientEndpoints(angleDegrees);
+        if (currentBrush is LinearGradientBrush existingLgb && existingLgb.GradientStops.Count == 2)
+        {
+            try
+            {
+                existingLgb.StartPoint = start;
+                existingLgb.EndPoint = end;
+                existingLgb.GradientStops[0].Color = c1;
+                existingLgb.GradientStops[1].Color = c2;
+                return existingLgb;
+            }
+            catch
+            {
+            }
+        }
+
+        return CreateSectionBrush(primaryColor, enableGradient, gradientEndHex, opacityPercent, angleDegrees, useAcrylicBlur);
     }
 
     public static Brush CreateSectionBrush(Color primaryColor, bool enableGradient, string? gradientEndHex, double opacityPercent, double angleDegrees, bool useAcrylicBlur = false)
@@ -557,10 +791,10 @@ public class ThemeService
         {
             if (useAcrylicBlur && opacityPercent < 96)
             {
-                double normOp = Math.Clamp(opacityPercent / 100.0, 0.12, 0.88);
-                double tintOp = Math.Clamp(normOp * 0.78, 0.18, 0.72);
-                double lumOp = Math.Clamp(normOp * 0.92 + 0.12, 0.35, 0.82);
-                byte fbAlpha = (byte)Math.Round(Math.Clamp(normOp * 0.82, 0.25, 0.75) * 255);
+                double normOp = Math.Clamp(opacityPercent / 100.0, 0.06, 0.88);
+                double tintOp = Math.Clamp(normOp * 0.55, 0.06, 0.68);
+                double lumOp = Math.Clamp(normOp * 0.72 + 0.04, 0.10, 0.78);
+                byte fbAlpha = (byte)Math.Round(Math.Clamp(normOp * 0.65, 0.12, 0.70) * 255);
                 return CreateFrostedGlassBrush(primaryColor, tintOp, lumOp, fbAlpha);
             }
 
@@ -600,7 +834,7 @@ public class ThemeService
         dict[key] = created;
     }
 
-    private static void SetOrUpdateSolidBrush(ResourceDictionary dict, string key, Color color)
+    public static void SetOrUpdateSolidBrush(ResourceDictionary dict, string key, Color color)
     {
         if (dict.TryGetValue(key, out var existing) && existing is SolidColorBrush brush)
         {
@@ -832,9 +1066,10 @@ public class ThemeService
             BackdropType = !string.IsNullOrEmpty(localWallPath) ? "Image" : "Aurora",
             WindowBgColorHex = ToHex(winBg),
             BackgroundImagePath = localWallPath,
-            BackgroundBlur = 10.0,
+            BackgroundBlur = useAsWallpaper ? 0.0 : 10.0,
             BackgroundMaskColorHex = ToHex(winBg),
-            BackgroundMaskOpacity = preferLight ? 42.0 : 52.0,
+            BackgroundMaskOpacity = useAsWallpaper ? 0.0 : (preferLight ? 42.0 : 52.0),
+            EnableAdaptiveWallpaperText = true,
             AuroraColor1Hex = ToHex(accent),
             AuroraColor2Hex = ToHex(secondAccent),
             AuroraColor3Hex = ToHex(HslToColor((bgH + 290) % 360, 0.68, 0.52)),
@@ -846,26 +1081,28 @@ public class ThemeService
 
             EnableCustomTitleBar = !useAsWallpaper && preferLight,
             TitleBarBgHex = ToHex(navBg),
-            TitleBarOpacity = useAsWallpaper ? 45.0 : 72.0,
+            TitleBarOpacity = useAsWallpaper ? 0.0 : 72.0,
 
-            EnableCustomNavPane = useAsWallpaper,
+            EnableCustomNavPane = false,
             NavPaneBgHex = ToHex(navBg),
-            NavPaneOpacity = useAsWallpaper ? 52.0 : 78.0,
+            NavPaneOpacity = useAsWallpaper ? 0.0 : 78.0,
 
-            EnableCustomContent = useAsWallpaper,
+            EnableCustomContent = false,
             ContentBgHex = ToHex(winBg),
-            ContentOpacity = useAsWallpaper ? 28.0 : 55.0,
+            ContentOpacity = 0.0,
             CardBgHex = ToHex(cardBg),
-            CardOpacity = useAsWallpaper ? 62.0 : 76.0,
+            CardOpacity = useAsWallpaper ? 0.0 : 76.0,
             CardBorderHex = ToHex(cardBorder),
+            CardCornerRadius = useAsWallpaper ? 16.0 : 12.0,
+            ButtonCornerRadius = useAsWallpaper ? 12.0 : 8.0,
 
-            EnableCustomPlayBar = useAsWallpaper,
+            EnableCustomPlayBar = false,
             PlayBarBgHex = ToHex(playBarBg),
-            PlayBarOpacity = useAsWallpaper ? 78.0 : 92.0,
+            PlayBarOpacity = useAsWallpaper ? 0.0 : 92.0,
             PlayBarBorderHex = ToHex(cardBorder),
 
             PlayBarLayoutMode = "FloatingIsland",
-            CardVisualStyle = "FrostedGlass",
+            CardVisualStyle = useAsWallpaper ? "LiquidGlass" : "FrostedGlass",
             EnablePlayBarRhythmGlow = true,
             SyncMiniPlayer = true,
             SyncImmersiveLyricHighlight = true
@@ -1125,6 +1362,91 @@ public class ThemeService
         return wb;
     }
 
+    /// <summary>
+    /// 提取或从缓存获取自定义壁纸的高精度局部色彩/亮度二维采样网格（96x54，直接复用模糊后像素缓冲区）
+    /// </summary>
+    public async Task<WallpaperColorGrid?> GetOrBuildWallpaperColorGridAsync(string filePath, double blurRadius)
+    {
+        if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+            return null;
+
+        int radius = (int)Math.Round(Math.Clamp(blurRadius, 0, 28));
+        string cacheKey = $"{filePath}|{File.GetLastWriteTimeUtc(filePath).Ticks}|{radius}";
+        if (_cachedWallGridKey == cacheKey && _cachedWallGrid != null)
+            return _cachedWallGrid;
+
+        try
+        {
+            byte[]? bgraPixels = null;
+            int srcW = 0;
+            int srcH = 0;
+
+            if (radius > 0 && _cachedBlurKey == cacheKey && _cachedBlurBgraPixels != null)
+            {
+                bgraPixels = _cachedBlurBgraPixels;
+                srcW = _cachedBlurWidth;
+                srcH = _cachedBlurHeight;
+            }
+            else if (radius > 0)
+            {
+                var blurred = await DecodeAndBlurBackgroundAsync(filePath, radius);
+                if (blurred != null)
+                {
+                    _cachedBlurKey = cacheKey;
+                    _cachedBlurBgraPixels = blurred.Value.Pixels;
+                    _cachedBlurWidth = blurred.Value.Width;
+                    _cachedBlurHeight = blurred.Value.Height;
+                    bgraPixels = blurred.Value.Pixels;
+                    srcW = blurred.Value.Width;
+                    srcH = blurred.Value.Height;
+                }
+            }
+            else
+            {
+                byte[] fileBytes = await File.ReadAllBytesAsync(filePath);
+                using var ms = new MemoryStream(fileBytes);
+                var decoder = await BitmapDecoder.CreateAsync(ms.AsRandomAccessStream());
+                uint rawW = decoder.PixelWidth;
+                uint rawH = decoder.PixelHeight;
+                if (rawW == 0 || rawH == 0) return null;
+
+                double scale = Math.Min(1.0, 768.0 / Math.Max(rawW, rawH));
+                uint scaledRawW = Math.Max(16, (uint)Math.Round(rawW * scale));
+                uint scaledRawH = Math.Max(16, (uint)Math.Round(rawH * scale));
+                bool swapped = rawW != decoder.OrientedPixelWidth && rawW == decoder.OrientedPixelHeight;
+
+                var transform = new BitmapTransform
+                {
+                    ScaledWidth = scaledRawW,
+                    ScaledHeight = scaledRawH,
+                    InterpolationMode = BitmapInterpolationMode.Linear
+                };
+                var provider = await decoder.GetPixelDataAsync(
+                    BitmapPixelFormat.Bgra8,
+                    BitmapAlphaMode.Premultiplied,
+                    transform,
+                    ExifOrientationMode.RespectExifOrientation,
+                    ColorManagementMode.DoNotColorManage);
+
+                bgraPixels = provider.DetachPixelData();
+                srcW = swapped ? (int)scaledRawH : (int)scaledRawW;
+                srcH = swapped ? (int)scaledRawW : (int)scaledRawH;
+            }
+
+            if (bgraPixels == null || srcW <= 0 || srcH <= 0)
+                return null;
+
+            var grid = await Task.Run(() => WallpaperColorGrid.FromBgraBuffer(bgraPixels, srcW, srcH));
+            _cachedWallGridKey = cacheKey;
+            _cachedWallGrid = grid;
+            return grid;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     private static async Task<(byte[] Pixels, int Width, int Height)?> DecodeAndBlurBackgroundAsync(string filePath, int blurRadius)
     {
         try
@@ -1140,6 +1462,7 @@ public class ThemeService
             double scale = Math.Min(1.0, 960.0 / Math.Max(origW, origH));
             uint targetW = Math.Max(16, (uint)Math.Round(origW * scale));
             uint targetH = Math.Max(16, (uint)Math.Round(origH * scale));
+            bool swapped = origW != decoder.OrientedPixelWidth && origW == decoder.OrientedPixelHeight;
 
             var transform = new BitmapTransform
             {
@@ -1156,8 +1479,8 @@ public class ThemeService
                 ColorManagementMode.DoNotColorManage);
 
             byte[] pixels = pixelProvider.DetachPixelData();
-            int w = (int)targetW;
-            int h = (int)targetH;
+            int w = swapped ? (int)targetH : (int)targetW;
+            int h = swapped ? (int)targetW : (int)targetH;
             int scaledRadius = Math.Max(1, (int)Math.Round(blurRadius * 1.4));
 
             await Task.Run(() =>
@@ -1448,5 +1771,183 @@ public class ThemeService
             (byte)Math.Clamp(Math.Round((r1 + m) * 255), 0, 255),
             (byte)Math.Clamp(Math.Round((g1 + m) * 255), 0, 255),
             (byte)Math.Clamp(Math.Round((b1 + m) * 255), 0, 255));
+    }
+}
+
+/// <summary>
+/// 壁纸超高精度二维色彩/亮度采样网格（192x108 像素积分图 Summed-Area Table，支持 O(1) 任意字符邻域感受野面积积分采样）
+/// </summary>
+public sealed class WallpaperColorGrid
+{
+    public const int GridCols = 192;
+    public const int GridRows = 108;
+
+    public int ImageWidth { get; }
+    public int ImageHeight { get; }
+    private readonly byte[] _rgb; // GridCols * GridRows * 3
+    private readonly int[] _satR; // (GridCols + 1) * (GridRows + 1) 二维前缀和积分图
+    private readonly int[] _satG;
+    private readonly int[] _satB;
+
+    private WallpaperColorGrid(int imageWidth, int imageHeight, byte[] rgb, int[] satR, int[] satG, int[] satB)
+    {
+        ImageWidth = imageWidth;
+        ImageHeight = imageHeight;
+        _rgb = rgb;
+        _satR = satR;
+        _satG = satG;
+        _satB = satB;
+    }
+
+    public static WallpaperColorGrid FromBgraBuffer(byte[] bgra, int width, int height)
+    {
+        byte[] rgb = new byte[GridCols * GridRows * 3];
+        int satStride = GridCols + 1;
+        int satLen = satStride * (GridRows + 1);
+        int[] satR = new int[satLen];
+        int[] satG = new int[satLen];
+        int[] satB = new int[satLen];
+        int stride = width * 4;
+
+        for (int gy = 0; gy < GridRows; gy++)
+        {
+            int yStart = gy * height / GridRows;
+            int yEnd = Math.Max(yStart + 1, (gy + 1) * height / GridRows);
+            yEnd = Math.Min(yEnd, height);
+
+            int rowSumR = 0, rowSumG = 0, rowSumB = 0;
+
+            for (int gx = 0; gx < GridCols; gx++)
+            {
+                int xStart = gx * width / GridCols;
+                int xEnd = Math.Max(xStart + 1, (gx + 1) * width / GridCols);
+                xEnd = Math.Min(xEnd, width);
+
+                long sumR = 0, sumG = 0, sumB = 0;
+                int count = 0;
+
+                for (int y = yStart; y < yEnd; y++)
+                {
+                    int rowBase = y * stride;
+                    for (int x = xStart; x < xEnd; x++)
+                    {
+                        int p = rowBase + x * 4;
+                        if (p + 2 < bgra.Length)
+                        {
+                            sumB += bgra[p];
+                            sumG += bgra[p + 1];
+                            sumR += bgra[p + 2];
+                            count++;
+                        }
+                    }
+                }
+
+                byte cellR = count > 0 ? (byte)(sumR / count) : (byte)18;
+                byte cellG = count > 0 ? (byte)(sumG / count) : (byte)24;
+                byte cellB = count > 0 ? (byte)(sumB / count) : (byte)38;
+
+                int outIdx = (gy * GridCols + gx) * 3;
+                rgb[outIdx] = cellR;
+                rgb[outIdx + 1] = cellG;
+                rgb[outIdx + 2] = cellB;
+
+                rowSumR += cellR;
+                rowSumG += cellG;
+                rowSumB += cellB;
+
+                int curSatIdx = (gy + 1) * satStride + (gx + 1);
+                int aboveSatIdx = gy * satStride + (gx + 1);
+                satR[curSatIdx] = satR[aboveSatIdx] + rowSumR;
+                satG[curSatIdx] = satG[aboveSatIdx] + rowSumG;
+                satB[curSatIdx] = satB[aboveSatIdx] + rowSumB;
+            }
+        }
+
+        return new WallpaperColorGrid(width, height, rgb, satR, satG, satB);
+    }
+
+    /// <summary>
+    /// 基于壁纸 Image 控件实测渲染边界，O(1) 计算任意窗口矩形感受野 [rx0, ry0, rx1, ry1] 内的面积平均 RGB（彻底滤除树叶缝隙/碎花单像素噪点）
+    /// </summary>
+    public (double R, double G, double B) SampleAreaAverageRgb(
+        double rx0,
+        double ry0,
+        double rx1,
+        double ry1,
+        double imgRenderLeft,
+        double imgRenderTop,
+        double imgRenderWidth,
+        double imgRenderHeight)
+    {
+        if (imgRenderWidth <= 1 || imgRenderHeight <= 1 || ImageWidth <= 0 || ImageHeight <= 0)
+            return (18, 24, 38);
+
+        double u0 = Math.Clamp((Math.Min(rx0, rx1) - imgRenderLeft) / imgRenderWidth, 0.0, 1.0);
+        double u1 = Math.Clamp((Math.Max(rx0, rx1) - imgRenderLeft) / imgRenderWidth, 0.0, 1.0);
+        double v0 = Math.Clamp((Math.Min(ry0, ry1) - imgRenderTop) / imgRenderHeight, 0.0, 1.0);
+        double v1 = Math.Clamp((Math.Max(ry0, ry1) - imgRenderTop) / imgRenderHeight, 0.0, 1.0);
+
+        int gx0 = Math.Clamp((int)Math.Floor(u0 * GridCols), 0, GridCols - 1);
+        int gx1 = Math.Clamp((int)Math.Ceiling(u1 * GridCols), gx0 + 1, GridCols);
+        int gy0 = Math.Clamp((int)Math.Floor(v0 * GridRows), 0, GridRows - 1);
+        int gy1 = Math.Clamp((int)Math.Ceiling(v1 * GridRows), gy0 + 1, GridRows);
+
+        int area = (gx1 - gx0) * (gy1 - gy0);
+        if (area <= 0)
+            return SampleNormalizedUv((u0 + u1) * 0.5, (v0 + v1) * 0.5);
+
+        int satStride = GridCols + 1;
+        int i11 = gy1 * satStride + gx1;
+        int i01 = gy1 * satStride + gx0;
+        int i10 = gy0 * satStride + gx1;
+        int i00 = gy0 * satStride + gx0;
+
+        double avgR = (_satR[i11] - _satR[i01] - _satR[i10] + _satR[i00]) / (double)area;
+        double avgG = (_satG[i11] - _satG[i01] - _satG[i10] + _satG[i00]) / (double)area;
+        double avgB = (_satB[i11] - _satB[i01] - _satB[i10] + _satB[i00]) / (double)area;
+        return (avgR, avgG, avgB);
+    }
+
+    public (double R, double G, double B) SampleAtWindowPoint(double winX, double winY, double winW, double winH)
+    {
+        if (winW <= 1 || winH <= 1 || ImageWidth <= 0 || ImageHeight <= 0)
+            return (18, 24, 38);
+
+        double scale = Math.Max(winW / ImageWidth, winH / ImageHeight);
+        double dispW = ImageWidth * scale;
+        double dispH = ImageHeight * scale;
+        double offsetX = (dispW - winW) * 0.5;
+        double offsetY = (dispH - winH) * 0.5;
+
+        double u = Math.Clamp((winX + offsetX) / dispW, 0.0, 1.0);
+        double v = Math.Clamp((winY + offsetY) / dispH, 0.0, 1.0);
+        return SampleNormalizedUv(u, v);
+    }
+
+    private (double R, double G, double B) SampleNormalizedUv(double u, double v)
+    {
+        double fx = Math.Clamp(u, 0.0, 1.0) * (GridCols - 1);
+        double fy = Math.Clamp(v, 0.0, 1.0) * (GridRows - 1);
+        int x0 = (int)fx;
+        int y0 = (int)fy;
+        int x1 = Math.Min(x0 + 1, GridCols - 1);
+        int y1 = Math.Min(y0 + 1, GridRows - 1);
+        double tx = fx - x0;
+        double ty = fy - y0;
+
+        int i00 = (y0 * GridCols + x0) * 3;
+        int i10 = (y0 * GridCols + x1) * 3;
+        int i01 = (y1 * GridCols + x0) * 3;
+        int i11 = (y1 * GridCols + x1) * 3;
+
+        double w00 = (1 - tx) * (1 - ty);
+        double w10 = tx * (1 - ty);
+        double w01 = (1 - tx) * ty;
+        double w11 = tx * ty;
+
+        double r = _rgb[i00] * w00 + _rgb[i10] * w10 + _rgb[i01] * w01 + _rgb[i11] * w11;
+        double g = _rgb[i00 + 1] * w00 + _rgb[i10 + 1] * w10 + _rgb[i01 + 1] * w01 + _rgb[i11 + 1] * w11;
+        double b = _rgb[i00 + 2] * w00 + _rgb[i10 + 2] * w10 + _rgb[i01 + 2] * w01 + _rgb[i11 + 2] * w11;
+        return (r, g, b);
     }
 }

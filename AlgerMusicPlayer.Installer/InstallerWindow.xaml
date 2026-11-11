@@ -184,7 +184,7 @@
                             <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                                 <TextBlock Text="Alger Music Player" Foreground="White" FontSize="24" FontWeight="Bold" />
                                 <Border Background="#2210B981" BorderBrush="#5510B981" BorderThickness="1" CornerRadius="6" Padding="8,2" Margin="10,0,0,0" VerticalAlignment="Center">
-                                    <TextBlock Text="v5.1.1 · WinUI 3" Foreground="#34D399" FontSize="11" FontWeight="SemiBold" />
+                                    <TextBlock Text="v5.1.2 · WinUI 3" Foreground="#34D399" FontSize="11" FontWeight="SemiBold" />
                                 </Border>
                             </StackPanel>
                             <TextBlock Text="原生 C# / WinUI 3 桌面音乐播放器 · 双平台歌单 · 10 段均衡器 · 桌面歌词" Foreground="#94A3B8" FontSize="12.5" Margin="0,6,0,0" />

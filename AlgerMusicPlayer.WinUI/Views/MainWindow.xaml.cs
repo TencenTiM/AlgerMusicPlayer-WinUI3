@@ -157,7 +157,8 @@ public sealed partial class MainWindow : Window
         titleBar.ButtonInactiveBackgroundColor = Microsoft.UI.Colors.Transparent;
         bool isOverlayOpen = ImmersiveLyricOverlay != null && ImmersiveLyricOverlay.Visibility == Visibility.Visible;
 
-        var activeProfile = ViewModel.Theme.GetEffectiveTheme();
+        bool isTargetLight = IsCurrentUiLightMode;
+        var activeProfile = ThemeService.ResolveModeAdaptedProfile(ViewModel.Theme.GetEffectiveTheme(), isTargetLight);
         if (!isOverlayOpen && activeProfile.EnableCustomTitleBar && ThemeService.TryParseColor(activeProfile.TitleBarTextHex, out var customBtnFg))
         {
             titleBar.ButtonForegroundColor = customBtnFg;
@@ -166,9 +167,10 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        bool isLight = isOverlayOpen ? !_isMusicFullLightText : (RootLayout.ActualTheme == ElementTheme.Light);
-        titleBar.ButtonForegroundColor = isLight ? Microsoft.UI.Colors.Black : Microsoft.UI.Colors.White;
-        titleBar.ButtonHoverForegroundColor = isLight ? Microsoft.UI.Colors.Black : Microsoft.UI.Colors.White;
+        bool isLight = isOverlayOpen ? !_isMusicFullLightText : isTargetLight;
+        var sysBtnFg = isLight ? Windows.UI.Color.FromArgb(255, 15, 23, 42) : Microsoft.UI.Colors.White;
+        titleBar.ButtonForegroundColor = sysBtnFg;
+        titleBar.ButtonHoverForegroundColor = sysBtnFg;
         titleBar.ButtonHoverBackgroundColor = isLight
             ? Windows.UI.Color.FromArgb(20, 0, 0, 0)
             : Windows.UI.Color.FromArgb(24, 255, 255, 255);
@@ -348,7 +350,7 @@ public sealed partial class MainWindow : Window
         AutoThemeModeLabel.Text = s.AutoTheme ? "跟随系统" : "手动切换";
         ManualThemeToggleBtn.IsEnabled = !s.AutoTheme;
         ManualThemeToggleBtn.Opacity = s.AutoTheme ? 0.5 : 1.0;
-        bool isDark = RootLayout.ActualTheme == ElementTheme.Dark;
+        bool isDark = !IsCurrentUiLightMode;
         ManualThemeToggleIcon.Glyph = isDark ? "\uE708" : "\uE706";
         ManualThemeToggleText.Text = isDark ? "夜间" : "日间";
         SwitchDownloadTabUi(_activeDownloadTab);
@@ -794,78 +796,65 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// 全局 DWM 合成器原生高刷入场动画（运行于独立系统合成线程，自动跑满 120Hz / 144Hz / 165Hz / 240Hz+ 物理刷新率）
+    /// </summary>
     private void PlayEntranceAnimation(UIElement? element, double fromX = 0, double fromY = 20, double baseDurationMs = 280)
     {
         if (element == null) return;
+
+        ElementCompositionPreview.SetIsTranslationEnabled(element, true);
+        var visual = ElementCompositionPreview.GetElementVisual(element);
+        element.Opacity = 1.0;
+
         if (ViewModel.Config.Settings.NoAnimate)
         {
-            element.Opacity = 1;
-            if (element.RenderTransform is TranslateTransform ttReset)
-            {
-                ttReset.X = 0;
-                ttReset.Y = 0;
-            }
+            visual.StopAnimation("Opacity");
+            visual.StopAnimation("Translation");
+            visual.StopAnimation("Scale");
+            visual.Opacity = 1f;
+            visual.Scale = Vector3.One;
+            visual.Properties.InsertVector3("Translation", Vector3.Zero);
+            ScheduleAdaptiveWallpaperTextPass(immediate: true);
             return;
         }
 
         double speed = Math.Clamp(ViewModel.Config.Settings.AnimationSpeed, 0.2, 3.0);
-        var duration = new Duration(TimeSpan.FromMilliseconds(Math.Max(80, baseDurationMs / speed)));
+        var moveDur = TimeSpan.FromMilliseconds(Math.Max(70, baseDurationMs / speed));
+        var fadeDur = TimeSpan.FromMilliseconds(Math.Max(60, (baseDurationMs * 0.82) / speed));
 
-        if (element.RenderTransform is not TranslateTransform tt)
+        var compositor = visual.Compositor;
+        var easeOut = compositor.CreateCubicBezierEasingFunction(new Vector2(0.16f, 1.0f), new Vector2(0.30f, 1.0f));
+        var batch = compositor.CreateScopedBatch(Microsoft.UI.Composition.CompositionBatchTypes.Animation);
+
+        var fadeAnim = compositor.CreateScalarKeyFrameAnimation();
+        fadeAnim.InsertKeyFrame(0f, 0f);
+        fadeAnim.InsertKeyFrame(1f, 1f, easeOut);
+        fadeAnim.Duration = fadeDur;
+        visual.StartAnimation("Opacity", fadeAnim);
+
+        if (Math.Abs(fromX) > 0.1 || Math.Abs(fromY) > 0.1)
         {
-            tt = new TranslateTransform();
-            element.RenderTransform = tt;
+            var moveAnim = compositor.CreateVector3KeyFrameAnimation();
+            moveAnim.InsertKeyFrame(0f, new Vector3((float)fromX, (float)fromY, 0f));
+            moveAnim.InsertKeyFrame(1f, Vector3.Zero, easeOut);
+            moveAnim.Duration = moveDur;
+            visual.StartAnimation("Translation", moveAnim);
+        }
+        else
+        {
+            visual.StopAnimation("Translation");
+            visual.Properties.InsertVector3("Translation", Vector3.Zero);
         }
 
-        element.Opacity = 0;
-        tt.X = fromX;
-        tt.Y = fromY;
-
-        var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
-        var sb = new Storyboard();
-
-        var fadeAnim = new DoubleAnimation
-        {
-            From = 0,
-            To = 1,
-            Duration = duration,
-            EasingFunction = ease
-        };
-        Storyboard.SetTarget(fadeAnim, element);
-        Storyboard.SetTargetProperty(fadeAnim, "Opacity");
-        sb.Children.Add(fadeAnim);
-
-        if (Math.Abs(fromX) > 0.1)
-        {
-            var moveX = new DoubleAnimation
-            {
-                From = fromX,
-                To = 0,
-                Duration = duration,
-                EasingFunction = ease
-            };
-            Storyboard.SetTarget(moveX, tt);
-            Storyboard.SetTargetProperty(moveX, "X");
-            sb.Children.Add(moveX);
-        }
-
-        if (Math.Abs(fromY) > 0.1)
-        {
-            var moveY = new DoubleAnimation
-            {
-                From = fromY,
-                To = 0,
-                Duration = duration,
-                EasingFunction = ease
-            };
-            Storyboard.SetTarget(moveY, tt);
-            Storyboard.SetTargetProperty(moveY, "Y");
-            sb.Children.Add(moveY);
-        }
-
-        sb.Begin();
+        batch.End();
+        batch.Completed += (_, _) => ScheduleAdaptiveWallpaperTextPass();
+        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () => ScheduleAdaptiveWallpaperTextPass());
     }
 
+    /// <summary>
+    /// 全局 DWM 合成器原生高刷退场动画（异步等待合成器动画完成后再折叠元素，消除掉帧与闪烁）
+    /// </summary>
     private Task PlayExitAnimationAsync(UIElement? element, double toX = 0, double toY = 16, double baseDurationMs = 180)
     {
         if (element == null || ViewModel.Config.Settings.NoAnimate)
@@ -875,64 +864,169 @@ public sealed partial class MainWindow : Window
 
         var tcs = new TaskCompletionSource();
         double speed = Math.Clamp(ViewModel.Config.Settings.AnimationSpeed, 0.2, 3.0);
-        var duration = new Duration(TimeSpan.FromMilliseconds(Math.Max(60, baseDurationMs / speed)));
+        var duration = TimeSpan.FromMilliseconds(Math.Max(55, baseDurationMs / speed));
 
-        if (element.RenderTransform is not TranslateTransform tt)
+        ElementCompositionPreview.SetIsTranslationEnabled(element, true);
+        var visual = ElementCompositionPreview.GetElementVisual(element);
+        var compositor = visual.Compositor;
+        var easeIn = compositor.CreateCubicBezierEasingFunction(new Vector2(0.38f, 0.0f), new Vector2(1.0f, 1.0f));
+        var batch = compositor.CreateScopedBatch(Microsoft.UI.Composition.CompositionBatchTypes.Animation);
+
+        var fadeAnim = compositor.CreateScalarKeyFrameAnimation();
+        fadeAnim.InsertKeyFrame(0f, visual.Opacity > 0.05f ? visual.Opacity : 1f);
+        fadeAnim.InsertKeyFrame(1f, 0f, easeIn);
+        fadeAnim.Duration = duration;
+        visual.StartAnimation("Opacity", fadeAnim);
+
+        if (Math.Abs(toX) > 0.1 || Math.Abs(toY) > 0.1)
         {
-            tt = new TranslateTransform();
-            element.RenderTransform = tt;
+            var moveAnim = compositor.CreateVector3KeyFrameAnimation();
+            moveAnim.InsertKeyFrame(0f, Vector3.Zero);
+            moveAnim.InsertKeyFrame(1f, new Vector3((float)toX, (float)toY, 0f), easeIn);
+            moveAnim.Duration = duration;
+            visual.StartAnimation("Translation", moveAnim);
         }
 
-        var ease = new CubicEase { EasingMode = EasingMode.EaseIn };
-        var sb = new Storyboard();
-
-        var fadeAnim = new DoubleAnimation
+        batch.End();
+        batch.Completed += (_, _) =>
         {
-            From = element.Opacity,
-            To = 0,
-            Duration = duration,
-            EasingFunction = ease
-        };
-        Storyboard.SetTarget(fadeAnim, element);
-        Storyboard.SetTargetProperty(fadeAnim, "Opacity");
-        sb.Children.Add(fadeAnim);
-
-        if (Math.Abs(toX) > 0.1)
-        {
-            var moveX = new DoubleAnimation
-            {
-                From = 0,
-                To = toX,
-                Duration = duration,
-                EasingFunction = ease
-            };
-            Storyboard.SetTarget(moveX, tt);
-            Storyboard.SetTargetProperty(moveX, "X");
-            sb.Children.Add(moveX);
-        }
-
-        if (Math.Abs(toY) > 0.1)
-        {
-            var moveY = new DoubleAnimation
-            {
-                From = 0,
-                To = toY,
-                Duration = duration,
-                EasingFunction = ease
-            };
-            Storyboard.SetTarget(moveY, tt);
-            Storyboard.SetTargetProperty(moveY, "Y");
-            sb.Children.Add(moveY);
-        }
-
-        sb.Completed += (_, _) =>
-        {
-            element.Opacity = 1;
-            tt.X = 0;
-            tt.Y = 0;
             tcs.TrySetResult();
+            visual.StopAnimation("Opacity");
+            visual.StopAnimation("Translation");
+            visual.Opacity = 1f;
+            visual.Properties.InsertVector3("Translation", Vector3.Zero);
         };
-        sb.Begin();
+        return tcs.Task;
+    }
+
+    /// <summary>
+    /// 模态弹窗高刷双层入场动画：遮罩平滑淡入 + 弹窗卡片中心微缩放与上浮弹入
+    /// </summary>
+    private void PlayModalDialogOpenAnimation(UIElement backdrop, FrameworkElement card, double baseDurationMs = 240)
+    {
+        ElementCompositionPreview.SetIsTranslationEnabled(card, true);
+        var bgVisual = ElementCompositionPreview.GetElementVisual(backdrop);
+        var cardVisual = ElementCompositionPreview.GetElementVisual(card);
+        backdrop.Opacity = 1.0;
+        card.Opacity = 1.0;
+
+        if (ViewModel.Config.Settings.NoAnimate)
+        {
+            bgVisual.StopAnimation("Opacity");
+            cardVisual.StopAnimation("Opacity");
+            cardVisual.StopAnimation("Translation");
+            cardVisual.StopAnimation("Scale");
+            bgVisual.Opacity = 1f;
+            cardVisual.Opacity = 1f;
+            cardVisual.Scale = Vector3.One;
+            cardVisual.Properties.InsertVector3("Translation", Vector3.Zero);
+            return;
+        }
+
+        if (card.ActualWidth <= 0 || card.ActualHeight <= 0)
+        {
+            backdrop.UpdateLayout();
+        }
+        float cx = (float)((card.ActualWidth > 0 ? card.ActualWidth : Math.Max(480, card.Width)) * 0.5);
+        float cy = (float)((card.ActualHeight > 0 ? card.ActualHeight : 340) * 0.5);
+        cardVisual.CenterPoint = new Vector3(cx, cy, 0f);
+
+        double speed = Math.Clamp(ViewModel.Config.Settings.AnimationSpeed, 0.2, 3.0);
+        var cardDur = TimeSpan.FromMilliseconds(Math.Max(80, baseDurationMs / speed));
+        var fadeDur = TimeSpan.FromMilliseconds(Math.Max(65, (baseDurationMs * 0.78) / speed));
+
+        var compositor = cardVisual.Compositor;
+        var springOut = compositor.CreateCubicBezierEasingFunction(new Vector2(0.16f, 1.0f), new Vector2(0.30f, 1.0f));
+        var fadeEase = compositor.CreateCubicBezierEasingFunction(new Vector2(0.22f, 1.0f), new Vector2(0.36f, 1.0f));
+
+        var bgFade = compositor.CreateScalarKeyFrameAnimation();
+        bgFade.InsertKeyFrame(0f, 0f);
+        bgFade.InsertKeyFrame(1f, 1f, fadeEase);
+        bgFade.Duration = fadeDur;
+        bgVisual.StartAnimation("Opacity", bgFade);
+
+        var cardFade = compositor.CreateScalarKeyFrameAnimation();
+        cardFade.InsertKeyFrame(0f, 0f);
+        cardFade.InsertKeyFrame(1f, 1f, fadeEase);
+        cardFade.Duration = fadeDur;
+        cardVisual.StartAnimation("Opacity", cardFade);
+
+        var cardMove = compositor.CreateVector3KeyFrameAnimation();
+        cardMove.InsertKeyFrame(0f, new Vector3(0f, 18f, 0f));
+        cardMove.InsertKeyFrame(1f, Vector3.Zero, springOut);
+        cardMove.Duration = cardDur;
+        cardVisual.StartAnimation("Translation", cardMove);
+
+        var cardScale = compositor.CreateVector3KeyFrameAnimation();
+        cardScale.InsertKeyFrame(0f, new Vector3(0.955f, 0.955f, 1f));
+        cardScale.InsertKeyFrame(1f, Vector3.One, springOut);
+        cardScale.Duration = cardDur;
+        cardVisual.StartAnimation("Scale", cardScale);
+    }
+
+    /// <summary>
+    /// 模态弹窗高刷双层退场动画：卡片中心微缩下沉淡出 + 遮罩平滑消散
+    /// </summary>
+    private Task PlayModalDialogCloseAnimationAsync(UIElement backdrop, FrameworkElement card, double baseDurationMs = 175)
+    {
+        if (ViewModel.Config.Settings.NoAnimate)
+        {
+            return Task.CompletedTask;
+        }
+
+        var tcs = new TaskCompletionSource();
+        ElementCompositionPreview.SetIsTranslationEnabled(card, true);
+        var bgVisual = ElementCompositionPreview.GetElementVisual(backdrop);
+        var cardVisual = ElementCompositionPreview.GetElementVisual(card);
+
+        float cx = (float)((card.ActualWidth > 0 ? card.ActualWidth : Math.Max(480, card.Width)) * 0.5);
+        float cy = (float)((card.ActualHeight > 0 ? card.ActualHeight : 340) * 0.5);
+        cardVisual.CenterPoint = new Vector3(cx, cy, 0f);
+
+        double speed = Math.Clamp(ViewModel.Config.Settings.AnimationSpeed, 0.2, 3.0);
+        var duration = TimeSpan.FromMilliseconds(Math.Max(55, baseDurationMs / speed));
+
+        var compositor = cardVisual.Compositor;
+        var easeIn = compositor.CreateCubicBezierEasingFunction(new Vector2(0.40f, 0.0f), new Vector2(1.0f, 1.0f));
+        var batch = compositor.CreateScopedBatch(Microsoft.UI.Composition.CompositionBatchTypes.Animation);
+
+        var bgFade = compositor.CreateScalarKeyFrameAnimation();
+        bgFade.InsertKeyFrame(0f, bgVisual.Opacity > 0.05f ? bgVisual.Opacity : 1f);
+        bgFade.InsertKeyFrame(1f, 0f, easeIn);
+        bgFade.Duration = duration;
+        bgVisual.StartAnimation("Opacity", bgFade);
+
+        var cardFade = compositor.CreateScalarKeyFrameAnimation();
+        cardFade.InsertKeyFrame(0f, cardVisual.Opacity > 0.05f ? cardVisual.Opacity : 1f);
+        cardFade.InsertKeyFrame(1f, 0f, easeIn);
+        cardFade.Duration = duration;
+        cardVisual.StartAnimation("Opacity", cardFade);
+
+        var cardMove = compositor.CreateVector3KeyFrameAnimation();
+        cardMove.InsertKeyFrame(0f, Vector3.Zero);
+        cardMove.InsertKeyFrame(1f, new Vector3(0f, 14f, 0f), easeIn);
+        cardMove.Duration = duration;
+        cardVisual.StartAnimation("Translation", cardMove);
+
+        var cardScale = compositor.CreateVector3KeyFrameAnimation();
+        cardScale.InsertKeyFrame(0f, Vector3.One);
+        cardScale.InsertKeyFrame(1f, new Vector3(0.96f, 0.96f, 1f), easeIn);
+        cardScale.Duration = duration;
+        cardVisual.StartAnimation("Scale", cardScale);
+
+        batch.End();
+        batch.Completed += (_, _) =>
+        {
+            tcs.TrySetResult();
+            bgVisual.StopAnimation("Opacity");
+            cardVisual.StopAnimation("Opacity");
+            cardVisual.StopAnimation("Translation");
+            cardVisual.StopAnimation("Scale");
+            bgVisual.Opacity = 1f;
+            cardVisual.Opacity = 1f;
+            cardVisual.Scale = Vector3.One;
+            cardVisual.Properties.InsertVector3("Translation", Vector3.Zero);
+        };
         return tcs.Task;
     }
 
@@ -1309,6 +1403,8 @@ public sealed partial class MainWindow : Window
                 ViewModel.RefreshCacheStats();
                 break;
         }
+
+        ScheduleAdaptiveWallpaperTextPass(immediate: true);
     }
 
     private void OnSearchNavViewItemInvoked(NavigationView sender, NavigationViewItemInvokedEventArgs args)
@@ -1799,6 +1895,7 @@ public sealed partial class MainWindow : Window
 
     private void OnDetailSearchTextChanged(object sender, TextChangedEventArgs e)
     {
+        if (!_isInitialized) return;
         ViewModel.DetailSearchKeyword = DetailSearchBox.Text;
     }
 
@@ -2408,22 +2505,31 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    private Windows.UI.Color GetActiveThemeAccentColor()
+    {
+        var raw = ViewModel.Theme.GetEffectiveTheme();
+        bool isLight = IsCurrentUiLightMode;
+        var resolved = ThemeService.ResolveModeAdaptedProfile(raw, isLight);
+        return ThemeService.ParseColorOrDefault(resolved.AccentColorHex, Windows.UI.Color.FromArgb(255, 16, 185, 129));
+    }
+
     private void SyncMvAreaButtonsUi()
     {
         var activeArea = ViewModel.SelectedMvArea;
+        var accent = GetActiveThemeAccentColor();
         foreach (var child in MvAreaTabsPanel.Children)
         {
             if (child is Button btn && btn.Tag is string tag)
             {
                 bool isSelected = string.Equals(tag, activeArea, StringComparison.OrdinalIgnoreCase);
                 btn.Background = isSelected
-                    ? new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(36, 16, 185, 129))
+                    ? new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(36, accent.R, accent.G, accent.B))
                     : new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Transparent);
                 btn.BorderBrush = isSelected
-                    ? new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(80, 16, 185, 129))
+                    ? new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(90, accent.R, accent.G, accent.B))
                     : (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["ControlStrokeColorDefaultBrush"];
                 btn.Foreground = isSelected
-                    ? new Microsoft.UI.Xaml.Media.SolidColorBrush(Windows.UI.Color.FromArgb(255, 16, 185, 129))
+                    ? new Microsoft.UI.Xaml.Media.SolidColorBrush(accent)
                     : (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextFillColorPrimaryBrush"];
                 btn.FontWeight = isSelected
                     ? Microsoft.UI.Text.FontWeights.SemiBold
@@ -3130,13 +3236,13 @@ public sealed partial class MainWindow : Window
 
     private void OnDownloadDrawerSettingModified(object sender, RoutedEventArgs e)
     {
-        if (_isLoadingDownloadDrawer) return;
+        if (_isLoadingDownloadDrawer || !_isInitialized) return;
         _downloadDrawerModified = true;
     }
 
     private void OnDownloadDrawerConcurrentChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
     {
-        if (_isLoadingDownloadDrawer) return;
+        if (_isLoadingDownloadDrawer || !_isInitialized) return;
         if (double.IsNaN(args.NewValue))
         {
             sender.Value = 3;
@@ -3178,7 +3284,7 @@ public sealed partial class MainWindow : Window
 
     private void OnDownloadSeparatorCustomTextChanged(object sender, TextChangedEventArgs e)
     {
-        if (_isLoadingDownloadDrawer) return;
+        if (_isLoadingDownloadDrawer || !_isInitialized) return;
         _downloadSeparator = string.IsNullOrEmpty(DownloadSeparatorCustomBox.Text)
             ? " - "
             : DownloadSeparatorCustomBox.Text;
@@ -4748,7 +4854,7 @@ public sealed partial class MainWindow : Window
 
     private async void OnLyricDisplayConfigToggled(object sender, RoutedEventArgs e)
     {
-        if (_isLoadingLyricSettingsUi) return;
+        if (_isLoadingLyricSettingsUi || !_isInitialized) return;
         var cfg = ViewModel.Config.Settings.ImmersiveLyric;
 
         cfg.PureModeEnabled = LyricPureModeToggle.IsOn;
@@ -4959,13 +5065,13 @@ public sealed partial class MainWindow : Window
             : new SolidColorBrush(Windows.UI.Color.FromArgb(205, 17, 24, 39));
 
         Brush activeBrush;
-        var themeProfile = ViewModel.Theme.GetEffectiveTheme();
+        var themeProfile = ThemeService.ResolveModeAdaptedProfile(ViewModel.Theme.GetEffectiveTheme(), !_isMusicFullLightText);
         if (themeProfile.SyncImmersiveLyricHighlight)
         {
             string highlightHex = !string.IsNullOrWhiteSpace(themeProfile.LyricHighlightColorHex)
                 ? themeProfile.LyricHighlightColorHex
                 : themeProfile.AccentColorHex;
-            var highlightCol = ThemeService.ParseColorOrDefault(highlightHex, Windows.UI.Color.FromArgb(255, 16, 185, 129));
+            var highlightCol = ThemeService.ParseColorOrDefault(highlightHex, GetActiveThemeAccentColor());
             activeBrush = new SolidColorBrush(highlightCol);
         }
         else
@@ -5221,11 +5327,11 @@ public sealed partial class MainWindow : Window
         MusicFullFullscreenIcon.Foreground = mainFg;
         ConfigureTitleBarButtonsTheme();
 
-        // SimplePlayBar 中央播放按钮采用封面主色调增强质感 (对应 SimplePlayBar.vue .play-pause-btn background: var(--fill-color))
+        // SimplePlayBar 中央播放按钮采用封面主色调或当前主题强调色增强质感
         var (ch, cs, cl) = RgbToHsl(_extractedCoverColor.R, _extractedCoverColor.G, _extractedCoverColor.B);
         var playBtnColor = cs > 0.12
             ? HslToColor(ch, Math.Clamp(cs, 0.35, 0.78), Math.Clamp(cl, 0.32, 0.48))
-            : Windows.UI.Color.FromArgb(255, 16, 185, 129);
+            : GetActiveThemeAccentColor();
         SimplePlayBarPlayBtn.Background = new SolidColorBrush(playBtnColor);
     }
 
@@ -6042,6 +6148,9 @@ public sealed partial class MainWindow : Window
     }
 
     // ==================== 5.1 / 7.1 多声道空间可视化配置与独立通道校准 ====================
+    private int _multichannelModalAnimVersion;
+    private bool _isClosingMultichannelModal;
+    private bool _isSyncingMultichannelUi;
 
     private void OnOpenMultichannelModalClick(object sender, RoutedEventArgs e)
     {
@@ -6053,39 +6162,82 @@ public sealed partial class MainWindow : Window
         OpenMultichannelModal();
     }
 
-    private void OnCloseMultichannelModalClick(object sender, RoutedEventArgs e)
+    private async void OnCloseMultichannelModalClick(object sender, RoutedEventArgs e)
     {
-        CloseMultichannelModal();
+        await CloseMultichannelModalAsync();
+    }
+
+    private async void OnMultichannelModalBackdropTapped(object sender, TappedRoutedEventArgs e)
+    {
+        if (ReferenceEquals(e.OriginalSource, MultichannelModalOverlay))
+        {
+            await CloseMultichannelModalAsync();
+        }
+    }
+
+    private void OnMultichannelModalCardTapped(object sender, TappedRoutedEventArgs e)
+    {
+        e.Handled = true;
     }
 
     private void RefreshMultichannelSummaryLabel()
     {
-        try
+        int devNum = ViewModel.Config.Settings.AudioOutputDeviceNumber;
+        _ = Task.Run(() =>
         {
-            var info = _multichannelService.DetectCurrentDeviceInfo(ViewModel.Config.Settings.AudioOutputDeviceNumber);
-            MultichannelSummaryLabel.Text = $"当前检测到：{info.DeviceName}（{info.ChannelTypeName}）";
-        }
-        catch { }
+            try
+            {
+                var info = _multichannelService.DetectCurrentDeviceInfo(devNum);
+                DispatcherQueue.TryEnqueue(() =>
+                {
+                    MultichannelSummaryLabel.Text = $"当前检测到：{info.DeviceName}（{info.ChannelTypeName}）";
+                });
+            }
+            catch { }
+        });
     }
 
     private void OpenMultichannelModal()
     {
-        RefreshMultichannelModalUi();
+        int myVersion = ++_multichannelModalAnimVersion;
+        _isClosingMultichannelModal = false;
+
         SyncMultichannelConfigToUi();
+        MultichannelModalOverlay.IsHitTestVisible = true;
         MultichannelModalOverlay.Visibility = Visibility.Visible;
+        PlayModalDialogOpenAnimation(MultichannelModalOverlay, MultichannelModalCard, 250);
+
+        // 后台异步侦测 WASAPI 音频端点能力，避免同步枚举声卡阻塞打开首帧动画
+        _ = RefreshMultichannelModalUiAsync(myVersion);
     }
 
-    private void CloseMultichannelModal()
+    private async Task CloseMultichannelModalAsync()
     {
+        if (MultichannelModalOverlay.Visibility != Visibility.Visible || _isClosingMultichannelModal)
+            return;
+
+        int myVersion = ++_multichannelModalAnimVersion;
+        _isClosingMultichannelModal = true;
+        MultichannelModalOverlay.IsHitTestVisible = false;
+
         _surroundTourCts?.Cancel();
         _surroundTourCts = null;
         _multichannelService.StopTestTone();
+        RunSurroundTourBtn.IsEnabled = true;
+
+        await PlayModalDialogCloseAnimationAsync(MultichannelModalOverlay, MultichannelModalCard, 180);
+
+        if (myVersion != _multichannelModalAnimVersion)
+            return;
+
         MultichannelModalOverlay.Visibility = Visibility.Collapsed;
+        MultichannelModalOverlay.IsHitTestVisible = true;
+        _isClosingMultichannelModal = false;
     }
 
-    private void OnRefreshMultichannelDeviceClick(object sender, RoutedEventArgs e)
+    private async void OnRefreshMultichannelDeviceClick(object sender, RoutedEventArgs e)
     {
-        RefreshMultichannelModalUi();
+        await RefreshMultichannelModalUiAsync(_multichannelModalAnimVersion);
         ViewModel.StatusToast = "已重新检测当前音频输出设备与声道能力";
     }
 
@@ -6094,9 +6246,27 @@ public sealed partial class MainWindow : Window
         MultichannelManagerService.OpenWindowsSoundControlPanel();
     }
 
-    private void RefreshMultichannelModalUi()
+    private async Task RefreshMultichannelModalUiAsync(int expectedVersion)
     {
-        var info = _multichannelService.DetectCurrentDeviceInfo(ViewModel.Config.Settings.AudioOutputDeviceNumber);
+        int devNum = ViewModel.Config.Settings.AudioOutputDeviceNumber;
+        MultichannelDeviceInfo info;
+        try
+        {
+            info = await Task.Run(() => _multichannelService.DetectCurrentDeviceInfo(devNum));
+        }
+        catch
+        {
+            return;
+        }
+
+        if (expectedVersion != _multichannelModalAnimVersion)
+            return;
+
+        ApplyMultichannelDeviceInfoToUi(info);
+    }
+
+    private void ApplyMultichannelDeviceInfoToUi(MultichannelDeviceInfo info)
+    {
         MultichannelDeviceNameText.Text = info.DeviceName;
         MultichannelChannelBadgeText.Text = info.ChannelTypeName;
         MultichannelSampleRateBadgeText.Text = $"{info.SampleRate} Hz, {info.BitsPerSample}-bit Float";
@@ -6124,8 +6294,11 @@ public sealed partial class MainWindow : Window
 
     private void SyncMultichannelConfigToUi()
     {
-        var cfg = ViewModel.Config.Settings.Multichannel;
-        MultichannelEnableToggle.IsOn = cfg.IsEnabled;
+        _isSyncingMultichannelUi = true;
+        try
+        {
+            var cfg = ViewModel.Config.Settings.Multichannel;
+            MultichannelEnableToggle.IsOn = cfg.IsEnabled;
 
         GainSliderFL.Value = cfg.FrontLeftDb;
         GainLabelFL.Text = FormatDb(cfg.FrontLeftDb);
@@ -6162,10 +6335,15 @@ public sealed partial class MainWindow : Window
         MuteToggleBL.IsOn = cfg.MuteBackLeft;
         SpeakerBadgeBackLeft.Text = FormatDb(cfg.BackLeftDb);
 
-        GainSliderBR.Value = cfg.BackRightDb;
-        GainLabelBR.Text = FormatDb(cfg.BackRightDb);
-        MuteToggleBR.IsOn = cfg.MuteBackRight;
-        SpeakerBadgeBackRight.Text = FormatDb(cfg.BackRightDb);
+            GainSliderBR.Value = cfg.BackRightDb;
+            GainLabelBR.Text = FormatDb(cfg.BackRightDb);
+            MuteToggleBR.IsOn = cfg.MuteBackRight;
+            SpeakerBadgeBackRight.Text = FormatDb(cfg.BackRightDb);
+        }
+        finally
+        {
+            _isSyncingMultichannelUi = false;
+        }
     }
 
     // 先加 0f 消除 -0.0 导致的 "+-0.0dB" 显示
@@ -6208,7 +6386,8 @@ public sealed partial class MainWindow : Window
             });
         }
 
-        var info = _multichannelService.DetectCurrentDeviceInfo(ViewModel.Config.Settings.AudioOutputDeviceNumber);
+        int devNum = ViewModel.Config.Settings.AudioOutputDeviceNumber;
+        var info = await Task.Run(() => _multichannelService.DetectCurrentDeviceInfo(devNum));
         await _multichannelService.PlaySingleSpeakerTestAsync(channelIdx, info.Channels >= 8 ? 8 : 6);
     }
 
@@ -6218,7 +6397,8 @@ public sealed partial class MainWindow : Window
         _surroundTourCts = new CancellationTokenSource();
         var ct = _surroundTourCts.Token;
 
-        var info = _multichannelService.DetectCurrentDeviceInfo(ViewModel.Config.Settings.AudioOutputDeviceNumber);
+        int devNum = ViewModel.Config.Settings.AudioOutputDeviceNumber;
+        var info = await Task.Run(() => _multichannelService.DetectCurrentDeviceInfo(devNum));
         int[] speakerSequence = info.Channels >= 8
             ? [0, 2, 1, 5, 7, 6, 4, 3]  // FL -> C -> FR -> SR -> BR -> BL -> SL -> LFE
             : [0, 2, 1, 5, 4, 3];        // FL -> C -> FR -> SR -> SL -> LFE
@@ -6252,7 +6432,7 @@ public sealed partial class MainWindow : Window
 
     private void OnMultichannelEnableToggled(object sender, RoutedEventArgs e)
     {
-        if (!_isInitialized) return;
+        if (!_isInitialized || _isSyncingMultichannelUi) return;
         var cfg = ViewModel.Config.Settings.Multichannel;
         cfg.IsEnabled = MultichannelEnableToggle.IsOn;
         ViewModel.Player.UpdateMultichannelConfig(cfg);
@@ -6260,7 +6440,7 @@ public sealed partial class MainWindow : Window
 
     private void OnChannelGainChanged(object sender, RangeBaseValueChangedEventArgs e)
     {
-        if (!_isInitialized) return;
+        if (!_isInitialized || _isSyncingMultichannelUi) return;
         var cfg = ViewModel.Config.Settings.Multichannel;
         float val = (float)(Math.Round(e.NewValue * 2) / 2.0); // 0.5dB 步进
 
@@ -6278,7 +6458,7 @@ public sealed partial class MainWindow : Window
 
     private void OnChannelMuteToggled(object sender, RoutedEventArgs e)
     {
-        if (!_isInitialized) return;
+        if (!_isInitialized || _isSyncingMultichannelUi) return;
         var cfg = ViewModel.Config.Settings.Multichannel;
 
         if (ReferenceEquals(sender, MuteToggleFL)) cfg.MuteFrontLeft = MuteToggleFL.IsOn;
@@ -6384,7 +6564,7 @@ public sealed partial class MainWindow : Window
             : "未选择音源";
     }
 
-    private static void UpdateSingleMusicSourceCard(
+    private void UpdateSingleMusicSourceCard(
         Border card,
         Border iconBg,
         Microsoft.UI.Xaml.Shapes.Path iconPath,
@@ -6394,19 +6574,20 @@ public sealed partial class MainWindow : Window
         Windows.UI.Color brandColor,
         bool isAvailable)
     {
+        var accent = GetActiveThemeAccentColor();
         var brandBrush = new SolidColorBrush(brandColor);
         var whiteBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 255, 255, 255));
-        var emeraldBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 16, 185, 129));
+        var accentBrush = new SolidColorBrush(accent);
 
         card.Opacity = isAvailable ? 1.0 : 0.6;
         if (isSelected)
         {
-            card.Background = new SolidColorBrush(Windows.UI.Color.FromArgb(22, 16, 185, 129));
-            card.BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(90, 16, 185, 129));
+            card.Background = new SolidColorBrush(Windows.UI.Color.FromArgb(26, accent.R, accent.G, accent.B));
+            card.BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(100, accent.R, accent.G, accent.B));
             iconBg.Background = brandBrush;
             iconPath.Fill = whiteBrush;
-            checkBg.Background = emeraldBrush;
-            checkBg.BorderBrush = emeraldBrush;
+            checkBg.Background = accentBrush;
+            checkBg.BorderBrush = accentBrush;
             checkIcon.Visibility = Visibility.Visible;
         }
         else
@@ -6736,7 +6917,7 @@ public sealed partial class MainWindow : Window
 
     private void OnShortcutDraftItemChanged(object sender, object e)
     {
-        if (ShortcutSettingsModalOverlay.Visibility != Visibility.Visible) return;
+        if (!_isInitialized || ShortcutSettingsModalOverlay?.Visibility != Visibility.Visible) return;
         ValidateShortcutDrafts();
     }
 
@@ -6999,6 +7180,7 @@ public sealed partial class MainWindow : Window
 
     private void OnModalCookieInputTextChanged(object sender, TextChangedEventArgs e)
     {
+        if (!_isInitialized || ModalCookieLengthText == null || ModalCookieInputBox == null) return;
         ModalCookieLengthText.Text = $"当前长度：{(ModalCookieInputBox.Text?.Length ?? 0)} 字符";
     }
 
@@ -7330,10 +7512,10 @@ public sealed partial class MainWindow : Window
     private async void OnCheckUpdateClick(object sender, RoutedEventArgs e)
     {
         AboutVersionStatusText.Text = "正在连接 GitHub 检查最新版本...";
-        var (hasUpdate, latestVersion, _) = await ViewModel.Api.CheckGitHubUpdateAsync("v5.1.1");
+        var (hasUpdate, latestVersion, _) = await ViewModel.Api.CheckGitHubUpdateAsync("v5.1.2");
         AboutVersionStatusText.Text = hasUpdate
-            ? $"发现新版本：{latestVersion}（当前 5.1.1，可点击右侧前往更新）"
-            : $"5.1.1 (已是最新版本: {latestVersion})";
+            ? $"发现新版本：{latestVersion}（当前 5.1.2，可点击右侧前往更新）"
+            : $"5.1.2 (已是最新版本: {latestVersion})";
         ViewModel.StatusToast = AboutVersionStatusText.Text;
     }
 
@@ -7542,12 +7724,25 @@ public sealed partial class MainWindow : Window
 
     private Border CreateDownloadOptionCard(SongItem song, DownloadQualityOption opt)
     {
+        bool isLight = IsCurrentUiLightMode;
+        var accent = GetActiveThemeAccentColor();
+        var readableAccent = ThemeService.EnsureReadableTextAccent(accent, isLight);
+        var normalBg = isLight
+            ? Windows.UI.Color.FromArgb(145, 255, 255, 255)
+            : Windows.UI.Color.FromArgb(16, 255, 255, 255);
+        var hoverBg = isLight
+            ? Windows.UI.Color.FromArgb(215, 255, 255, 255)
+            : Windows.UI.Color.FromArgb(32, 255, 255, 255);
+        var normalBorder = opt.IsRecommended
+            ? Windows.UI.Color.FromArgb(isLight ? (byte)155 : (byte)95, accent.R, accent.G, accent.B)
+            : (isLight
+                ? Windows.UI.Color.FromArgb(36, 15, 23, 42)
+                : Windows.UI.Color.FromArgb(24, 255, 255, 255));
+
         var card = new Border
         {
-            Background = new SolidColorBrush(Windows.UI.Color.FromArgb(16, 255, 255, 255)),
-            BorderBrush = opt.IsRecommended
-                ? new SolidColorBrush(Windows.UI.Color.FromArgb(90, 16, 185, 129))
-                : new SolidColorBrush(Windows.UI.Color.FromArgb(24, 255, 255, 255)),
+            Background = new SolidColorBrush(normalBg),
+            BorderBrush = new SolidColorBrush(normalBorder),
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(10),
             Padding = new Thickness(16, 12, 16, 12),
@@ -7560,10 +7755,12 @@ public sealed partial class MainWindow : Window
         var topRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
 
         // 平台徽标
+        var rawBrandCol = ThemeService.ParseColorOrDefault(opt.BrandColorHex, accent);
+        var readableBrandCol = ThemeService.EnsureReadableTextAccent(rawBrandCol, isLight);
         var platBadge = new Border
         {
-            Background = ParseHexColorBrush(opt.BrandColorHex, 36),
-            BorderBrush = ParseHexColorBrush(opt.BrandColorHex, 100),
+            Background = new SolidColorBrush(Windows.UI.Color.FromArgb(36, rawBrandCol.R, rawBrandCol.G, rawBrandCol.B)),
+            BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(110, readableBrandCol.R, readableBrandCol.G, readableBrandCol.B)),
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(4),
             Padding = new Thickness(6, 1, 6, 1),
@@ -7574,7 +7771,7 @@ public sealed partial class MainWindow : Window
             Text = opt.PlatformName,
             FontSize = 10,
             FontWeight = Microsoft.UI.Text.FontWeights.Bold,
-            Foreground = ParseHexColorBrush(opt.BrandColorHex, 255)
+            Foreground = new SolidColorBrush(readableBrandCol)
         };
         topRow.Children.Add(platBadge);
 
@@ -7584,6 +7781,9 @@ public sealed partial class MainWindow : Window
             Text = opt.QualityBadge,
             FontSize = 13,
             FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Foreground = new SolidColorBrush(isLight
+                ? Windows.UI.Color.FromArgb(255, 15, 23, 42)
+                : Windows.UI.Color.FromArgb(255, 248, 250, 252)),
             VerticalAlignment = VerticalAlignment.Center
         };
         topRow.Children.Add(qText);
@@ -7593,8 +7793,8 @@ public sealed partial class MainWindow : Window
         {
             var recBadge = new Border
             {
-                Background = new SolidColorBrush(Windows.UI.Color.FromArgb(36, 16, 185, 129)),
-                BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(120, 16, 185, 129)),
+                Background = new SolidColorBrush(Windows.UI.Color.FromArgb(36, accent.R, accent.G, accent.B)),
+                BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(120, readableAccent.R, readableAccent.G, readableAccent.B)),
                 BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(4),
                 Padding = new Thickness(5, 1, 5, 1),
@@ -7605,7 +7805,7 @@ public sealed partial class MainWindow : Window
                 Text = "最高推荐",
                 FontSize = 9,
                 FontWeight = Microsoft.UI.Text.FontWeights.Bold,
-                Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 16, 185, 129))
+                Foreground = new SolidColorBrush(readableAccent)
             };
             topRow.Children.Add(recBadge);
         }
@@ -7622,7 +7822,9 @@ public sealed partial class MainWindow : Window
         {
             Text = string.Join(" · ", specParts),
             FontSize = 11,
-            Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, 148, 163, 184))
+            Foreground = new SolidColorBrush(isLight
+                ? Windows.UI.Color.FromArgb(255, 51, 65, 85)
+                : Windows.UI.Color.FromArgb(255, 148, 163, 184))
         };
         contentSp.Children.Add(specText);
 
@@ -7643,11 +7845,11 @@ public sealed partial class MainWindow : Window
         // 鼠标悬停动效与手型反馈
         card.PointerEntered += (_, _) =>
         {
-            card.Background = new SolidColorBrush(Windows.UI.Color.FromArgb(32, 255, 255, 255));
+            card.Background = new SolidColorBrush(hoverBg);
         };
         card.PointerExited += (_, _) =>
         {
-            card.Background = new SolidColorBrush(Windows.UI.Color.FromArgb(16, 255, 255, 255));
+            card.Background = new SolidColorBrush(normalBg);
         };
 
         card.Child = contentSp;
