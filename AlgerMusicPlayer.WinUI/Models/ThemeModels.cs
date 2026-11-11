@@ -490,6 +490,92 @@ public class CustomThemeProfile
         },
         new()
         {
+            Id = "builtin-sakura-daylight",
+            Name = "晴空花信 · 白昼樱",
+            Author = "Official",
+            Description = "樱雾粉白与晴空蓝晨曦流体极光，绯樱花瓣飘落配悬浮白玉灵动岛",
+            IsBuiltIn = true,
+            BaseMode = "Light",
+            BackdropType = "Aurora",
+            WindowBgColorHex = "#FDF5F8",
+            AuroraColor1Hex = "#FECDD3",
+            AuroraColor2Hex = "#BAE6FD",
+            AuroraColor3Hex = "#DDD6FE",
+            AuroraSpeed = 0.9,
+            AuroraIntensity = 62,
+            EnableParticleOverlay = true,
+            ParticleType = "Sakura",
+            ParticleDensity = 30,
+            ParticleSpeed = 0.9,
+            ParticleColorHex = "#F472B6",
+            AccentColorHex = "#EC4899",
+            EnableAccentGradient = true,
+            AccentGradientEndHex = "#F43F5E",
+            PlayBarLayoutMode = "FloatingIsland",
+            EnablePlayBarRhythmGlow = true,
+            CardVisualStyle = "FrostedGlass",
+            ButtonCornerRadius = 16,
+            CoverArtShape = "VinylSpin",
+            SyncImmersiveLyricHighlight = true
+        },
+        new()
+        {
+            Id = "builtin-mint-morning",
+            Name = "晨雾薄荷 · 浮光泡",
+            Author = "Official",
+            Description = "冰川青与鲜薄荷白昼极光漫游，晶莹音泡缓缓浮升，无界轻透底栏",
+            IsBuiltIn = true,
+            BaseMode = "Light",
+            BackdropType = "Aurora",
+            WindowBgColorHex = "#F2FBF8",
+            AuroraColor1Hex = "#A7F3D0",
+            AuroraColor2Hex = "#99F6E4",
+            AuroraColor3Hex = "#BAE6FD",
+            AuroraSpeed = 0.85,
+            AuroraIntensity = 58,
+            EnableParticleOverlay = true,
+            ParticleType = "Bubble",
+            ParticleDensity = 26,
+            ParticleSpeed = 0.8,
+            ParticleColorHex = "#10B981",
+            AccentColorHex = "#059669",
+            EnableAccentGradient = true,
+            AccentGradientEndHex = "#0EA5E9",
+            PlayBarLayoutMode = "MinimalGlass",
+            EnablePlayBarRhythmGlow = true,
+            CardVisualStyle = "FrostedGlass",
+            ButtonCornerRadius = 14,
+            CoverArtShape = "Circle"
+        },
+        new()
+        {
+            Id = "builtin-coverflow-day",
+            Name = "流光白昼 · 随歌呼吸",
+            Author = "Official",
+            Description = "浅色护眼底色下随歌曲封面自动晕染三色水彩霞光，白昼听歌灵动清透",
+            IsBuiltIn = true,
+            BaseMode = "Light",
+            BackdropType = "CoverFlow",
+            WindowBgColorHex = "#F6F8FC",
+            AuroraSpeed = 1.0,
+            AuroraIntensity = 56,
+            EnableParticleOverlay = true,
+            ParticleType = "Starlight",
+            ParticleDensity = 32,
+            ParticleSpeed = 0.75,
+            ParticleColorHex = "#38BDF8",
+            AccentColorHex = "#0284C7",
+            EnableAccentGradient = true,
+            AccentGradientEndHex = "#6366F1",
+            PlayBarLayoutMode = "FloatingIsland",
+            EnablePlayBarRhythmGlow = true,
+            CardVisualStyle = "FrostedGlass",
+            ButtonCornerRadius = 16,
+            CoverArtShape = "VinylSpin",
+            SyncImmersiveLyricHighlight = true
+        },
+        new()
+        {
             Id = "builtin-netease-red",
             Name = "云村雅红",
             Author = "Official",
@@ -677,6 +763,7 @@ public class MarketplaceFeedManifest
 public class ThemeCenterConfig
 {
     public string ActiveThemeId { get; set; } = "builtin-emerald-dark";
+    public string? OverrideBaseMode { get; set; } = null;
     public bool FollowSongCoverAccent { get; set; } = false;
     public List<CustomThemeProfile> CustomThemes { get; set; } = [];
     public List<string> MarketFeedUrls { get; set; } = [];
@@ -1162,6 +1249,81 @@ public static class ThemeMarketplaceCatalog
                 ButtonCornerRadius = 16,
                 SyncImmersiveLyricHighlight = true,
                 SyncDesktopLyric = true
+            }
+        },
+        new()
+        {
+            Id = "market-peach-ink-spring",
+            Category = "极简浅色",
+            Tags = ["国风浅色", "桃瓣飘落", "水彩极光"],
+            Downloads = 17260,
+            SourceName = "东方雅韵坊",
+            Theme = new CustomThemeProfile
+            {
+                Id = "market-peach-ink-spring",
+                MarketOriginId = "market-peach-ink-spring",
+                Name = "桃夭春晓 · 水墨国风",
+                Author = "InkLotus",
+                Description = "宣纸暖白晕染桃花胭脂与春水碧青极光，飞花如雨配古典宋体韵味",
+                BaseMode = "Light",
+                BackdropType = "Aurora",
+                WindowBgColorHex = "#FCF9F5",
+                AuroraColor1Hex = "#FBCFE8",
+                AuroraColor2Hex = "#A7F3D0",
+                AuroraColor3Hex = "#FDE68A",
+                AuroraSpeed = 0.75,
+                AuroraIntensity = 56,
+                EnableParticleOverlay = true,
+                ParticleType = "Sakura",
+                ParticleDensity = 28,
+                ParticleSpeed = 0.8,
+                ParticleColorHex = "#FB7185",
+                AccentColorHex = "#E11D48",
+                EnableAccentGradient = true,
+                AccentGradientEndHex = "#F43F5E",
+                PlayBarLayoutMode = "FloatingIsland",
+                EnablePlayBarRhythmGlow = true,
+                CardVisualStyle = "FrostedGlass",
+                CoverArtShape = "VinylSpin",
+                ButtonCornerRadius = 14,
+                CustomFontFamily = "KaiTi, STKaiti, Microsoft YaHei UI",
+                SyncImmersiveLyricHighlight = true
+            }
+        },
+        new()
+        {
+            Id = "market-iceland-polar-day",
+            Category = "粒子氛围",
+            Tags = ["极昼浅色", "冰晶微雪", "白瓷浮雕"],
+            Downloads = 15840,
+            SourceName = "NordicUI",
+            Theme = new CustomThemeProfile
+            {
+                Id = "market-iceland-polar-day",
+                MarketOriginId = "market-iceland-polar-day",
+                Name = "冰岛极昼 · 水晶微雪",
+                Author = "NordicUI",
+                Description = "纯净极昼冰川白与淡极光蓝紫轻柔交织，晶莹微雪飘落于白瓷浮雕卡片之上",
+                BaseMode = "Light",
+                BackdropType = "Aurora",
+                WindowBgColorHex = "#F4F8FC",
+                AuroraColor1Hex = "#BAE6FD",
+                AuroraColor2Hex = "#C7D2FE",
+                AuroraColor3Hex = "#A5F3FC",
+                AuroraSpeed = 0.8,
+                AuroraIntensity = 58,
+                EnableParticleOverlay = true,
+                ParticleType = "Snow",
+                ParticleDensity = 34,
+                ParticleSpeed = 0.75,
+                ParticleColorHex = "#38BDF8",
+                AccentColorHex = "#0284C7",
+                EnableAccentGradient = true,
+                AccentGradientEndHex = "#6366F1",
+                PlayBarLayoutMode = "FloatingIsland",
+                CardVisualStyle = "ElevatedCard",
+                ButtonCornerRadius = 16,
+                CoverArtShape = "Circle"
             }
         }
     ];

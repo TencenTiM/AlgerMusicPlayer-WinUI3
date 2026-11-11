@@ -243,6 +243,11 @@ public sealed partial class MainWindow
                 {
                     await RefreshCoverFlowColorsFromSongAsync(coverUrl);
                 }
+
+                bool isLight = RootLayout.ActualTheme == ElementTheme.Light;
+                _curAuroraC1 = ThemeService.AdaptAuroraColorForMode(_targetCoverC1, isLight);
+                _curAuroraC2 = ThemeService.AdaptAuroraColorForMode(_targetCoverC2, isLight);
+                _curAuroraC3 = ThemeService.AdaptAuroraColorForMode(_targetCoverC3, isLight);
             }
 
             ApplyAuroraOrbColors(profile.AuroraIntensity);
@@ -322,9 +327,10 @@ public sealed partial class MainWindow
     {
         if (_auroraBrush1 == null || _auroraBrush2 == null || _auroraBrush3 == null) return;
 
+        bool isLight = RootLayout.ActualTheme == ElementTheme.Light;
         double factor = Math.Clamp(intensityPercent, 20, 100) / 100.0;
-        byte centerAlpha = (byte)Math.Round(185 * factor);
-        byte midAlpha = (byte)Math.Round(82 * factor);
+        byte centerAlpha = (byte)Math.Round((isLight ? 150 : 185) * factor);
+        byte midAlpha = (byte)Math.Round((isLight ? 66 : 82) * factor);
 
         SetRadialStops(_auroraBrush1, _curAuroraC1, centerAlpha, midAlpha);
         SetRadialStops(_auroraBrush2, _curAuroraC2, centerAlpha, midAlpha);
@@ -372,9 +378,10 @@ public sealed partial class MainWindow
     {
         int count = Math.Clamp(profile.ParticleDensity, 10, 90);
         string type = string.IsNullOrWhiteSpace(profile.ParticleType) ? "Starlight" : profile.ParticleType;
-        Color baseColor = ResolveParticleColor(type, profile.ParticleColorHex, accent, profile.BaseMode == "Light");
+        bool isLightUi = RootLayout.ActualTheme == ElementTheme.Light || string.Equals(profile.BaseMode, "Light", StringComparison.OrdinalIgnoreCase);
+        Color baseColor = ResolveParticleColor(type, profile.ParticleColorHex, accent, isLightUi);
 
-        string sig = $"{type}|{count}|{ThemeService.ToHex(baseColor)}";
+        string sig = $"{type}|{count}|{ThemeService.ToHex(baseColor)}|{(isLightUi ? "L" : "D")}";
         if (_builtParticleSignature == sig && _particlePool.Count == count)
             return;
 
@@ -532,11 +539,17 @@ public sealed partial class MainWindow
         {
             if (profile.BackdropType == "CoverFlow")
             {
+                bool isLight = RootLayout.ActualTheme == ElementTheme.Light;
+                var goalC1 = ThemeService.AdaptAuroraColorForMode(_targetCoverC1, isLight);
+                var goalC2 = ThemeService.AdaptAuroraColorForMode(_targetCoverC2, isLight);
+                var goalC3 = ThemeService.AdaptAuroraColorForMode(_targetCoverC3, isLight);
+
                 double lerpT = Math.Clamp(dt * 1.8, 0.02, 0.25);
-                _curAuroraC1 = ThemeService.LerpColor(_curAuroraC1, _targetCoverC1, lerpT);
-                _curAuroraC2 = ThemeService.LerpColor(_curAuroraC2, _targetCoverC2, lerpT);
-                _curAuroraC3 = ThemeService.LerpColor(_curAuroraC3, _targetCoverC3, lerpT);
-                ApplyAuroraOrbColors(profile.AuroraIntensity);
+                _curAuroraC1 = ThemeService.LerpColor(_curAuroraC1, goalC1, lerpT);
+                _curAuroraC2 = ThemeService.LerpColor(_curAuroraC2, goalC2, lerpT);
+                _curAuroraC3 = ThemeService.LerpColor(_curAuroraC3, goalC3, lerpT);
+                double effIntensity = isLight ? Math.Clamp(profile.AuroraIntensity, 42, 62) : profile.AuroraIntensity;
+                ApplyAuroraOrbColors(effIntensity);
             }
             UpdateAuroraOrbPositions(dt);
         }
@@ -620,7 +633,7 @@ public sealed partial class MainWindow
             if (!profile.EnableCustomPlayBar)
             {
                 BottomPlayBarBorder.Background = new SolidColorBrush(isLight
-                    ? Color.FromArgb(232, 255, 255, 255)
+                    ? Color.FromArgb(242, 255, 255, 255)
                     : Color.FromArgb(215, 20, 27, 42));
                 BottomPlayBarBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(95, accent.R, accent.G, accent.B));
             }
@@ -636,7 +649,7 @@ public sealed partial class MainWindow
             if (!profile.EnableCustomPlayBar)
             {
                 BottomPlayBarBorder.Background = new SolidColorBrush(isLight
-                    ? Color.FromArgb(145, 255, 255, 255)
+                    ? Color.FromArgb(205, 255, 255, 255)
                     : Color.FromArgb(120, 15, 23, 42));
             }
         }
@@ -742,13 +755,13 @@ public sealed partial class MainWindow
                 if (!profile.EnableCustomContent)
                 {
                     rootRes["CardBackgroundFillColorDefaultBrush"] = new SolidColorBrush(isLight
-                        ? Color.FromArgb(165, 255, 255, 255)
+                        ? Color.FromArgb(218, 255, 255, 255)
                         : Color.FromArgb(115, 24, 33, 52));
                     rootRes["CardBackgroundFillColorSecondaryBrush"] = new SolidColorBrush(isLight
-                        ? Color.FromArgb(130, 248, 250, 252)
+                        ? Color.FromArgb(190, 248, 250, 252)
                         : Color.FromArgb(90, 15, 23, 42));
                     rootRes["CardStrokeColorDefaultBrush"] = new SolidColorBrush(isLight
-                        ? Color.FromArgb(180, 255, 255, 255)
+                        ? Color.FromArgb(220, 226, 232, 240)
                         : Color.FromArgb(52, 255, 255, 255));
                 }
                 break;

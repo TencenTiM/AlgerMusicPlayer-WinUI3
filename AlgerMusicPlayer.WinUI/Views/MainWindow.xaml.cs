@@ -337,9 +337,14 @@ public sealed partial class MainWindow : Window
         SelectComboItemByTag(DiskCachePolicyComboBox, s.DiskCacheCleanupPolicy);
     }
 
+    private bool _isSyncingThemeToggleUi;
+
     private void SyncThemeSettingsUi()
     {
         var s = ViewModel.Config.Settings;
+        _isSyncingThemeToggleUi = true;
+        AutoThemeToggle.IsOn = s.AutoTheme;
+        _isSyncingThemeToggleUi = false;
         AutoThemeModeLabel.Text = s.AutoTheme ? "跟随系统" : "手动切换";
         ManualThemeToggleBtn.IsEnabled = !s.AutoTheme;
         ManualThemeToggleBtn.Opacity = s.AutoTheme ? 0.5 : 1.0;
@@ -5896,54 +5901,23 @@ public sealed partial class MainWindow : Window
 
     private async void OnAutoThemeToggled(object sender, RoutedEventArgs e)
     {
-        if (!_isInitialized) return;
-        ViewModel.Config.Settings.AutoTheme = AutoThemeToggle.IsOn;
-        var active = ViewModel.Theme.GetSavedActiveTheme();
-        if (!active.IsBuiltIn)
-        {
-            active.BaseMode = AutoThemeToggle.IsOn ? "System" : (ViewModel.Config.Settings.ManualTheme == "Light" ? "Light" : "Dark");
-            await ViewModel.Theme.SaveCustomThemeAsync(active);
-        }
-        else
-        {
-            RootLayout.RequestedTheme = AutoThemeToggle.IsOn
-                ? ElementTheme.Default
-                : (ViewModel.Config.Settings.ManualTheme == "Light" ? ElementTheme.Light : ElementTheme.Dark);
-            SyncThemeSettingsUi();
-            ConfigureTitleBarButtonsTheme();
-            await ViewModel.Config.SaveSettingsAsync();
-        }
+        if (!_isInitialized || _isSyncingThemeToggleUi) return;
+        string targetMode = AutoThemeToggle.IsOn
+            ? "System"
+            : (ViewModel.Config.Settings.ManualTheme == "Light" ? "Light" : "Dark");
+        await ViewModel.Theme.SetGlobalModeOverrideAsync(targetMode);
     }
 
     private async void OnToggleThemeClick(object sender, RoutedEventArgs e)
     {
-        AutoThemeToggle.IsOn = false;
-        ViewModel.Config.Settings.AutoTheme = false;
-        var isLight = RootLayout.RequestedTheme == ElementTheme.Light ||
-                      (RootLayout.RequestedTheme == ElementTheme.Default && Application.Current.RequestedTheme == ApplicationTheme.Light);
-        string nextMode = isLight ? "Dark" : "Light";
-        ViewModel.Config.Settings.ManualTheme = nextMode;
+        bool currentlyLight = RootLayout.ActualTheme == ElementTheme.Light;
+        string nextMode = currentlyLight ? "Dark" : "Light";
 
-        var active = ViewModel.Theme.GetSavedActiveTheme();
-        if (active.Id is "builtin-emerald-dark" or "builtin-emerald-light")
-        {
-            var nextPreset = CustomThemeProfile.GetBuiltInPresets()
-                .First(x => x.Id == (nextMode == "Light" ? "builtin-emerald-light" : "builtin-emerald-dark"));
-            await ViewModel.Theme.ApplyThemeAsync(nextPreset, saveToDisk: true);
-        }
-        else if (!active.IsBuiltIn)
-        {
-            active.BaseMode = nextMode;
-            await ViewModel.Theme.SaveCustomThemeAsync(active);
-        }
-        else
-        {
-            var switched = active.Clone();
-            switched.BaseMode = nextMode;
-            RootLayout.RequestedTheme = nextMode == "Light" ? ElementTheme.Light : ElementTheme.Dark;
-            await ApplyThemeProfileToMainWindowAsync(switched);
-            await ViewModel.Config.SaveSettingsAsync();
-        }
+        _isSyncingThemeToggleUi = true;
+        AutoThemeToggle.IsOn = false;
+        _isSyncingThemeToggleUi = false;
+
+        await ViewModel.Theme.SetGlobalModeOverrideAsync(nextMode);
     }
 
     private async void OnLanguageSelectionChanged(object sender, SelectionChangedEventArgs e)

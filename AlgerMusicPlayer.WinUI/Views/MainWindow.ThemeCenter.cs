@@ -54,6 +54,18 @@ public sealed partial class MainWindow
     {
         InitializeDynamicThemeVisualEngine();
         ViewModel.Theme.ThemeApplied += OnThemeServiceApplied;
+        RootLayout.ActualThemeChanged += (_, _) =>
+        {
+            var eff = ViewModel.Theme.GetEffectiveTheme();
+            if (string.Equals(eff.BaseMode, "System", StringComparison.OrdinalIgnoreCase))
+            {
+                DispatcherQueue.TryEnqueue(() =>
+                {
+                    _ = ApplyThemeProfileToMainWindowAsync(ViewModel.Theme.GetEffectiveTheme());
+                });
+            }
+        };
+
         var initialTheme = ViewModel.Theme.GetSavedActiveTheme();
         ViewModel.Theme.UpdateGlobalAccentBrushes(initialTheme);
         _ = ApplyThemeProfileToMainWindowAsync(initialTheme);
@@ -69,12 +81,10 @@ public sealed partial class MainWindow
 
     // ==================== 主窗口全局与多区域实时渲染 ====================
 
-    private async Task ApplyThemeProfileToMainWindowAsync(CustomThemeProfile profile)
+    private async Task ApplyThemeProfileToMainWindowAsync(CustomThemeProfile rawProfile)
     {
-        var (accent, hover, pressed, _) = ViewModel.Theme.DeriveAccentColors(profile);
-
-        // 1. 计算目标明暗模式
-        ElementTheme targetElementTheme = profile.BaseMode switch
+        // 1. 计算目标明暗模式并交由双态自适应引擎生成协调的白昼/暗夜渲染配置（不修改原始保存的主题数据）
+        ElementTheme targetElementTheme = rawProfile.BaseMode switch
         {
             "Light" => ElementTheme.Light,
             "System" => ElementTheme.Default,
@@ -83,6 +93,10 @@ public sealed partial class MainWindow
 
         bool isEffectiveLight = targetElementTheme == ElementTheme.Light ||
                                 (targetElementTheme == ElementTheme.Default && Application.Current.RequestedTheme == ApplicationTheme.Light);
+
+        var profile = ThemeService.ResolveModeAdaptedProfile(rawProfile, isEffectiveLight);
+        ViewModel.Theme.UpdateGlobalAccentBrushes(profile);
+        var (accent, hover, pressed, _) = ViewModel.Theme.DeriveAccentColors(profile);
 
         // 2. 窗口材质 (Mica / MicaAlt / Acrylic / Solid / Aurora / CoverFlow / Video / Image) 与底层壁纸渲染
         ApplyWindowBackdropAndBaseLayer(profile, isEffectiveLight);
@@ -274,7 +288,7 @@ public sealed partial class MainWindow
             if (isCustomLayer)
             {
                 var glassPane = new SolidColorBrush(isLight
-                    ? Color.FromArgb(145, 255, 255, 255)
+                    ? Color.FromArgb(208, 255, 255, 255)
                     : Color.FromArgb(115, 15, 23, 42));
                 navRes["NavigationViewDefaultPaneBackground"] = glassPane;
                 navRes["NavigationViewExpandedPaneBackground"] = glassPane;
@@ -369,11 +383,15 @@ public sealed partial class MainWindow
             if (isCustomLayer)
             {
                 rootRes["CardBackgroundFillColorDefaultBrush"] = new SolidColorBrush(isLight
-                    ? Color.FromArgb(185, 255, 255, 255)
+                    ? Color.FromArgb(224, 255, 255, 255)
                     : Color.FromArgb(155, 24, 32, 48));
                 rootRes["CardBackgroundFillColorSecondaryBrush"] = new SolidColorBrush(isLight
-                    ? Color.FromArgb(150, 241, 245, 249)
+                    ? Color.FromArgb(196, 248, 250, 252)
                     : Color.FromArgb(130, 17, 24, 39));
+                if (isLight)
+                {
+                    rootRes["CardStrokeColorDefaultBrush"] = new SolidColorBrush(Color.FromArgb(215, 226, 232, 240));
+                }
             }
         }
     }
@@ -1776,18 +1794,19 @@ public sealed partial class MainWindow
     /// </summary>
     private void UpdateMiniPreviewWindow()
     {
-        bool isLight = _themeDraft.BaseMode == "Light";
-        var (accent, _, _, subtle) = ViewModel.Theme.DeriveAccentColors(_themeDraft);
+        bool isLight = ThemeService.IsEffectiveLightMode(_themeDraft.BaseMode);
+        var previewDraft = ThemeService.ResolveModeAdaptedProfile(_themeDraft, isLight);
+        var (accent, _, _, subtle) = ViewModel.Theme.DeriveAccentColors(previewDraft);
 
-        var defaultWinBg = isLight ? Color.FromArgb(255, 244, 246, 250) : Color.FromArgb(255, 16, 20, 29);
-        var winBg = (_themeDraft.BackdropType is "Solid" or "Image")
-            ? ThemeService.ParseColorOrDefault(_themeDraft.WindowBgColorHex, defaultWinBg)
+        var defaultWinBg = isLight ? Color.FromArgb(255, 248, 250, 252) : Color.FromArgb(255, 16, 20, 29);
+        var winBg = (previewDraft.BackdropType is "Solid" or "Image")
+            ? ThemeService.ParseColorOrDefault(previewDraft.WindowBgColorHex, defaultWinBg)
             : defaultWinBg;
 
-        if (_themeDraft.BackdropType is "Aurora" or "CoverFlow")
+        if (previewDraft.BackdropType is "Aurora" or "CoverFlow")
         {
-            var a1 = ThemeService.ParseColorOrDefault(_themeDraft.AuroraColor1Hex, accent);
-            var a2 = ThemeService.ParseColorOrDefault(_themeDraft.AuroraColor2Hex, Color.FromArgb(255, 59, 130, 246));
+            var a1 = ThemeService.ParseColorOrDefault(previewDraft.AuroraColor1Hex, accent);
+            var a2 = ThemeService.ParseColorOrDefault(previewDraft.AuroraColor2Hex, Color.FromArgb(255, 59, 130, 246));
             MiniPreviewWindowOuter.Background = new LinearGradientBrush
             {
                 StartPoint = new Windows.Foundation.Point(0, 0),
@@ -1804,19 +1823,19 @@ public sealed partial class MainWindow
             MiniPreviewWindowOuter.Background = new SolidColorBrush(winBg);
         }
 
-        if (_themeDraft.BackdropType == "Image" && !string.IsNullOrWhiteSpace(_themeDraft.BackgroundImagePath) && File.Exists(_themeDraft.BackgroundImagePath))
+        if (previewDraft.BackdropType == "Image" && !string.IsNullOrWhiteSpace(previewDraft.BackgroundImagePath) && File.Exists(previewDraft.BackgroundImagePath))
         {
             try
             {
-                MiniPreviewWallpaperImg.Source = new BitmapImage(new Uri(_themeDraft.BackgroundImagePath));
+                MiniPreviewWallpaperImg.Source = new BitmapImage(new Uri(previewDraft.BackgroundImagePath));
                 MiniPreviewWallpaperImg.Visibility = Visibility.Visible;
             }
             catch
             {
                 MiniPreviewWallpaperImg.Visibility = Visibility.Collapsed;
             }
-            var maskCol = ThemeService.ParseColorOrDefault(_themeDraft.BackgroundMaskColorHex, Color.FromArgb(255, 9, 13, 22));
-            MiniPreviewWallpaperMask.Background = new SolidColorBrush(ThemeService.WithOpacity(maskCol, _themeDraft.BackgroundMaskOpacity));
+            var maskCol = ThemeService.ParseColorOrDefault(previewDraft.BackgroundMaskColorHex, Color.FromArgb(255, 9, 13, 22));
+            MiniPreviewWallpaperMask.Background = new SolidColorBrush(ThemeService.WithOpacity(maskCol, previewDraft.BackgroundMaskOpacity));
             MiniPreviewWallpaperMask.Visibility = Visibility.Visible;
         }
         else
@@ -1831,37 +1850,37 @@ public sealed partial class MainWindow
         // 1. 预览顶栏
         MiniPreviewLogoDot.Fill = new SolidColorBrush(accent);
         MiniPreviewThemeDot.Fill = new SolidColorBrush(accent);
-        MiniPreviewTitleBar.Background = _themeDraft.EnableCustomTitleBar
-            ? ThemeService.CreateSectionBrush(ThemeService.ParseColorOrDefault(_themeDraft.TitleBarBgHex, defaultWinBg), _themeDraft.EnableTitleBarGradient, _themeDraft.TitleBarGradientEndHex, _themeDraft.TitleBarOpacity, _themeDraft.GradientAngle)
+        MiniPreviewTitleBar.Background = previewDraft.EnableCustomTitleBar
+            ? ThemeService.CreateSectionBrush(ThemeService.ParseColorOrDefault(previewDraft.TitleBarBgHex, defaultWinBg), previewDraft.EnableTitleBarGradient, previewDraft.TitleBarGradientEndHex, previewDraft.TitleBarOpacity, previewDraft.GradientAngle)
             : new SolidColorBrush(Colors.Transparent);
-        var titleTextCol = _themeDraft.EnableCustomTitleBar && ThemeService.TryParseColor(_themeDraft.TitleBarTextHex, out var tt) ? tt : defaultPrimaryText;
+        var titleTextCol = previewDraft.EnableCustomTitleBar && ThemeService.TryParseColor(previewDraft.TitleBarTextHex, out var tt) ? tt : defaultPrimaryText;
         MiniPreviewTitleText.Foreground = new SolidColorBrush(titleTextCol);
 
         // 2. 预览左侧导航栏
-        MiniPreviewNavPane.Background = _themeDraft.EnableCustomNavPane
-            ? ThemeService.CreateSectionBrush(ThemeService.ParseColorOrDefault(_themeDraft.NavPaneBgHex, defaultWinBg), _themeDraft.EnableNavPaneGradient, _themeDraft.NavPaneGradientEndHex, _themeDraft.NavPaneOpacity, _themeDraft.GradientAngle)
-            : new SolidColorBrush(isLight ? Color.FromArgb(140, 241, 245, 249) : Color.FromArgb(110, 15, 23, 42));
-        var navTextCol = _themeDraft.EnableCustomNavPane && ThemeService.TryParseColor(_themeDraft.NavPaneTextHex, out var nt) ? nt : defaultPrimaryText;
+        MiniPreviewNavPane.Background = previewDraft.EnableCustomNavPane
+            ? ThemeService.CreateSectionBrush(ThemeService.ParseColorOrDefault(previewDraft.NavPaneBgHex, defaultWinBg), previewDraft.EnableNavPaneGradient, previewDraft.NavPaneGradientEndHex, previewDraft.NavPaneOpacity, previewDraft.GradientAngle)
+            : new SolidColorBrush(isLight ? Color.FromArgb(205, 255, 255, 255) : Color.FromArgb(110, 15, 23, 42));
+        var navTextCol = previewDraft.EnableCustomNavPane && ThemeService.TryParseColor(previewDraft.NavPaneTextHex, out var nt) ? nt : defaultPrimaryText;
         var navTextBrush = new SolidColorBrush(navTextCol);
         MiniPreviewNavNormalText1.Foreground = navTextBrush;
         MiniPreviewNavNormalText2.Foreground = navTextBrush;
         MiniPreviewNavNormalText3.Foreground = navTextBrush;
-        var navSelBg = _themeDraft.EnableCustomNavPane && ThemeService.TryParseColor(_themeDraft.NavPaneSelectedBgHex, out var nsb) ? nsb : subtle;
+        var navSelBg = previewDraft.EnableCustomNavPane && ThemeService.TryParseColor(previewDraft.NavPaneSelectedBgHex, out var nsb) ? nsb : subtle;
         MiniPreviewNavSelectedPill.Background = new SolidColorBrush(navSelBg);
         MiniPreviewNavSelectedText.Foreground = new SolidColorBrush(accent);
 
         // 3. 预览主内容与双卡片
-        MiniPreviewContentArea.Background = _themeDraft.EnableCustomContent
-            ? new SolidColorBrush(ThemeService.WithOpacity(ThemeService.ParseColorOrDefault(_themeDraft.ContentBgHex, defaultWinBg), _themeDraft.ContentOpacity))
+        MiniPreviewContentArea.Background = previewDraft.EnableCustomContent
+            ? new SolidColorBrush(ThemeService.WithOpacity(ThemeService.ParseColorOrDefault(previewDraft.ContentBgHex, defaultWinBg), previewDraft.ContentOpacity))
             : new SolidColorBrush(Colors.Transparent);
 
-        var cardBg = _themeDraft.EnableCustomContent
-            ? ThemeService.WithOpacity(ThemeService.ParseColorOrDefault(_themeDraft.CardBgHex, defaultWinBg), _themeDraft.CardOpacity)
-            : (isLight ? Color.FromArgb(225, 255, 255, 255) : Color.FromArgb(185, 30, 41, 59));
-        var cardBorder = _themeDraft.EnableCustomContent
-            ? ThemeService.ParseColorOrDefault(_themeDraft.CardBorderHex, Color.FromArgb(120, 100, 116, 139))
+        var cardBg = previewDraft.EnableCustomContent
+            ? ThemeService.WithOpacity(ThemeService.ParseColorOrDefault(previewDraft.CardBgHex, defaultWinBg), previewDraft.CardOpacity)
+            : (isLight ? Color.FromArgb(228, 255, 255, 255) : Color.FromArgb(185, 30, 41, 59));
+        var cardBorder = previewDraft.EnableCustomContent
+            ? ThemeService.ParseColorOrDefault(previewDraft.CardBorderHex, Color.FromArgb(120, 100, 116, 139))
             : (isLight ? Color.FromArgb(255, 226, 232, 240) : Color.FromArgb(160, 51, 65, 85));
-        double previewRadius = Math.Clamp(_themeDraft.EnableCustomContent ? _themeDraft.CardCornerRadius * 0.5 : 6, 2, 12);
+        double previewRadius = Math.Clamp(previewDraft.EnableCustomContent ? previewDraft.CardCornerRadius * 0.5 : 6, 2, 12);
 
         MiniPreviewCard1.Background = new SolidColorBrush(cardBg);
         MiniPreviewCard2.Background = new SolidColorBrush(cardBg);
@@ -1875,8 +1894,8 @@ public sealed partial class MainWindow
         MiniPreviewCardBadgeText1.Foreground = new SolidColorBrush(accent);
         MiniPreviewCardBadgeText2.Foreground = new SolidColorBrush(accent);
 
-        var pCol = _themeDraft.EnableCustomContent && ThemeService.TryParseColor(_themeDraft.PrimaryTextHex, out var ptc) ? ptc : defaultPrimaryText;
-        var sCol = _themeDraft.EnableCustomContent && ThemeService.TryParseColor(_themeDraft.SecondaryTextHex, out var stc) ? stc : defaultSecondaryText;
+        var pCol = previewDraft.EnableCustomContent && ThemeService.TryParseColor(previewDraft.PrimaryTextHex, out var ptc) ? ptc : defaultPrimaryText;
+        var sCol = previewDraft.EnableCustomContent && ThemeService.TryParseColor(previewDraft.SecondaryTextHex, out var stc) ? stc : defaultSecondaryText;
         var pBrush = new SolidColorBrush(pCol);
         var sBrush = new SolidColorBrush(sCol);
         MiniPreviewPrimaryHeading.Foreground = pBrush;
@@ -1886,20 +1905,20 @@ public sealed partial class MainWindow
         MiniPreviewCardSub2.Foreground = sBrush;
 
         // 4. 预览底部播放栏（支持灵动岛边距与圆角）
-        bool isIsland = string.Equals(_themeDraft.PlayBarLayoutMode, "FloatingIsland", StringComparison.OrdinalIgnoreCase);
+        bool isIsland = string.Equals(previewDraft.PlayBarLayoutMode, "FloatingIsland", StringComparison.OrdinalIgnoreCase);
         MiniPreviewPlayBar.Margin = isIsland ? new Thickness(6, 0, 6, 3) : new Thickness(0);
         MiniPreviewPlayBar.CornerRadius = new CornerRadius(isIsland ? 6 : 0);
 
-        MiniPreviewPlayBar.Background = _themeDraft.EnableCustomPlayBar
-            ? ThemeService.CreateSectionBrush(ThemeService.ParseColorOrDefault(_themeDraft.PlayBarBgHex, defaultWinBg), _themeDraft.EnablePlayBarGradient, _themeDraft.PlayBarGradientEndHex, _themeDraft.PlayBarOpacity, _themeDraft.GradientAngle)
-            : new SolidColorBrush(isLight ? Color.FromArgb(235, 255, 255, 255) : Color.FromArgb(225, 20, 26, 38));
-        MiniPreviewPlayBar.BorderBrush = new SolidColorBrush(_themeDraft.EnableCustomPlayBar
-            ? ThemeService.ParseColorOrDefault(_themeDraft.PlayBarBorderHex, cardBorder)
+        MiniPreviewPlayBar.Background = previewDraft.EnableCustomPlayBar
+            ? ThemeService.CreateSectionBrush(ThemeService.ParseColorOrDefault(previewDraft.PlayBarBgHex, defaultWinBg), previewDraft.EnablePlayBarGradient, previewDraft.PlayBarGradientEndHex, previewDraft.PlayBarOpacity, previewDraft.GradientAngle)
+            : new SolidColorBrush(isLight ? Color.FromArgb(240, 255, 255, 255) : Color.FromArgb(225, 20, 26, 38));
+        MiniPreviewPlayBar.BorderBrush = new SolidColorBrush(previewDraft.EnableCustomPlayBar
+            ? ThemeService.ParseColorOrDefault(previewDraft.PlayBarBorderHex, cardBorder)
             : cardBorder);
 
-        var playBtnCol = _themeDraft.EnableCustomPlayBar && ThemeService.TryParseColor(_themeDraft.PlayButtonColorHex, out var pbc) ? pbc : accent;
-        var progCol = _themeDraft.EnableCustomPlayBar && ThemeService.TryParseColor(_themeDraft.ProgressSliderColorHex, out var prc) ? prc : accent;
-        var pbTextCol = _themeDraft.EnableCustomPlayBar && ThemeService.TryParseColor(_themeDraft.PlayBarTextHex, out var pbt) ? pbt : defaultPrimaryText;
+        var playBtnCol = previewDraft.EnableCustomPlayBar && ThemeService.TryParseColor(previewDraft.PlayButtonColorHex, out var pbc) ? pbc : accent;
+        var progCol = previewDraft.EnableCustomPlayBar && ThemeService.TryParseColor(previewDraft.ProgressSliderColorHex, out var prc) ? prc : accent;
+        var pbTextCol = previewDraft.EnableCustomPlayBar && ThemeService.TryParseColor(previewDraft.PlayBarTextHex, out var pbt) ? pbt : defaultPrimaryText;
 
         MiniPreviewPlayCircle.Fill = new SolidColorBrush(playBtnCol);
         MiniPreviewProgressFill.Background = new SolidColorBrush(progCol);

@@ -89,24 +89,35 @@ public class ThemeService
     }
 
     /// <summary>
-    /// 获取已持久化选中的主题
+    /// 获取已持久化选中的主题（若用户在基础设置切换了全局日夜模式覆盖，则在克隆副本上叠加 BaseMode，不污染原主题数据）
     /// </summary>
     public CustomThemeProfile GetSavedActiveTheme()
     {
         var tc = _config.Settings.ThemeCenter;
         var all = GetAllThemes();
         var match = all.FirstOrDefault(x => string.Equals(x.Id, tc.ActiveThemeId, StringComparison.OrdinalIgnoreCase));
+        CustomThemeProfile selected;
         if (match != null)
         {
-            return match;
+            selected = match;
         }
-
-        if (_config.Settings.ManualTheme == "Light" && !_config.Settings.AutoTheme)
+        else if (_config.Settings.ManualTheme == "Light" && !_config.Settings.AutoTheme)
         {
-            return all.First(x => x.Id == "builtin-emerald-light");
+            selected = all.First(x => x.Id == "builtin-emerald-light");
+        }
+        else
+        {
+            selected = all[0];
         }
 
-        return all[0];
+        if (!string.IsNullOrWhiteSpace(tc.OverrideBaseMode))
+        {
+            var copy = selected.Clone();
+            copy.BaseMode = tc.OverrideBaseMode;
+            return copy;
+        }
+
+        return selected;
     }
 
     /// <summary>
@@ -118,6 +129,7 @@ public class ThemeService
         {
             PreviewProfile = null;
             _config.Settings.ThemeCenter.ActiveThemeId = profile.Id;
+            _config.Settings.ThemeCenter.OverrideBaseMode = null;
 
             _config.Settings.AutoTheme = string.Equals(profile.BaseMode, "System", StringComparison.OrdinalIgnoreCase);
             if (!_config.Settings.AutoTheme)
@@ -132,13 +144,235 @@ public class ThemeService
             PreviewProfile = profile;
         }
 
-        UpdateGlobalAccentBrushes(profile);
+        var adapted = ResolveModeAdaptedProfile(profile, IsEffectiveLightMode(profile.BaseMode));
+        UpdateGlobalAccentBrushes(adapted);
         ThemeApplied?.Invoke(profile);
 
         if (saveToDisk)
         {
             await _config.SaveSettingsAsync();
         }
+    }
+
+    /// <summary>
+    /// 全局切换日间/夜间/跟随系统模式（不篡改任何主题原始保存的色值，由双态自适应引擎无损渲染）
+    /// </summary>
+    public async Task SetGlobalModeOverrideAsync(string mode)
+    {
+        PreviewProfile = null;
+        _config.Settings.ThemeCenter.OverrideBaseMode = mode;
+        _config.Settings.AutoTheme = string.Equals(mode, "System", StringComparison.OrdinalIgnoreCase);
+        if (!_config.Settings.AutoTheme)
+        {
+            _config.Settings.ManualTheme = string.Equals(mode, "Light", StringComparison.OrdinalIgnoreCase)
+                ? "Light"
+                : "Dark";
+        }
+
+        var curId = _config.Settings.ThemeCenter.ActiveThemeId;
+        if (curId is "builtin-emerald-dark" or "builtin-emerald-light" && mode is "Light" or "Dark")
+        {
+            _config.Settings.ThemeCenter.ActiveThemeId = mode == "Light" ? "builtin-emerald-light" : "builtin-emerald-dark";
+            _config.Settings.ThemeCenter.OverrideBaseMode = null;
+        }
+
+        var effective = GetSavedActiveTheme();
+        var adapted = ResolveModeAdaptedProfile(effective, IsEffectiveLightMode(effective.BaseMode));
+        UpdateGlobalAccentBrushes(adapted);
+        ThemeApplied?.Invoke(effective);
+        await _config.SaveSettingsAsync();
+    }
+
+    public static bool IsEffectiveLightMode(string? baseMode)
+    {
+        if (string.Equals(baseMode, "Light", StringComparison.OrdinalIgnoreCase)) return true;
+        if (string.Equals(baseMode, "System", StringComparison.OrdinalIgnoreCase))
+            return Application.Current.RequestedTheme == ApplicationTheme.Light;
+        return false;
+    }
+
+    /// <summary>
+    /// 将极光或封面流光色彩适配到当前深浅模式（浅色模式转清透水彩粉彩霞光，深色模式转饱满暗夜霓虹）
+    /// </summary>
+    public static Color AdaptAuroraColorForMode(Color c, bool isLight)
+    {
+        var (h, s, l) = RgbToHsl(c.R, c.G, c.B);
+        if (isLight)
+        {
+            return l < 0.72
+                ? HslToColor(h, Math.Clamp(s, 0.65, 0.90), Math.Clamp(0.77 + l * 0.08, 0.76, 0.84))
+                : c;
+        }
+
+        return l > 0.68
+            ? HslToColor(h, Math.Clamp(s, 0.65, 0.90), 0.52)
+            : c;
+    }
+
+    /// <summary>
+    /// 深/浅双态智能自适应色彩映射引擎：
+    /// 当深色主题切至浅色（日间）或浅色主题切至深色（夜间）时，保留主题灵魂色相、极光、粒子与形态，
+    /// 自动将画布底色、极光光斑、粒子明度、分栏背景与文字对比度无损转换为协调通透的白昼/暗夜色板。
+    /// </summary>
+    public static CustomThemeProfile ResolveModeAdaptedProfile(CustomThemeProfile source, bool targetIsLight)
+    {
+        var accent = ParseColorOrDefault(source.AccentColorHex, Color.FromArgb(255, 16, 185, 129));
+        var (accH, accS, accL) = RgbToHsl(accent.R, accent.G, accent.B);
+
+        var winBg = ParseColorOrDefault(source.WindowBgColorHex, Color.FromArgb(255, 15, 23, 42));
+        var (winH, winS, winL) = RgbToHsl(winBg.R, winBg.G, winBg.B);
+
+        bool designedForLight = winL >= 0.50;
+        if (designedForLight == targetIsLight)
+        {
+            return source;
+        }
+
+        var adapted = source.Clone();
+        double themeHue = winS >= 0.10 ? winH : accH;
+
+        if (targetIsLight)
+        {
+            // ==================== 深色主题 -> 清透白昼浅色自适应 ====================
+            adapted.BaseMode = "Light";
+            double tintSat = Math.Clamp(Math.Max(winS * 0.60, accS * 0.35), 0.14, 0.36);
+
+            // 1. 守护白底上的强调色可读性（过亮荧光色适度压实）
+            if (accL > 0.62)
+            {
+                adapted.AccentColorHex = ToHex(HslToColor(accH, Math.Clamp(accS, 0.60, 0.90), 0.46));
+            }
+            if (adapted.EnableAccentGradient && TryParseColor(adapted.AccentGradientEndHex, out var gradEnd))
+            {
+                var (eh, es, el) = RgbToHsl(gradEnd.R, gradEnd.G, gradEnd.B);
+                if (el > 0.64)
+                {
+                    adapted.AccentGradientEndHex = ToHex(HslToColor(eh, Math.Clamp(es, 0.60, 0.90), 0.48));
+                }
+            }
+
+            // 2. 窗口底层画布与遮罩转为柔和微染白昼底色
+            adapted.WindowBgColorHex = ToHex(HslToColor(themeHue, tintSat, 0.966));
+            if (TryParseColor(adapted.BackgroundMaskColorHex, out var maskCol) && RgbToHsl(maskCol.R, maskCol.G, maskCol.B).L < 0.50)
+            {
+                adapted.BackgroundMaskColorHex = ToHex(HslToColor(themeHue, tintSat * 0.75, 0.96));
+                adapted.BackgroundMaskOpacity = Math.Clamp(adapted.BackgroundMaskOpacity, 24, 54);
+            }
+
+            // 3. 极光光斑转为水彩晨曦粉彩，粒子提升在白底上的辨识度
+            adapted.AuroraColor1Hex = ToHex(AdaptAuroraColorForMode(ParseColorOrDefault(adapted.AuroraColor1Hex, accent), true));
+            adapted.AuroraColor2Hex = ToHex(AdaptAuroraColorForMode(ParseColorOrDefault(adapted.AuroraColor2Hex, Color.FromArgb(255, 99, 102, 241)), true));
+            adapted.AuroraColor3Hex = ToHex(AdaptAuroraColorForMode(ParseColorOrDefault(adapted.AuroraColor3Hex, Color.FromArgb(255, 236, 72, 153)), true));
+            adapted.AuroraIntensity = Math.Clamp(adapted.AuroraIntensity, 42, 62);
+
+            if (TryParseColor(adapted.ParticleColorHex, out var pCol))
+            {
+                var (ph, ps, pl) = RgbToHsl(pCol.R, pCol.G, pCol.B);
+                if (pl > 0.72)
+                {
+                    adapted.ParticleColorHex = ToHex(HslToColor(ph, Math.Clamp(Math.Max(ps, 0.68), 0.55, 0.92), 0.60));
+                }
+            }
+
+            string MapSurfaceToLight(string hex, double targetL, double satScale = 1.0)
+            {
+                if (!TryParseColor(hex, out var c)) return hex;
+                var (h, s, l) = RgbToHsl(c.R, c.G, c.B);
+                if (l >= 0.52) return hex;
+                double useH = s >= 0.08 ? h : themeHue;
+                return ToHex(HslToColor(useH, Math.Clamp(tintSat * satScale, 0.08, 0.36), targetL));
+            }
+
+            string MapTextToLight(string hex, double targetL)
+            {
+                if (string.IsNullOrWhiteSpace(hex) || !TryParseColor(hex, out var c)) return hex;
+                var (_, _, l) = RgbToHsl(c.R, c.G, c.B);
+                return l > 0.50 ? ToHex(HslToColor(themeHue, 0.20, targetL)) : hex;
+            }
+
+            // 4. 各自定义区域与文字对比度白昼化
+            adapted.TitleBarBgHex = MapSurfaceToLight(adapted.TitleBarBgHex, 0.945);
+            adapted.TitleBarGradientEndHex = MapSurfaceToLight(adapted.TitleBarGradientEndHex, 0.925);
+            adapted.TitleBarTextHex = MapTextToLight(adapted.TitleBarTextHex, 0.16);
+
+            adapted.NavPaneBgHex = MapSurfaceToLight(adapted.NavPaneBgHex, 0.942);
+            adapted.NavPaneGradientEndHex = MapSurfaceToLight(adapted.NavPaneGradientEndHex, 0.925);
+            adapted.NavPaneTextHex = MapTextToLight(adapted.NavPaneTextHex, 0.18);
+
+            adapted.ContentBgHex = MapSurfaceToLight(adapted.ContentBgHex, 0.968);
+            adapted.CardBgHex = MapSurfaceToLight(adapted.CardBgHex, 0.994, 0.30);
+            adapted.CardBorderHex = MapSurfaceToLight(adapted.CardBorderHex, 0.875, 1.15);
+            adapted.PrimaryTextHex = MapTextToLight(adapted.PrimaryTextHex, 0.14);
+            adapted.SecondaryTextHex = MapTextToLight(adapted.SecondaryTextHex, 0.42);
+
+            adapted.PlayBarBgHex = MapSurfaceToLight(adapted.PlayBarBgHex, 0.982, 0.55);
+            adapted.PlayBarGradientEndHex = MapSurfaceToLight(adapted.PlayBarGradientEndHex, 0.958, 0.75);
+            adapted.PlayBarBorderHex = MapSurfaceToLight(adapted.PlayBarBorderHex, 0.86, 1.15);
+            adapted.PlayBarTextHex = MapTextToLight(adapted.PlayBarTextHex, 0.15);
+
+            adapted.MiniPlayerBgHex = MapSurfaceToLight(adapted.MiniPlayerBgHex, 0.975, 0.55);
+        }
+        else
+        {
+            // ==================== 浅色主题 -> 深邃暗夜深色自适应 ====================
+            adapted.BaseMode = "Dark";
+            double tintSat = Math.Clamp(Math.Max(winS * 0.75, accS * 0.35), 0.16, 0.42);
+
+            if (accL < 0.42)
+            {
+                adapted.AccentColorHex = ToHex(HslToColor(accH, Math.Clamp(accS, 0.58, 0.90), 0.56));
+            }
+
+            adapted.WindowBgColorHex = ToHex(HslToColor(themeHue, tintSat, 0.08));
+            if (TryParseColor(adapted.BackgroundMaskColorHex, out var maskCol) && RgbToHsl(maskCol.R, maskCol.G, maskCol.B).L >= 0.50)
+            {
+                adapted.BackgroundMaskColorHex = ToHex(HslToColor(themeHue, tintSat, 0.07));
+            }
+
+            adapted.AuroraColor1Hex = ToHex(AdaptAuroraColorForMode(ParseColorOrDefault(adapted.AuroraColor1Hex, accent), false));
+            adapted.AuroraColor2Hex = ToHex(AdaptAuroraColorForMode(ParseColorOrDefault(adapted.AuroraColor2Hex, Color.FromArgb(255, 99, 102, 241)), false));
+            adapted.AuroraColor3Hex = ToHex(AdaptAuroraColorForMode(ParseColorOrDefault(adapted.AuroraColor3Hex, Color.FromArgb(255, 236, 72, 153)), false));
+            adapted.AuroraIntensity = Math.Clamp(Math.Max(adapted.AuroraIntensity, 64), 50, 82);
+
+            string MapSurfaceToDark(string hex, double targetL)
+            {
+                if (!TryParseColor(hex, out var c)) return hex;
+                var (h, s, l) = RgbToHsl(c.R, c.G, c.B);
+                if (l < 0.50) return hex;
+                double useH = s >= 0.08 ? h : themeHue;
+                return ToHex(HslToColor(useH, tintSat, targetL));
+            }
+
+            string MapTextToDark(string hex, double targetL)
+            {
+                if (string.IsNullOrWhiteSpace(hex) || !TryParseColor(hex, out var c)) return hex;
+                var (_, _, l) = RgbToHsl(c.R, c.G, c.B);
+                return l < 0.50 ? ToHex(HslToColor(themeHue, 0.15, targetL)) : hex;
+            }
+
+            adapted.TitleBarBgHex = MapSurfaceToDark(adapted.TitleBarBgHex, 0.10);
+            adapted.TitleBarGradientEndHex = MapSurfaceToDark(adapted.TitleBarGradientEndHex, 0.12);
+            adapted.TitleBarTextHex = MapTextToDark(adapted.TitleBarTextHex, 0.94);
+
+            adapted.NavPaneBgHex = MapSurfaceToDark(adapted.NavPaneBgHex, 0.105);
+            adapted.NavPaneGradientEndHex = MapSurfaceToDark(adapted.NavPaneGradientEndHex, 0.125);
+            adapted.NavPaneTextHex = MapTextToDark(adapted.NavPaneTextHex, 0.92);
+
+            adapted.ContentBgHex = MapSurfaceToDark(adapted.ContentBgHex, 0.085);
+            adapted.CardBgHex = MapSurfaceToDark(adapted.CardBgHex, 0.145);
+            adapted.CardBorderHex = MapSurfaceToDark(adapted.CardBorderHex, 0.24);
+            adapted.PrimaryTextHex = MapTextToDark(adapted.PrimaryTextHex, 0.94);
+            adapted.SecondaryTextHex = MapTextToDark(adapted.SecondaryTextHex, 0.68);
+
+            adapted.PlayBarBgHex = MapSurfaceToDark(adapted.PlayBarBgHex, 0.115);
+            adapted.PlayBarGradientEndHex = MapSurfaceToDark(adapted.PlayBarGradientEndHex, 0.135);
+            adapted.PlayBarBorderHex = MapSurfaceToDark(adapted.PlayBarBorderHex, 0.22);
+            adapted.PlayBarTextHex = MapTextToDark(adapted.PlayBarTextHex, 0.94);
+
+            adapted.MiniPlayerBgHex = MapSurfaceToDark(adapted.MiniPlayerBgHex, 0.11);
+        }
+
+        return adapted;
     }
 
     /// <summary>
@@ -247,6 +481,7 @@ public class ThemeService
     /// </summary>
     public void UpdateGlobalAccentBrushes(CustomThemeProfile profile)
     {
+        profile = ResolveModeAdaptedProfile(profile, IsEffectiveLightMode(profile.BaseMode));
         var (accent, hover, pressed, subtle) = DeriveAccentColors(profile);
         var accentEnd = profile.EnableAccentGradient
             ? ParseColorOrDefault(profile.AccentGradientEndHex, accent)
