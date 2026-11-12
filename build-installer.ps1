@@ -30,6 +30,9 @@ if (Test-Path -LiteralPath $PortableOutDir) {
 }
 New-Item -ItemType Directory -Path $DistDir -Force | Out-Null
 
+# 清理 WinUI 3 Release 增量缓存，确保打包的 XBF 界面布局与 DLL 100% 同步最新源码
+dotnet clean "$AppProj" -c Release -r win-x64 -p:Platform=x64 --nologo -v q | Out-Null
+
 # 2. 发布自包含 WinUI 3 主程序
 Write-Host "`n[1/4] 正在发布 WinUI 3 自包含主程序 (win-x64)..." -ForegroundColor Green
 dotnet publish "$AppProj" -c Release -r win-x64 -p:Platform=x64 --self-contained true -o "$PortableOutDir"

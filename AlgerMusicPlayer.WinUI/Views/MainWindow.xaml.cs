@@ -354,6 +354,16 @@ public sealed partial class MainWindow : Window
         ManualThemeToggleIcon.Glyph = isDark ? "\uE708" : "\uE706";
         ManualThemeToggleText.Text = isDark ? "夜间" : "日间";
         SwitchDownloadTabUi(_activeDownloadTab);
+
+        ApplyDynamicAccentButtonState(SettingsTabBasicBtn, SettingsBasicPanel.Visibility == Visibility.Visible);
+        ApplyDynamicAccentButtonState(SettingsTabThemeBtn, SettingsThemePanel.Visibility == Visibility.Visible);
+        ApplyDynamicAccentButtonState(SettingsTabPlaybackBtn, SettingsPlaybackPanel.Visibility == Visibility.Visible);
+        ApplyDynamicAccentButtonState(SettingsTabApplicationBtn, SettingsApplicationPanel.Visibility == Visibility.Visible);
+        ApplyDynamicAccentButtonState(SettingsTabNetworkBtn, SettingsNetworkPanel.Visibility == Visibility.Visible);
+        ApplyDynamicAccentButtonState(SettingsTabSystemBtn, SettingsSystemPanel.Visibility == Visibility.Visible);
+        ApplyDynamicAccentButtonState(SettingsTabAboutBtn, SettingsAboutPanel.Visibility == Visibility.Visible);
+        ApplyDynamicAccentButtonState(PageSubModeLocalBtn, PageLocalLibraryCard.Visibility == Visibility.Visible);
+        ApplyDynamicAccentButtonState(PageSubModeMarketBtn, PageMarketCard.Visibility == Visibility.Visible);
     }
 
     private void SyncCookieSettingsRowUi()
@@ -2822,17 +2832,16 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    private IntPtr GetDialogOwnerHwnd() => _hWnd != IntPtr.Zero ? _hWnd : WindowNative.GetWindowHandle(this);
+
     private async void OnAddLocalMusicFolderClick(object sender, RoutedEventArgs e)
     {
         try
         {
-            var picker = new FolderPicker();
-            InitializeWithWindow.Initialize(picker, _hWnd);
-            picker.FileTypeFilter.Add("*");
-            var folder = await picker.PickSingleFolderAsync();
-            if (folder != null)
+            string? folderPath = await Helpers.Win32Interop.PickFolderAsync(GetDialogOwnerHwnd(), "选择本地音乐扫描文件夹");
+            if (!string.IsNullOrWhiteSpace(folderPath))
             {
-                await ViewModel.AddLocalMusicFolderAsync(folder.Path);
+                await ViewModel.AddLocalMusicFolderAsync(folderPath);
             }
         }
         catch (Exception ex)
@@ -3205,13 +3214,10 @@ public sealed partial class MainWindow : Window
     {
         try
         {
-            var picker = new FolderPicker();
-            InitializeWithWindow.Initialize(picker, _hWnd);
-            picker.FileTypeFilter.Add("*");
-            var folder = await picker.PickSingleFolderAsync();
-            if (folder != null && !string.Equals(DownloadDrawerPathBox.Text, folder.Path, StringComparison.OrdinalIgnoreCase))
+            string? folderPath = await Helpers.Win32Interop.PickFolderAsync(GetDialogOwnerHwnd(), "选择音乐下载保存目录");
+            if (!string.IsNullOrWhiteSpace(folderPath) && !string.Equals(DownloadDrawerPathBox.Text, folderPath, StringComparison.OrdinalIgnoreCase))
             {
-                DownloadDrawerPathBox.Text = folder.Path;
+                DownloadDrawerPathBox.Text = folderPath;
                 _downloadDrawerModified = true;
             }
         }
@@ -4948,20 +4954,16 @@ public sealed partial class MainWindow : Window
     {
         try
         {
-            var picker = new FileOpenPicker();
-            InitializeWithWindow.Initialize(picker, _hWnd);
-            picker.FileTypeFilter.Add(".png");
-            picker.FileTypeFilter.Add(".jpg");
-            picker.FileTypeFilter.Add(".jpeg");
-            picker.FileTypeFilter.Add(".webp");
-            picker.FileTypeFilter.Add(".bmp");
-            var file = await picker.PickSingleFileAsync();
-            if (file == null) return;
+            string? selectedPath = await Helpers.Win32Interop.PickOpenFileAsync(
+                GetDialogOwnerHwnd(),
+                "选择自定义歌词背景图片",
+                "图片文件 (*.png;*.jpg;*.jpeg;*.webp;*.bmp)|*.png;*.jpg;*.jpeg;*.webp;*.bmp|所有文件 (*.*)|*.*");
+            if (string.IsNullOrWhiteSpace(selectedPath)) return;
 
-            ViewModel.Config.Settings.ImmersiveLyric.BackgroundImage = file.Path;
+            ViewModel.Config.Settings.ImmersiveLyric.BackgroundImage = selectedPath;
             ApplyMusicFullConfiguration();
             await ViewModel.Config.SaveSettingsAsync();
-            ViewModel.StatusToast = $"已设置自定义歌词背景图：{file.Name}";
+            ViewModel.StatusToast = $"已设置自定义歌词背景图：{Path.GetFileName(selectedPath)}";
         }
         catch (Exception ex)
         {
@@ -5605,6 +5607,7 @@ public sealed partial class MainWindow : Window
 
         if (_isForceExiting)
         {
+            _opticalGlassRenderer.Dispose();
             SingleInstanceGuard.ExternalActivationRequested -= OnExternalActivationRequested;
             SingleInstanceGuard.Release();
             RemoveSystemTrayIcon();
@@ -5617,6 +5620,7 @@ public sealed partial class MainWindow : Window
         var closeAction = ViewModel.Config.Settings.CloseAction;
         if (string.Equals(closeAction, "close", StringComparison.OrdinalIgnoreCase))
         {
+            _opticalGlassRenderer.Dispose();
             SingleInstanceGuard.ExternalActivationRequested -= OnExternalActivationRequested;
             SingleInstanceGuard.Release();
             RemoveSystemTrayIcon();
@@ -5700,6 +5704,7 @@ public sealed partial class MainWindow : Window
     private void ForceExitApplication()
     {
         _isForceExiting = true;
+        _opticalGlassRenderer.Dispose();
         SingleInstanceGuard.ExternalActivationRequested -= OnExternalActivationRequested;
         SingleInstanceGuard.Release();
         RemoveSystemTrayIcon();
@@ -6606,14 +6611,14 @@ public sealed partial class MainWindow : Window
     {
         try
         {
-            var picker = new FileOpenPicker();
-            InitializeWithWindow.Initialize(picker, _hWnd);
-            picker.FileTypeFilter.Add(".js");
-            var file = await picker.PickSingleFileAsync();
-            if (file == null) return;
+            string? selectedPath = await Helpers.Win32Interop.PickOpenFileAsync(
+                GetDialogOwnerHwnd(),
+                "导入本地洛雪音源脚本",
+                "JavaScript 脚本 (*.js)|*.js|所有文件 (*.*)|*.*");
+            if (string.IsNullOrWhiteSpace(selectedPath)) return;
 
-            var content = await File.ReadAllTextAsync(file.Path);
-            var scriptItem = Services.Api.NeteaseApiClient.ParseLxScriptHeader(content, Path.GetFileNameWithoutExtension(file.Name));
+            var content = await File.ReadAllTextAsync(selectedPath);
+            var scriptItem = Services.Api.NeteaseApiClient.ParseLxScriptHeader(content, Path.GetFileNameWithoutExtension(selectedPath));
             ViewModel.Config.Settings.LxMusicScripts.Add(scriptItem);
             ViewModel.Config.Settings.ActiveLxMusicApiId = scriptItem.Id;
             ViewModel.LxScriptsList.Add(scriptItem);
@@ -6750,17 +6755,14 @@ public sealed partial class MainWindow : Window
     {
         try
         {
-            var picker = new FolderPicker();
-            InitializeWithWindow.Initialize(picker, _hWnd);
-            picker.FileTypeFilter.Add("*");
-            var folder = await picker.PickSingleFolderAsync();
-            if (folder != null)
+            string? folderPath = await Helpers.Win32Interop.PickFolderAsync(GetDialogOwnerHwnd(), "选择音乐下载保存目录");
+            if (!string.IsNullOrWhiteSpace(folderPath))
             {
-                DownloadPathBox.Text = folder.Path;
-                DownloadPathDisplayText.Text = folder.Path;
-                ViewModel.Config.Settings.DownloadPath = folder.Path;
+                DownloadPathBox.Text = folderPath;
+                DownloadPathDisplayText.Text = folderPath;
+                ViewModel.Config.Settings.DownloadPath = folderPath;
                 await ViewModel.Config.SaveSettingsAsync();
-                ViewModel.StatusToast = $"下载目录已更新为：{folder.Path}";
+                ViewModel.StatusToast = $"下载目录已更新为：{folderPath}";
             }
         }
         catch (Exception ex)
@@ -7399,14 +7401,11 @@ public sealed partial class MainWindow : Window
     {
         try
         {
-            var picker = new FolderPicker();
-            InitializeWithWindow.Initialize(picker, _hWnd);
-            picker.FileTypeFilter.Add("*");
-            var folder = await picker.PickSingleFolderAsync();
-            if (folder != null)
+            string? folderPath = await Helpers.Win32Interop.PickFolderAsync(GetDialogOwnerHwnd(), "选择音频与歌词缓存目录");
+            if (!string.IsNullOrWhiteSpace(folderPath))
             {
                 string mode = "keep";
-                if (!string.Equals(ViewModel.Config.CacheDirectory, folder.Path, StringComparison.OrdinalIgnoreCase) &&
+                if (!string.Equals(ViewModel.Config.CacheDirectory, folderPath, StringComparison.OrdinalIgnoreCase) &&
                     ViewModel.Config.HasExistingCacheFiles())
                 {
                     var dialog = new ContentDialog
@@ -7429,9 +7428,9 @@ public sealed partial class MainWindow : Window
                     };
                 }
 
-                var (_, summaryMsg) = await ViewModel.Config.SwitchDiskCacheDirectoryAsync(folder.Path, mode);
-                DiskCacheDirBox.Text = folder.Path;
-                DiskCacheDirDisplayText.Text = folder.Path;
+                var (_, summaryMsg) = await ViewModel.Config.SwitchDiskCacheDirectoryAsync(folderPath, mode);
+                DiskCacheDirBox.Text = folderPath;
+                DiskCacheDirDisplayText.Text = folderPath;
                 ViewModel.RefreshCacheStats();
                 ViewModel.StatusToast = summaryMsg;
             }

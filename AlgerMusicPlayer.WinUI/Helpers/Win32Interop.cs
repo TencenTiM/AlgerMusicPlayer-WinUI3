@@ -396,6 +396,794 @@ public static class Win32Interop
 
     [DllImport("user32.dll")]
     public static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+    // ==================== Win32 原生现代文件/文件夹对话框（彻底解决未打包/提权/输入帧重入下无响应问题） ====================
+
+    private const int OFN_OVERWRITEPROMPT = 0x00000002;
+    private const int OFN_NOCHANGEDIR = 0x00000008;
+    private const int OFN_ENABLEHOOK = 0x00000020;
+    private const int OFN_PATHMUSTEXIST = 0x00000800;
+    private const int OFN_FILEMUSTEXIST = 0x00001000;
+    private const int OFN_EXPLORER = 0x00080000;
+    private const int OFN_ENABLESIZING = 0x00800000;
+    private const uint WM_INITDIALOG = 0x0110;
+
+    private const uint FOS_OVERWRITEPROMPT = 0x00000002;
+    private const uint FOS_NOCHANGEDIR = 0x00000008;
+    private const uint FOS_PICKFOLDERS = 0x00000020;
+    private const uint FOS_FORCEFILESYSTEM = 0x00000040;
+    private const uint FOS_PATHMUSTEXIST = 0x00000800;
+    private const uint FOS_FILEMUSTEXIST = 0x00001000;
+    private const uint SIGDN_FILESYSPATH = 0x80058000;
+    private const int HR_ERROR_CANCELLED = unchecked((int)0x800704C7);
+
+    private static int _fileDialogBusyFlag;
+
+    private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+    private delegate IntPtr OfnHookProc(IntPtr hdlg, uint uiMsg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindowVisible(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetActiveWindow();
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetParent(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool BringWindowToTop(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetClassNameW(IntPtr hWnd, System.Text.StringBuilder lpClassName, int nMaxCount);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr CreateWindowExW(
+        int dwExStyle,
+        string lpClassName,
+        string lpWindowName,
+        int dwStyle,
+        int x,
+        int y,
+        int nWidth,
+        int nHeight,
+        IntPtr hWndParent,
+        IntPtr hMenu,
+        IntPtr hInstance,
+        IntPtr lpParam);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool DestroyWindow(IntPtr hWnd);
+
+    [DllImport("comdlg32.dll")]
+    private static extern uint CommDlgExtendedError();
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct OPENFILENAMEW
+    {
+        public int lStructSize;
+        public IntPtr hwndOwner;
+        public IntPtr hInstance;
+        public IntPtr lpstrFilter;
+        public IntPtr lpstrCustomFilter;
+        public int nMaxCustFilter;
+        public int nFilterIndex;
+        public IntPtr lpstrFile;
+        public int nMaxFile;
+        public IntPtr lpstrFileTitle;
+        public int nMaxFileTitle;
+        public string? lpstrInitialDir;
+        public string? lpstrTitle;
+        public int Flags;
+        public short nFileOffset;
+        public short nFileExtension;
+        public string? lpstrDefExt;
+        public IntPtr lCustData;
+        public IntPtr lpfnHook;
+        public string? lpTemplateName;
+        public IntPtr pvReserved;
+        public int dwReserved;
+        public int FlagsEx;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct COMDLG_FILTERSPEC
+    {
+        public IntPtr pszName;
+        public IntPtr pszSpec;
+    }
+
+    [DllImport("comdlg32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool GetOpenFileNameW(ref OPENFILENAMEW lpofn);
+
+    [DllImport("comdlg32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool GetSaveFileNameW(ref OPENFILENAMEW lpofn);
+
+    [ComImport]
+    [Guid("DC1C5A9C-E88A-4dde-A5A1-60F82A20AEF7")]
+    private class NativeFileOpenDialogCom
+    {
+    }
+
+    [ComImport]
+    [Guid("C0B4E2F3-BA21-4773-8DBA-335EC946EB8B")]
+    private class NativeFileSaveDialogCom
+    {
+    }
+
+    [ComImport]
+    [Guid("42f85136-db7e-439c-85f1-e4075d135fc8")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface INativeFileDialog
+    {
+        [PreserveSig] int Show(IntPtr parent);
+        void SetFileTypes(uint cFileTypes, IntPtr rgFilterSpec);
+        void SetFileTypeIndex(uint iFileType);
+        void GetFileTypeIndex(out uint piFileType);
+        void Advise(IntPtr pfde, out uint pdwCookie);
+        void Unadvise(uint dwCookie);
+        void SetOptions(uint fos);
+        void GetOptions(out uint pfos);
+        void SetDefaultFolder(INativeShellItem psi);
+        void SetFolder(INativeShellItem psi);
+        void GetFolder(out INativeShellItem ppsi);
+        void GetCurrentSelection(out INativeShellItem ppsi);
+        void SetFileName([MarshalAs(UnmanagedType.LPWStr)] string pszName);
+        void GetFileName([MarshalAs(UnmanagedType.LPWStr)] out string pszName);
+        void SetTitle([MarshalAs(UnmanagedType.LPWStr)] string pszTitle);
+        void SetOkButtonLabel([MarshalAs(UnmanagedType.LPWStr)] string pszText);
+        void SetFileNameLabel([MarshalAs(UnmanagedType.LPWStr)] string pszLabel);
+        void GetResult(out INativeShellItem ppsi);
+        void AddPlace(INativeShellItem psi, int fdap);
+        void SetDefaultExtension([MarshalAs(UnmanagedType.LPWStr)] string pszDefaultExtension);
+    }
+
+    [ComImport]
+    [Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface INativeShellItem
+    {
+        void BindToHandler(IntPtr pbc, [In] ref Guid bhid, [In] ref Guid riid, out IntPtr ppv);
+        void GetParent(out INativeShellItem ppsi);
+        void GetDisplayName(uint sigdnName, out IntPtr ppszName);
+        void GetAttributes(uint sfgaoMask, out uint psfgaoAttribs);
+        void Compare(INativeShellItem psi, uint hint, out int piOrder);
+    }
+
+    /// <summary>
+    /// 异步弹出 Windows 原生现代文件打开对话框：
+    /// 1) 自动退出 WinUI 3 PointerReleased 同步输入帧；
+    /// 2) 优先走现代 COM IFileOpenDialog；
+    /// 3) 遇到线程/输入同步限制时自动切到独立干净 STA 线程并兜底 GetOpenFileNameW，非用户取消错误显式抛出以便提示。
+    /// </summary>
+    public static async Task<string?> PickOpenFileAsync(IntPtr ownerHwnd, string title, string filter)
+    {
+        if (Interlocked.Exchange(ref _fileDialogBusyFlag, 1) == 1)
+        {
+            BringExistingProcessDialogToFront();
+            return null;
+        }
+
+        try
+        {
+            await Task.Yield();
+            await Task.Delay(25);
+            ReleaseCapture();
+
+            IntPtr resolvedOwner = ResolveValidOwnerHwnd(ownerHwnd);
+            var (handled, path, comHr) = TryShowComDialogCore(
+                isSave: false,
+                pickFolders: false,
+                ownerHwnd: resolvedOwner,
+                title: title,
+                filter: filter,
+                defaultExt: null,
+                suggestedFileName: null);
+            if (handled)
+            {
+                return path;
+            }
+
+            return await RunOnDedicatedStaThreadAsync(() =>
+            {
+                if (resolvedOwner != IntPtr.Zero)
+                {
+                    var ownedCom = TryShowComDialogCore(
+                        isSave: false,
+                        pickFolders: false,
+                        ownerHwnd: resolvedOwner,
+                        title: title,
+                        filter: filter,
+                        defaultExt: null,
+                        suggestedFileName: null);
+                    if (ownedCom.Handled)
+                    {
+                        return ownedCom.Path;
+                    }
+
+                    var ownedOfn = TryShowLegacyOfnCore(isSave: false, resolvedOwner, title, filter, null, null);
+                    if (ownedOfn.Handled)
+                    {
+                        return ownedOfn.Path;
+                    }
+                }
+
+                IntPtr tempOwner = CreateTopmostStaOwnerWindow(resolvedOwner);
+                try
+                {
+                    var staCom = TryShowComDialogCore(
+                        isSave: false,
+                        pickFolders: false,
+                        ownerHwnd: tempOwner,
+                        title: title,
+                        filter: filter,
+                        defaultExt: null,
+                        suggestedFileName: null);
+                    if (staCom.Handled)
+                    {
+                        return staCom.Path;
+                    }
+
+                    var legacy = TryShowLegacyOfnCore(isSave: false, tempOwner, title, filter, null, null);
+                    if (legacy.Handled)
+                    {
+                        return legacy.Path;
+                    }
+
+                    throw new InvalidOperationException(
+                        $"系统文件对话框未能打开 (COM=0x{(staCom.ErrorHr != 0 ? staCom.ErrorHr : comHr):X8}, CommDlg=0x{legacy.DlgErr:X4})");
+                }
+                finally
+                {
+                    if (tempOwner != IntPtr.Zero)
+                    {
+                        _ = DestroyWindow(tempOwner);
+                    }
+                }
+            });
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _fileDialogBusyFlag, 0);
+        }
+    }
+
+    /// <summary>
+    /// 异步弹出 Windows 原生现代文件保存对话框
+    /// </summary>
+    public static async Task<string?> PickSaveFileAsync(IntPtr ownerHwnd, string title, string filter, string defaultExt, string suggestedFileName)
+    {
+        if (Interlocked.Exchange(ref _fileDialogBusyFlag, 1) == 1)
+        {
+            BringExistingProcessDialogToFront();
+            return null;
+        }
+
+        try
+        {
+            await Task.Yield();
+            await Task.Delay(25);
+            ReleaseCapture();
+
+            IntPtr resolvedOwner = ResolveValidOwnerHwnd(ownerHwnd);
+            var (handled, path, comHr) = TryShowComDialogCore(
+                isSave: true,
+                pickFolders: false,
+                ownerHwnd: resolvedOwner,
+                title: title,
+                filter: filter,
+                defaultExt: defaultExt,
+                suggestedFileName: suggestedFileName);
+            if (handled)
+            {
+                return path;
+            }
+
+            return await RunOnDedicatedStaThreadAsync(() =>
+            {
+                if (resolvedOwner != IntPtr.Zero)
+                {
+                    var ownedCom = TryShowComDialogCore(
+                        isSave: true,
+                        pickFolders: false,
+                        ownerHwnd: resolvedOwner,
+                        title: title,
+                        filter: filter,
+                        defaultExt: defaultExt,
+                        suggestedFileName: suggestedFileName);
+                    if (ownedCom.Handled)
+                    {
+                        return ownedCom.Path;
+                    }
+
+                    var ownedOfn = TryShowLegacyOfnCore(isSave: true, resolvedOwner, title, filter, defaultExt, suggestedFileName);
+                    if (ownedOfn.Handled)
+                    {
+                        return ownedOfn.Path;
+                    }
+                }
+
+                IntPtr tempOwner = CreateTopmostStaOwnerWindow(resolvedOwner);
+                try
+                {
+                    var staCom = TryShowComDialogCore(
+                        isSave: true,
+                        pickFolders: false,
+                        ownerHwnd: tempOwner,
+                        title: title,
+                        filter: filter,
+                        defaultExt: defaultExt,
+                        suggestedFileName: suggestedFileName);
+                    if (staCom.Handled)
+                    {
+                        return staCom.Path;
+                    }
+
+                    var legacy = TryShowLegacyOfnCore(isSave: true, tempOwner, title, filter, defaultExt, suggestedFileName);
+                    if (legacy.Handled)
+                    {
+                        return legacy.Path;
+                    }
+
+                    throw new InvalidOperationException(
+                        $"系统保存对话框未能打开 (COM=0x{(staCom.ErrorHr != 0 ? staCom.ErrorHr : comHr):X8}, CommDlg=0x{legacy.DlgErr:X4})");
+                }
+                finally
+                {
+                    if (tempOwner != IntPtr.Zero)
+                    {
+                        _ = DestroyWindow(tempOwner);
+                    }
+                }
+            });
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _fileDialogBusyFlag, 0);
+        }
+    }
+
+    /// <summary>
+    /// 异步弹出 Windows 现代文件夹选择对话框（IFileOpenDialog + FOS_PICKFOLDERS）
+    /// </summary>
+    public static async Task<string?> PickFolderAsync(IntPtr ownerHwnd, string title)
+    {
+        if (Interlocked.Exchange(ref _fileDialogBusyFlag, 1) == 1)
+        {
+            BringExistingProcessDialogToFront();
+            return null;
+        }
+
+        try
+        {
+            await Task.Yield();
+            await Task.Delay(25);
+            ReleaseCapture();
+
+            IntPtr resolvedOwner = ResolveValidOwnerHwnd(ownerHwnd);
+            var (handled, path, comHr) = TryShowComDialogCore(
+                isSave: false,
+                pickFolders: true,
+                ownerHwnd: resolvedOwner,
+                title: title,
+                filter: null,
+                defaultExt: null,
+                suggestedFileName: null);
+            if (handled)
+            {
+                return path;
+            }
+
+            return await RunOnDedicatedStaThreadAsync(() =>
+            {
+                if (resolvedOwner != IntPtr.Zero)
+                {
+                    var ownedCom = TryShowComDialogCore(
+                        isSave: false,
+                        pickFolders: true,
+                        ownerHwnd: resolvedOwner,
+                        title: title,
+                        filter: null,
+                        defaultExt: null,
+                        suggestedFileName: null);
+                    if (ownedCom.Handled)
+                    {
+                        return ownedCom.Path;
+                    }
+                }
+
+                IntPtr tempOwner = CreateTopmostStaOwnerWindow(resolvedOwner);
+                try
+                {
+                    var staCom = TryShowComDialogCore(
+                        isSave: false,
+                        pickFolders: true,
+                        ownerHwnd: tempOwner,
+                        title: title,
+                        filter: null,
+                        defaultExt: null,
+                        suggestedFileName: null);
+                    if (staCom.Handled)
+                    {
+                        return staCom.Path;
+                    }
+
+                    throw new InvalidOperationException(
+                        $"系统文件夹对话框未能打开 (COM=0x{(staCom.ErrorHr != 0 ? staCom.ErrorHr : comHr):X8})");
+                }
+                finally
+                {
+                    if (tempOwner != IntPtr.Zero)
+                    {
+                        _ = DestroyWindow(tempOwner);
+                    }
+                }
+            });
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _fileDialogBusyFlag, 0);
+        }
+    }
+
+    private static IntPtr ResolveValidOwnerHwnd(IntPtr ownerHwnd)
+    {
+        if (ownerHwnd != IntPtr.Zero && IsWindow(ownerHwnd))
+        {
+            return ownerHwnd;
+        }
+
+        IntPtr active = GetActiveWindow();
+        if (active != IntPtr.Zero && IsWindow(active))
+        {
+            return active;
+        }
+
+        IntPtr fg = GetForegroundWindow();
+        if (fg != IntPtr.Zero && IsWindow(fg))
+        {
+            GetWindowThreadProcessId(fg, out uint pid);
+            if (pid == (uint)Environment.ProcessId)
+            {
+                return fg;
+            }
+        }
+
+        return IntPtr.Zero;
+    }
+
+    /// <summary>
+    /// 当已有文件对话框正在运行时用户再次点击按钮，主动将该对话框置顶并切到前台，防止对话框被窗口遮挡后死锁
+    /// </summary>
+    private static void BringExistingProcessDialogToFront()
+    {
+        uint selfPid = (uint)Environment.ProcessId;
+        var sb = new System.Text.StringBuilder(64);
+        _ = EnumWindows((hWnd, lParam) =>
+        {
+            if (!IsWindowVisible(hWnd))
+            {
+                return true;
+            }
+
+            GetWindowThreadProcessId(hWnd, out uint pid);
+            if (pid != selfPid)
+            {
+                return true;
+            }
+
+            sb.Clear();
+            if (GetClassNameW(hWnd, sb, sb.Capacity) > 0 && sb.ToString() == "#32770")
+            {
+                if (IsIconic(hWnd))
+                {
+                    ShowWindow(hWnd, SW_RESTORE);
+                }
+                BringWindowToTop(hWnd);
+                SetForegroundWindow(hWnd);
+                return false;
+            }
+            return true;
+        }, IntPtr.Zero);
+    }
+
+    private static IntPtr CreateTopmostStaOwnerWindow(IntPtr refHwnd)
+    {
+        int x = 200;
+        int y = 200;
+        if (refHwnd != IntPtr.Zero && GetWindowRect(refHwnd, out RECT rc))
+        {
+            x = rc.Left + Math.Max(40, (rc.Right - rc.Left) / 4);
+            y = rc.Top + Math.Max(40, (rc.Bottom - rc.Top) / 4);
+        }
+
+        IntPtr hwnd = CreateWindowExW(
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+            "STATIC",
+            string.Empty,
+            WS_POPUP,
+            x, y, 1, 1,
+            IntPtr.Zero,
+            IntPtr.Zero,
+            IntPtr.Zero,
+            IntPtr.Zero);
+        if (hwnd != IntPtr.Zero)
+        {
+            _ = SetWindowPos(hwnd, HWND_TOPMOST, x, y, 1, 1, SWP_SHOWWINDOW);
+            _ = SetForegroundWindow(hwnd);
+        }
+        return hwnd;
+    }
+
+    private static (bool Handled, string? Path, int ErrorHr) TryShowComDialogCore(
+        bool isSave,
+        bool pickFolders,
+        IntPtr ownerHwnd,
+        string? title,
+        string? filter,
+        string? defaultExt,
+        string? suggestedFileName)
+    {
+        INativeFileDialog? dialog = null;
+        try
+        {
+            dialog = isSave
+                ? (INativeFileDialog)new NativeFileSaveDialogCom()
+                : (INativeFileDialog)new NativeFileOpenDialogCom();
+
+            dialog.GetOptions(out uint opts);
+            uint addOpts = FOS_FORCEFILESYSTEM | FOS_NOCHANGEDIR;
+            if (pickFolders)
+            {
+                addOpts |= FOS_PICKFOLDERS | FOS_PATHMUSTEXIST;
+            }
+            else if (isSave)
+            {
+                addOpts |= FOS_PATHMUSTEXIST | FOS_OVERWRITEPROMPT;
+            }
+            else
+            {
+                addOpts |= FOS_PATHMUSTEXIST | FOS_FILEMUSTEXIST;
+            }
+            dialog.SetOptions(opts | addOpts);
+
+            if (!string.IsNullOrWhiteSpace(title))
+            {
+                dialog.SetTitle(title);
+            }
+
+            if (!pickFolders && !string.IsNullOrWhiteSpace(filter))
+            {
+                ApplyComFilterSpecs(dialog, filter);
+            }
+
+            if (isSave)
+            {
+                if (!string.IsNullOrWhiteSpace(suggestedFileName))
+                {
+                    dialog.SetFileName(suggestedFileName);
+                }
+                if (!string.IsNullOrWhiteSpace(defaultExt))
+                {
+                    dialog.SetDefaultExtension(defaultExt.TrimStart('.'));
+                }
+            }
+
+            IntPtr validOwner = ownerHwnd != IntPtr.Zero && IsWindow(ownerHwnd) ? ownerHwnd : IntPtr.Zero;
+            int hr = dialog.Show(validOwner);
+
+            if (hr == HR_ERROR_CANCELLED)
+            {
+                return (true, null, 0);
+            }
+
+            if (hr != 0)
+            {
+                return (false, null, hr);
+            }
+
+            dialog.GetResult(out INativeShellItem item);
+            item.GetDisplayName(SIGDN_FILESYSPATH, out IntPtr pathPtr);
+            try
+            {
+                string? selected = Marshal.PtrToStringUni(pathPtr);
+                return (true, string.IsNullOrWhiteSpace(selected) ? null : selected, 0);
+            }
+            finally
+            {
+                if (pathPtr != IntPtr.Zero)
+                {
+                    Marshal.FreeCoTaskMem(pathPtr);
+                }
+            }
+        }
+        catch (COMException comEx)
+        {
+            if (comEx.HResult == HR_ERROR_CANCELLED)
+            {
+                return (true, null, 0);
+            }
+            return (false, null, comEx.HResult);
+        }
+        catch (Exception ex)
+        {
+            return (false, null, ex.HResult != 0 ? ex.HResult : -1);
+        }
+        finally
+        {
+            if (dialog != null)
+            {
+                Marshal.ReleaseComObject(dialog);
+            }
+        }
+    }
+
+    private static void ApplyComFilterSpecs(INativeFileDialog dialog, string filter)
+    {
+        string[] parts = filter.Split('|');
+        int count = parts.Length / 2;
+        if (count <= 0)
+        {
+            return;
+        }
+
+        int specSize = Marshal.SizeOf<COMDLG_FILTERSPEC>();
+        IntPtr arrayPtr = Marshal.AllocCoTaskMem(count * specSize);
+        var stringPtrs = new List<IntPtr>(count * 2);
+        try
+        {
+            for (int i = 0; i < count; i++)
+            {
+                IntPtr namePtr = Marshal.StringToCoTaskMemUni(parts[i * 2]);
+                IntPtr patternPtr = Marshal.StringToCoTaskMemUni(parts[i * 2 + 1]);
+                stringPtrs.Add(namePtr);
+                stringPtrs.Add(patternPtr);
+
+                var spec = new COMDLG_FILTERSPEC
+                {
+                    pszName = namePtr,
+                    pszSpec = patternPtr
+                };
+                Marshal.StructureToPtr(spec, arrayPtr + (i * specSize), fDeleteOld: false);
+            }
+
+            dialog.SetFileTypes((uint)count, arrayPtr);
+            dialog.SetFileTypeIndex(1);
+        }
+        finally
+        {
+            foreach (IntPtr ptr in stringPtrs)
+            {
+                if (ptr != IntPtr.Zero)
+                {
+                    Marshal.FreeCoTaskMem(ptr);
+                }
+            }
+            Marshal.FreeCoTaskMem(arrayPtr);
+        }
+    }
+
+    private static (bool Handled, string? Path, uint DlgErr) TryShowLegacyOfnCore(
+        bool isSave,
+        IntPtr ownerHwnd,
+        string? title,
+        string? filter,
+        string? defaultExt,
+        string? suggestedFileName)
+    {
+        const int maxChars = 4096;
+        string rawFilter = (string.IsNullOrWhiteSpace(filter) ? "所有文件 (*.*)|*.*" : filter).Replace('|', '\0') + "\0\0";
+        IntPtr filterPtr = Marshal.StringToHGlobalUni(rawFilter);
+        IntPtr fileBufPtr = Marshal.AllocHGlobal(maxChars * 2);
+        bool dialogShown = false;
+
+        OfnHookProc hook = (hdlg, msg, wParam, lParam) =>
+        {
+            if (msg == WM_INITDIALOG)
+            {
+                dialogShown = true;
+                IntPtr parentDlg = GetParent(hdlg);
+                IntPtr target = parentDlg != IntPtr.Zero ? parentDlg : hdlg;
+                BringWindowToTop(target);
+                SetForegroundWindow(target);
+            }
+            return IntPtr.Zero;
+        };
+
+        try
+        {
+            unsafe
+            {
+                new Span<byte>((void*)fileBufPtr, maxChars * 2).Clear();
+                if (isSave && !string.IsNullOrEmpty(suggestedFileName))
+                {
+                    ReadOnlySpan<char> src = suggestedFileName.AsSpan();
+                    int copyLen = Math.Min(src.Length, maxChars - 2);
+                    src[..copyLen].CopyTo(new Span<char>((void*)fileBufPtr, maxChars));
+                }
+            }
+
+            var ofn = new OPENFILENAMEW
+            {
+                lStructSize = Marshal.SizeOf<OPENFILENAMEW>(),
+                hwndOwner = ownerHwnd != IntPtr.Zero && IsWindow(ownerHwnd) ? ownerHwnd : IntPtr.Zero,
+                lpstrFilter = filterPtr,
+                nFilterIndex = 1,
+                lpstrFile = fileBufPtr,
+                nMaxFile = maxChars,
+                lpstrTitle = title,
+                lpstrDefExt = isSave && !string.IsNullOrWhiteSpace(defaultExt) ? defaultExt.TrimStart('.') : null,
+                lpfnHook = Marshal.GetFunctionPointerForDelegate(hook),
+                Flags = isSave
+                    ? (OFN_EXPLORER | OFN_ENABLEHOOK | OFN_ENABLESIZING | OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR)
+                    : (OFN_EXPLORER | OFN_ENABLEHOOK | OFN_ENABLESIZING | OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR)
+            };
+
+            bool ok = isSave ? GetSaveFileNameW(ref ofn) : GetOpenFileNameW(ref ofn);
+            GC.KeepAlive(hook);
+
+            if (ok)
+            {
+                string? selected = Marshal.PtrToStringUni(fileBufPtr);
+                return (true, string.IsNullOrWhiteSpace(selected) ? null : selected, 0);
+            }
+
+            uint err = CommDlgExtendedError();
+            if (dialogShown && err == 0)
+            {
+                return (true, null, 0);
+            }
+
+            return (false, null, err != 0 ? err : 0xFFFFu);
+        }
+        finally
+        {
+            GC.KeepAlive(hook);
+            Marshal.FreeHGlobal(fileBufPtr);
+            Marshal.FreeHGlobal(filterPtr);
+        }
+    }
+
+    private static Task<T> RunOnDedicatedStaThreadAsync<T>(Func<T> func)
+    {
+        _ = AllowSetForegroundWindow(ASFW_ANY);
+        var tcs = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                tcs.TrySetResult(func());
+            }
+            catch (Exception ex)
+            {
+                tcs.TrySetException(ex);
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "AlgerNativeFileDialogSTA"
+        };
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        return tcs.Task;
+    }
 }
 
 /// <summary>

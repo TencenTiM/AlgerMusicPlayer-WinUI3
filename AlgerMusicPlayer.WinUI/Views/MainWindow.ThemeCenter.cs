@@ -149,9 +149,9 @@ public sealed partial class MainWindow
         bool isEffectiveLight = targetElementTheme == ElementTheme.Light ||
                                 (targetElementTheme == ElementTheme.Default && Application.Current.RequestedTheme == ApplicationTheme.Light);
 
-        // 0. 立即阻断壁纸反色激活态并干净还原所有曾被自定义壁纸接管的文字/控件前景色（动态反色严格仅限自定义壁纸）
+        // 0. 立即阻断旧液态玻璃边缘附件与壁纸自适应态，无条件还原所有子视觉层与属性覆盖，确保切换主题 100% 零残留
         _activeAdaptiveRenderedProfile = null;
-        if (_hasActiveAdaptiveOverrides)
+        if (_hasActiveAdaptiveOverrides || _veilSurfaceStates.Count > 0 || _bareTextStates.Count > 0)
         {
             RestoreAllAdaptiveWallpaperTexts(isEffectiveLight);
         }
@@ -242,6 +242,7 @@ public sealed partial class MainWindow
 
         if (useNativeBackdrop)
         {
+            GlobalWallpaperBrush.ImageSource = null;
             GlobalWindowBaseBgLayer.Visibility = Visibility.Collapsed;
             GlobalWallpaperImage.Visibility = Visibility.Collapsed;
             GlobalWallpaperMaskBorder.Visibility = Visibility.Collapsed;
@@ -300,10 +301,13 @@ public sealed partial class MainWindow
         GlobalWallpaperMaskBorder.Background = new SolidColorBrush(ThemeService.WithOpacity(maskBase, profile.BackgroundMaskOpacity));
         GlobalWallpaperMaskBorder.Visibility = Visibility.Visible;
 
-        var imgSource = await ViewModel.Theme.CreateWallpaperImageSourceAsync(profile.BackgroundImagePath, profile.BackgroundBlur);
-        WallpaperColorGrid? colorGrid = profile.EnableAdaptiveWallpaperText
-            ? await ViewModel.Theme.GetOrBuildWallpaperColorGridAsync(profile.BackgroundImagePath, profile.BackgroundBlur)
+        var imgTask = ViewModel.Theme.CreateWallpaperImageSourceAsync(profile.BackgroundImagePath, profile.BackgroundBlur);
+        Task<WallpaperColorGrid?>? gridTask = profile.EnableAdaptiveWallpaperText
+            ? ViewModel.Theme.GetOrBuildWallpaperColorGridAsync(profile.BackgroundImagePath, profile.BackgroundBlur)
             : null;
+
+        var imgSource = await imgTask;
+        WallpaperColorGrid? colorGrid = gridTask != null ? await gridTask : null;
         if (myVersion != _wallpaperRenderVersion) return;
 
         if (imgSource != null)
@@ -421,13 +425,18 @@ public sealed partial class MainWindow
             sbRes["TextControlBorderBrushFocused"] = new SolidColorBrush(indicatorCol);
             if (isLiquidGlass)
             {
-                var boxBg = ThemeService.CreateLiquidGlassSurfaceBrush(accent, isLight, intensity: 1.15);
+                var boxBg = ThemeService.CreateLiquidGlassSurfaceBrush(accent, isLight, intensity: 1.05, blurAmount: 0.7f);
+                var boxHoverBg = new SolidColorBrush(isLight
+                    ? Color.FromArgb(72, 255, 255, 255)
+                    : Color.FromArgb(64, 15, 23, 42));
                 var boxFocusBg = new SolidColorBrush(isLight
-                    ? Color.FromArgb(195, 255, 255, 255)
-                    : Color.FromArgb(145, 15, 23, 42));
-                var boxBorder = ThemeService.CreateLiquidGlassBorderBrush(accent, intensity: 1.0);
+                    ? Color.FromArgb(136, 255, 255, 255)
+                    : Color.FromArgb(112, 15, 23, 42));
+                var boxBorder = new SolidColorBrush(isLight
+                    ? Color.FromArgb(148, 255, 255, 255)
+                    : Color.FromArgb(86, 255, 255, 255));
                 sbRes["TextControlBackground"] = boxBg;
-                sbRes["TextControlBackgroundPointerOver"] = boxFocusBg;
+                sbRes["TextControlBackgroundPointerOver"] = boxHoverBg;
                 sbRes["TextControlBackgroundFocused"] = boxFocusBg;
                 sbRes["TextControlBorderBrush"] = boxBorder;
             }
@@ -507,10 +516,13 @@ public sealed partial class MainWindow
         {
             if (isLiquidGlass)
             {
-                var liquidPane = ThemeService.CreateLiquidGlassSurfaceBrush(accent, isLight, intensity: 0.96, blurAmount: 15.5f);
+                var liquidPane = ThemeService.CreateLiquidGlassSurfaceBrush(accent, isLight, intensity: 0.94, blurAmount: 1.0f);
                 navRes["NavigationViewDefaultPaneBackground"] = liquidPane;
                 navRes["NavigationViewExpandedPaneBackground"] = liquidPane;
                 navRes["NavigationViewTopPaneBackground"] = liquidPane;
+                navRes["NavigationViewPaneContentGridBorderBrush"] = new SolidColorBrush(isLight
+                    ? Color.FromArgb(115, 255, 255, 255)
+                    : Color.FromArgb(62, 255, 255, 255));
             }
             else if (isCrystalClear)
             {
@@ -518,6 +530,7 @@ public sealed partial class MainWindow
                 navRes["NavigationViewDefaultPaneBackground"] = clearBrush;
                 navRes["NavigationViewExpandedPaneBackground"] = clearBrush;
                 navRes["NavigationViewTopPaneBackground"] = clearBrush;
+                navRes.Remove("NavigationViewPaneContentGridBorderBrush");
             }
             else if (isCustomLayer)
             {
@@ -527,12 +540,14 @@ public sealed partial class MainWindow
                 navRes["NavigationViewDefaultPaneBackground"] = glassPane;
                 navRes["NavigationViewExpandedPaneBackground"] = glassPane;
                 navRes["NavigationViewTopPaneBackground"] = glassPane;
+                navRes.Remove("NavigationViewPaneContentGridBorderBrush");
             }
             else
             {
                 navRes.Remove("NavigationViewDefaultPaneBackground");
                 navRes.Remove("NavigationViewExpandedPaneBackground");
                 navRes.Remove("NavigationViewTopPaneBackground");
+                navRes.Remove("NavigationViewPaneContentGridBorderBrush");
             }
             navRes["NavigationViewItemBackgroundSelected"] = new SolidColorBrush(defaultSelCol);
             navRes["NavigationViewItemBackgroundSelectedPointerOver"] = new SolidColorBrush(defaultSelHoverCol);
@@ -617,14 +632,16 @@ public sealed partial class MainWindow
 
             if (isLiquidGlass)
             {
-                rootRes["CardBackgroundFillColorDefaultBrush"] = ThemeService.CreateLiquidGlassSurfaceBrush(accent, isLight, intensity: 1.04, blurAmount: 14.0f);
-                rootRes["CardBackgroundFillColorSecondaryBrush"] = ThemeService.CreateLiquidGlassSurfaceBrush(accent, isLight, intensity: 0.86, blurAmount: 10.5f);
-                rootRes["SecondaryPillFillBrush"] = ThemeService.CreateLiquidGlassSurfaceBrush(accent, isLight, intensity: 0.95, blurAmount: 9.5f);
-                rootRes["SecondaryPillBorderBrush"] = new SolidColorBrush(Colors.Transparent);
+                rootRes["CardBackgroundFillColorDefaultBrush"] = ThemeService.CreateLiquidGlassSurfaceBrush(accent, isLight, intensity: 1.0, blurAmount: 0.45f);
+                rootRes["CardBackgroundFillColorSecondaryBrush"] = ThemeService.CreateLiquidGlassSurfaceBrush(accent, isLight, intensity: 0.84, blurAmount: 0.55f);
+                rootRes["SecondaryPillFillBrush"] = ThemeService.CreateLiquidGlassSurfaceBrush(accent, isLight, intensity: 0.92, blurAmount: 0.65f);
+                rootRes["SecondaryPillBorderBrush"] = new SolidColorBrush(isLight
+                    ? Color.FromArgb(110, 255, 255, 255)
+                    : Color.FromArgb(64, 255, 255, 255));
                 rootRes["CardStrokeColorDefaultBrush"] = ThemeService.CreateLiquidGlassBorderBrush(accent, intensity: 1.0);
                 ThemeService.SetOrUpdateSolidBrush(rootRes, "DividerStrokeColorDefaultBrush", isLight
-                    ? Color.FromArgb(30, 15, 23, 42)
-                    : Color.FromArgb(48, 255, 255, 255));
+                    ? Color.FromArgb(26, 15, 23, 42)
+                    : Color.FromArgb(36, 255, 255, 255));
             }
             else if (isCrystalClear)
             {
@@ -667,19 +684,19 @@ public sealed partial class MainWindow
             else if (isLight)
                 ThemeService.SetOrUpdateSolidBrush(rootRes, "TextFillColorPrimaryBrush", Color.FromArgb(255, 15, 23, 42));
             else
-                rootRes.Remove("TextFillColorPrimaryBrush");
+                ThemeService.SetOrUpdateSolidBrush(rootRes, "TextFillColorPrimaryBrush", Color.FromArgb(255, 248, 250, 252));
 
             if (ThemeService.TryParseColor(profile.SecondaryTextHex, out var sText))
                 ThemeService.SetOrUpdateSolidBrush(rootRes, "TextFillColorSecondaryBrush", sText);
             else if (isLight)
                 ThemeService.SetOrUpdateSolidBrush(rootRes, "TextFillColorSecondaryBrush", Color.FromArgb(255, 51, 65, 85));
             else
-                rootRes.Remove("TextFillColorSecondaryBrush");
+                ThemeService.SetOrUpdateSolidBrush(rootRes, "TextFillColorSecondaryBrush", Color.FromArgb(204, 203, 213, 225));
 
             if (isLight)
                 ThemeService.SetOrUpdateSolidBrush(rootRes, "TextFillColorTertiaryBrush", Color.FromArgb(255, 71, 85, 105));
             else
-                rootRes.Remove("TextFillColorTertiaryBrush");
+                ThemeService.SetOrUpdateSolidBrush(rootRes, "TextFillColorTertiaryBrush", Color.FromArgb(153, 148, 163, 184));
 
             double r = Math.Clamp(profile.CardCornerRadius, 4, 24);
             rootRes["OverlayCornerRadius"] = new CornerRadius(r);
@@ -691,6 +708,8 @@ public sealed partial class MainWindow
             MainContentWorkspaceGrid.ClearValue(Panel.BackgroundProperty);
             foreach (var key in OverridableThemeResourceKeys)
             {
+                if (key is "TextFillColorPrimaryBrush" or "TextFillColorSecondaryBrush" or "TextFillColorTertiaryBrush")
+                    continue;
                 rootRes.Remove(key);
             }
             rootRes.Remove("OverlayCornerRadius");
@@ -700,14 +719,16 @@ public sealed partial class MainWindow
             {
                 var accent = ThemeService.ParseColorOrDefault(profile.AccentColorHex, Color.FromArgb(255, 16, 185, 129));
                 MainContentWorkspaceGrid.Background = new SolidColorBrush(Colors.Transparent);
-                rootRes["CardBackgroundFillColorDefaultBrush"] = ThemeService.CreateLiquidGlassSurfaceBrush(accent, isLight, intensity: 1.04, blurAmount: 14.0f);
-                rootRes["CardBackgroundFillColorSecondaryBrush"] = ThemeService.CreateLiquidGlassSurfaceBrush(accent, isLight, intensity: 0.86, blurAmount: 10.5f);
-                rootRes["SecondaryPillFillBrush"] = ThemeService.CreateLiquidGlassSurfaceBrush(accent, isLight, intensity: 0.95, blurAmount: 9.5f);
-                rootRes["SecondaryPillBorderBrush"] = new SolidColorBrush(Colors.Transparent);
+                rootRes["CardBackgroundFillColorDefaultBrush"] = ThemeService.CreateLiquidGlassSurfaceBrush(accent, isLight, intensity: 1.0, blurAmount: 0.45f);
+                rootRes["CardBackgroundFillColorSecondaryBrush"] = ThemeService.CreateLiquidGlassSurfaceBrush(accent, isLight, intensity: 0.84, blurAmount: 0.55f);
+                rootRes["SecondaryPillFillBrush"] = ThemeService.CreateLiquidGlassSurfaceBrush(accent, isLight, intensity: 0.92, blurAmount: 0.65f);
+                rootRes["SecondaryPillBorderBrush"] = new SolidColorBrush(isLight
+                    ? Color.FromArgb(110, 255, 255, 255)
+                    : Color.FromArgb(64, 255, 255, 255));
                 rootRes["CardStrokeColorDefaultBrush"] = ThemeService.CreateLiquidGlassBorderBrush(accent, intensity: 1.0);
                 rootRes["DividerStrokeColorDefaultBrush"] = new SolidColorBrush(isLight
-                    ? Color.FromArgb(30, 15, 23, 42)
-                    : Color.FromArgb(48, 255, 255, 255));
+                    ? Color.FromArgb(26, 15, 23, 42)
+                    : Color.FromArgb(36, 255, 255, 255));
             }
             else if (isCrystalClear)
             {
@@ -738,11 +759,17 @@ public sealed partial class MainWindow
             {
                 if (!isCrystalClear && !isLiquidGlass)
                 {
-                    rootRes["DividerStrokeColorDefaultBrush"] = new SolidColorBrush(Color.FromArgb(30, 15, 23, 42));
+                    ThemeService.SetOrUpdateSolidBrush(rootRes, "DividerStrokeColorDefaultBrush", Color.FromArgb(30, 15, 23, 42));
                 }
-                rootRes["TextFillColorPrimaryBrush"] = new SolidColorBrush(Color.FromArgb(255, 15, 23, 42));
-                rootRes["TextFillColorSecondaryBrush"] = new SolidColorBrush(Color.FromArgb(255, 51, 65, 85));
-                rootRes["TextFillColorTertiaryBrush"] = new SolidColorBrush(Color.FromArgb(255, 71, 85, 105));
+                ThemeService.SetOrUpdateSolidBrush(rootRes, "TextFillColorPrimaryBrush", Color.FromArgb(255, 15, 23, 42));
+                ThemeService.SetOrUpdateSolidBrush(rootRes, "TextFillColorSecondaryBrush", Color.FromArgb(255, 51, 65, 85));
+                ThemeService.SetOrUpdateSolidBrush(rootRes, "TextFillColorTertiaryBrush", Color.FromArgb(255, 71, 85, 105));
+            }
+            else
+            {
+                ThemeService.SetOrUpdateSolidBrush(rootRes, "TextFillColorPrimaryBrush", Color.FromArgb(255, 248, 250, 252));
+                ThemeService.SetOrUpdateSolidBrush(rootRes, "TextFillColorSecondaryBrush", Color.FromArgb(204, 203, 213, 225));
+                ThemeService.SetOrUpdateSolidBrush(rootRes, "TextFillColorTertiaryBrush", Color.FromArgb(153, 148, 163, 184));
             }
         }
     }
@@ -928,14 +955,23 @@ public sealed partial class MainWindow
         }
 
         // 3. 联动首页双英雄大卡（左卡：每日推荐主色流光；右卡：私人 FM 主题副色/谐波色流光）与歌单详情页头部渐变层
+        bool isLiquidHero = IsLiquidGlassMode(profile);
+        byte heroAlpha0 = isLiquidHero ? (byte)20 : (byte)232;
+        byte heroAlpha1 = isLiquidHero ? (byte)10 : (byte)232;
         var (ah, aSat, _) = ThemeService.RgbToHsl(accent.R, accent.G, accent.B);
         var heroDarkBase = ThemeService.CreateThemeTintedSurfaceColor(profile, accent, isLight: false, tintWeight: 0.16);
 
         if (DailyHeroStop0 != null && DailyHeroStop1 != null)
         {
             var dailyStart = ThemeService.HslToColor(ah, Math.Clamp(aSat, 0.45, 0.82), 0.23);
-            DailyHeroStop0.Color = Color.FromArgb(232, dailyStart.R, dailyStart.G, dailyStart.B);
-            DailyHeroStop1.Color = Color.FromArgb(232, heroDarkBase.R, heroDarkBase.G, heroDarkBase.B);
+            DailyHeroStop0.Color = Color.FromArgb(heroAlpha0, dailyStart.R, dailyStart.G, dailyStart.B);
+            DailyHeroStop1.Color = Color.FromArgb(heroAlpha1, heroDarkBase.R, heroDarkBase.G, heroDarkBase.B);
+        }
+        if (DailyHeroCardBorder != null)
+        {
+            DailyHeroCardBorder.BorderBrush = isLiquidHero
+                ? new SolidColorBrush(Colors.Transparent)
+                : new SolidColorBrush(Color.FromArgb(68, accent.R, accent.G, accent.B));
         }
         if (DailyHeroSubtitleText != null)
         {
@@ -961,12 +997,14 @@ public sealed partial class MainWindow
         if (FmHeroStop0 != null && FmHeroStop1 != null)
         {
             var fmStart = ThemeService.HslToColor(fh, Math.Clamp(fs, 0.45, 0.82), 0.22);
-            FmHeroStop0.Color = Color.FromArgb(232, fmStart.R, fmStart.G, fmStart.B);
-            FmHeroStop1.Color = Color.FromArgb(232, heroDarkBase.R, heroDarkBase.G, heroDarkBase.B);
+            FmHeroStop0.Color = Color.FromArgb(heroAlpha0, fmStart.R, fmStart.G, fmStart.B);
+            FmHeroStop1.Color = Color.FromArgb(heroAlpha1, heroDarkBase.R, heroDarkBase.G, heroDarkBase.B);
         }
         if (FmHeroCardBorder != null)
         {
-            FmHeroCardBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(75, fmAccent.R, fmAccent.G, fmAccent.B));
+            FmHeroCardBorder.BorderBrush = isLiquidHero
+                ? new SolidColorBrush(Colors.Transparent)
+                : new SolidColorBrush(Color.FromArgb(75, fmAccent.R, fmAccent.G, fmAccent.B));
         }
         var fmSoftLight = ThemeService.HslToColor(fh, Math.Clamp(fs, 0.55, 0.82), 0.82);
         var fmSoftBrush = new SolidColorBrush(fmSoftLight);
@@ -2913,7 +2951,8 @@ public sealed partial class MainWindow
     private static void BindColorControlPair(Button swatchBtn, TextBox? hexBox, string rawHex, Color fallbackSwatchColor, bool allowEmptyText = false)
     {
         var col = ThemeService.ParseColorOrDefault(rawHex, fallbackSwatchColor);
-        if (swatchBtn.Background is SolidColorBrush scb)
+        // 必须检查本地值（ReadLocalValue），严禁直接原地修改 DefaultButtonStyle 继承的系统全局共享 ControlFillColorDefaultBrush！
+        if (swatchBtn.ReadLocalValue(Control.BackgroundProperty) is SolidColorBrush scb)
         {
             scb.Color = col;
         }
@@ -3258,12 +3297,22 @@ public sealed partial class MainWindow
     private void OnThemeBackdropTypeBtnClick(object sender, RoutedEventArgs e)
     {
         if (_isLoadingThemeCenterUi || sender is not Button btn || btn.Tag is not string kind) return;
-        bool switchingToImage = !string.Equals(_themeDraft.BackdropType, "Image", StringComparison.OrdinalIgnoreCase) &&
-                                string.Equals(kind, "Image", StringComparison.OrdinalIgnoreCase);
+        bool wasImage = string.Equals(_themeDraft.BackdropType, "Image", StringComparison.OrdinalIgnoreCase);
+        bool isNowImage = string.Equals(kind, "Image", StringComparison.OrdinalIgnoreCase);
         _themeDraft.BackdropType = kind;
-        if (switchingToImage)
+        if (!wasImage && isNowImage)
         {
             ApplyCrystalClearWallpaperDefaults(_themeDraft);
+            LoadThemeDraftToEditorUi();
+        }
+        else if (wasImage && !isNowImage)
+        {
+            _themeDraft.EnableAdaptiveWallpaperText = false;
+            if (string.Equals(_themeDraft.CardVisualStyle, "LiquidGlass", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(_themeDraft.CardVisualStyle, "CrystalClear", StringComparison.OrdinalIgnoreCase))
+            {
+                _themeDraft.CardVisualStyle = "FrostedGlass";
+            }
             LoadThemeDraftToEditorUi();
         }
         else
@@ -3770,6 +3819,11 @@ public sealed partial class MainWindow
             SyncLyricLinesTypographyAndEmptyState();
             _miniPlayerWindow?.ApplyThemeProfile(_themeDraft);
             _desktopLyricWindow?.ApplyConfigToVisuals();
+            if (HasActiveCustomWallpaperImage || IsLiquidGlassMode(adapted))
+            {
+                _activeAdaptiveRenderedProfile = adapted;
+                ScheduleAdaptiveWallpaperTextPass(immediate: false);
+            }
         }
 
         if (doWindowBg)
@@ -3814,6 +3868,11 @@ public sealed partial class MainWindow
         if (doNavPane)
         {
             ApplyNavigationPaneSectionTheme(adapted, accent, isLight);
+            if (HasActiveCustomWallpaperImage || IsLiquidGlassMode(adapted))
+            {
+                _activeAdaptiveRenderedProfile = adapted;
+                ScheduleAdaptiveWallpaperTextPass(immediate: false);
+            }
         }
 
         if (doContentCards)
@@ -3838,6 +3897,11 @@ public sealed partial class MainWindow
         {
             ViewModel.Theme.UpdateGlobalAccentBrushes(adapted);
             ApplyBottomPlayBarSectionTheme(adapted, accent, hover, pressed, isLight);
+            if (HasActiveCustomWallpaperImage)
+            {
+                _activeAdaptiveRenderedProfile = adapted;
+                ScheduleAdaptiveWallpaperTextPass(immediate: false);
+            }
         }
 
         if (doCardRadius)
@@ -4229,29 +4293,45 @@ public sealed partial class MainWindow
     {
         try
         {
-            var picker = new FileOpenPicker();
-            InitializeWithWindow.Initialize(picker, _hWnd);
-            picker.FileTypeFilter.Add(".png");
-            picker.FileTypeFilter.Add(".jpg");
-            picker.FileTypeFilter.Add(".jpeg");
-            picker.FileTypeFilter.Add(".webp");
-            picker.FileTypeFilter.Add(".bmp");
+            string? selectedPath = await Helpers.Win32Interop.PickOpenFileAsync(
+                GetDialogOwnerHwnd(),
+                "选择自定义背景图片",
+                "图片文件 (*.png;*.jpg;*.jpeg;*.webp;*.bmp)|*.png;*.jpg;*.jpeg;*.webp;*.bmp|所有文件 (*.*)|*.*");
+            if (string.IsNullOrWhiteSpace(selectedPath)) return;
 
-            var file = await picker.PickSingleFileAsync();
-            if (file == null) return;
-
-            string localPath = await ViewModel.Theme.CopyWallpaperToAppDataAsync(file.Path);
+            string localPath = await ViewModel.Theme.CopyWallpaperToAppDataAsync(selectedPath);
             _themeDraft.BackgroundImagePath = localPath;
             _themeDraft.BackdropType = "Image";
             ApplyCrystalClearWallpaperDefaults(_themeDraft);
 
             LoadThemeDraftToEditorUi();
             PushDraftLivePreview();
-            ViewModel.StatusToast = $"已加载原画全透明壁纸：{file.Name}";
+            ViewModel.StatusToast = $"已加载光学液态玻璃壁纸：{Path.GetFileName(selectedPath)}";
         }
         catch (Exception ex)
         {
             ViewModel.StatusToast = $"选择壁纸失败：{ex.Message}";
+            await ShowThemeFileDialogErrorAsync("选择背景图片失败", ex.Message);
+        }
+    }
+
+    private async Task ShowThemeFileDialogErrorAsync(string title, string detail)
+    {
+        try
+        {
+            if (RootLayout?.XamlRoot == null) return;
+            var dlg = new ContentDialog
+            {
+                Title = title,
+                Content = detail,
+                CloseButtonText = "知道了",
+                XamlRoot = RootLayout.XamlRoot
+            };
+            await dlg.ShowAsync();
+        }
+        catch
+        {
+            // 忽略弹窗重复并发异常
         }
     }
 
@@ -4270,26 +4350,24 @@ public sealed partial class MainWindow
     {
         try
         {
-            var picker = new FileOpenPicker();
-            InitializeWithWindow.Initialize(picker, _hWnd);
-            picker.FileTypeFilter.Add(".mp4");
-            picker.FileTypeFilter.Add(".webm");
-            picker.FileTypeFilter.Add(".mkv");
+            string? selectedPath = await Helpers.Win32Interop.PickOpenFileAsync(
+                GetDialogOwnerHwnd(),
+                "选择动态视频壁纸",
+                "视频文件 (*.mp4;*.webm;*.mkv)|*.mp4;*.webm;*.mkv|所有文件 (*.*)|*.*");
+            if (string.IsNullOrWhiteSpace(selectedPath)) return;
 
-            var file = await picker.PickSingleFileAsync();
-            if (file == null) return;
-
-            string localPath = await ViewModel.Theme.CopyWallpaperToAppDataAsync(file.Path);
+            string localPath = await ViewModel.Theme.CopyWallpaperToAppDataAsync(selectedPath);
             _themeDraft.BackgroundVideoPath = localPath;
             _themeDraft.BackdropType = "Video";
 
             LoadThemeDraftToEditorUi();
             PushDraftLivePreview();
-            ViewModel.StatusToast = $"已加载动态视频壁纸：{file.Name}";
+            ViewModel.StatusToast = $"已加载动态视频壁纸：{Path.GetFileName(selectedPath)}";
         }
         catch (Exception ex)
         {
             ViewModel.StatusToast = $"选择视频壁纸失败：{ex.Message}";
+            await ShowThemeFileDialogErrorAsync("选择视频壁纸失败", ex.Message);
         }
     }
 
@@ -4331,19 +4409,14 @@ public sealed partial class MainWindow
     {
         try
         {
-            var picker = new FileOpenPicker();
-            InitializeWithWindow.Initialize(picker, _hWnd);
-            picker.FileTypeFilter.Add(".png");
-            picker.FileTypeFilter.Add(".jpg");
-            picker.FileTypeFilter.Add(".jpeg");
-            picker.FileTypeFilter.Add(".webp");
-            picker.FileTypeFilter.Add(".bmp");
+            string? selectedPath = await Helpers.Win32Interop.PickOpenFileAsync(
+                GetDialogOwnerHwnd(),
+                "选择壁纸图片并智能生成主题",
+                "图片文件 (*.png;*.jpg;*.jpeg;*.webp;*.bmp)|*.png;*.jpg;*.jpeg;*.webp;*.bmp|所有文件 (*.*)|*.*");
+            if (string.IsNullOrWhiteSpace(selectedPath)) return;
 
-            var file = await picker.PickSingleFileAsync();
-            if (file == null) return;
-
-            string baseName = Path.GetFileNameWithoutExtension(file.Name);
-            var generated = await ViewModel.Theme.ExtractThemeFromImageAsync(file.Path, $"壁纸 · {baseName}", useAsWallpaper: true);
+            string baseName = Path.GetFileNameWithoutExtension(selectedPath);
+            var generated = await ViewModel.Theme.ExtractThemeFromImageAsync(selectedPath, $"壁纸 · {baseName}", useAsWallpaper: true);
             if (generated == null)
             {
                 ViewModel.StatusToast = "解析壁纸色彩失败";
@@ -4358,6 +4431,7 @@ public sealed partial class MainWindow
         catch (Exception ex)
         {
             ViewModel.StatusToast = $"壁纸生成主题失败：{ex.Message}";
+            await ShowThemeFileDialogErrorAsync("打开图片失败", ex.Message);
         }
     }
 
@@ -4365,14 +4439,13 @@ public sealed partial class MainWindow
     {
         try
         {
-            var picker = new FileOpenPicker();
-            InitializeWithWindow.Initialize(picker, _hWnd);
-            picker.FileTypeFilter.Add(".json");
+            string? selectedPath = await Helpers.Win32Interop.PickOpenFileAsync(
+                GetDialogOwnerHwnd(),
+                "导入 Alger 主题文件",
+                "主题包文件 (*.json;*.algertheme.json)|*.json|所有文件 (*.*)|*.*");
+            if (string.IsNullOrWhiteSpace(selectedPath)) return;
 
-            var file = await picker.PickSingleFileAsync();
-            if (file == null) return;
-
-            var imported = await ViewModel.Theme.ImportThemeFromFileAsync(file.Path);
+            var imported = await ViewModel.Theme.ImportThemeFromFileAsync(selectedPath);
             if (imported == null)
             {
                 ViewModel.StatusToast = "导入失败：主题文件格式无效";
@@ -4387,6 +4460,7 @@ public sealed partial class MainWindow
         catch (Exception ex)
         {
             ViewModel.StatusToast = $"导入主题失败：{ex.Message}";
+            await ShowThemeFileDialogErrorAsync("导入主题失败", ex.Message);
         }
     }
 
@@ -4394,24 +4468,24 @@ public sealed partial class MainWindow
     {
         try
         {
-            var savePicker = new FileSavePicker();
-            InitializeWithWindow.Initialize(savePicker, _hWnd);
-            savePicker.SuggestedStartLocation = PickerLocationId.DocumentsLibrary;
-            savePicker.FileTypeChoices.Add("Alger 主题包 (.algertheme.json)", [".json"]);
-
             string safeName = string.Join("_", (_themeDraft.Name ?? "MyTheme").Split(Path.GetInvalidFileNameChars(), StringSplitOptions.RemoveEmptyEntries));
             if (string.IsNullOrWhiteSpace(safeName)) safeName = "MyTheme";
-            savePicker.SuggestedFileName = $"{safeName}.algertheme";
 
-            var file = await savePicker.PickSaveFileAsync();
-            if (file == null) return;
+            string? savePath = await Helpers.Win32Interop.PickSaveFileAsync(
+                GetDialogOwnerHwnd(),
+                "导出当前主题包",
+                "Alger 主题包 (*.algertheme.json)|*.algertheme.json;*.json|JSON 文件 (*.json)|*.json",
+                "json",
+                $"{safeName}.algertheme.json");
+            if (string.IsNullOrWhiteSpace(savePath)) return;
 
-            await ViewModel.Theme.ExportThemeToFileAsync(_themeDraft, file.Path);
-            ViewModel.StatusToast = $"主题已导出至：{file.Name}";
+            await ViewModel.Theme.ExportThemeToFileAsync(_themeDraft, savePath);
+            ViewModel.StatusToast = $"主题已导出至：{Path.GetFileName(savePath)}";
         }
         catch (Exception ex)
         {
             ViewModel.StatusToast = $"导出主题失败：{ex.Message}";
+            await ShowThemeFileDialogErrorAsync("导出主题失败", ex.Message);
         }
     }
 

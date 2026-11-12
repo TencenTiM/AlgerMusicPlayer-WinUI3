@@ -703,9 +703,9 @@ public class ThemeService
     }
 
     /// <summary>
-    /// 构建原生 Windows DWM 合成器级 iOS 27「液态玻璃 (Liquid Glass)」实时 GPU 着色画刷（随 ScrollViewer 120Hz 零延迟硬件同步滚动与精准裁剪）
+    /// 构建原生 Windows DWM 合成器级清透水感「液态玻璃 (Liquid Glass)」实时 GPU 画刷（低模糊高通透核心）
     /// </summary>
-    public static Brush CreateLiquidGlassSurfaceBrush(Color accent, bool isLight, double intensity = 1.0, float blurAmount = 14.0f)
+    public static Brush CreateLiquidGlassSurfaceBrush(Color accent, bool isLight, double intensity = 1.0, float blurAmount = 0.45f)
     {
         return new LiquidGlassCompositionBrush(accent, isLight, intensity, blurAmount);
     }

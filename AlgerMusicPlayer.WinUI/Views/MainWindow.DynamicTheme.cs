@@ -704,7 +704,7 @@ public sealed partial class MainWindow
             {
                 if (isLiquidGlass)
                 {
-                    BottomPlayBarBorder.Background = ThemeService.CreateLiquidGlassSurfaceBrush(accent, isLight, intensity: 1.18, blurAmount: 15.5f);
+                    BottomPlayBarBorder.Background = ThemeService.CreateLiquidGlassSurfaceBrush(accent, isLight, intensity: 1.08, blurAmount: 0.85f);
                     BottomPlayBarBorder.BorderBrush = ThemeService.CreateLiquidGlassBorderBrush(accent, intensity: 1.06);
                 }
                 else if (isCrystalClear)
@@ -735,7 +735,7 @@ public sealed partial class MainWindow
             {
                 if (isLiquidGlass)
                 {
-                    BottomPlayBarBorder.Background = ThemeService.CreateLiquidGlassSurfaceBrush(accent, isLight, intensity: 0.96, blurAmount: 14.5f);
+                    BottomPlayBarBorder.Background = ThemeService.CreateLiquidGlassSurfaceBrush(accent, isLight, intensity: 0.94, blurAmount: 0.85f);
                 }
                 else if (isCrystalClear)
                 {
@@ -761,7 +761,7 @@ public sealed partial class MainWindow
             {
                 if (isLiquidGlass)
                 {
-                    BottomPlayBarBorder.Background = ThemeService.CreateLiquidGlassSurfaceBrush(accent, isLight, intensity: 1.12, blurAmount: 15.5f);
+                    BottomPlayBarBorder.Background = ThemeService.CreateLiquidGlassSurfaceBrush(accent, isLight, intensity: 1.05, blurAmount: 0.85f);
                     BottomPlayBarBorder.BorderBrush = ThemeService.CreateLiquidGlassBorderBrush(accent, intensity: 1.0);
                 }
                 else if (isCrystalClear)
@@ -839,8 +839,9 @@ public sealed partial class MainWindow
         // 4. 卡片质感预设覆盖（当未手动指定详细卡片颜色或叠加风格时赋予鲜明视觉辨识度）
         ApplyCardVisualStyleOverlay(profile, accent, isLight);
 
-        // 5. 全局卡片圆角（OverlayCornerRadius）与按钮胶囊圆角（ControlCornerRadius）全主题同步生效
-        double cardRadius = Math.Clamp(profile.CardCornerRadius, 4, 24);
+        // 5. 全局卡片圆角（OverlayCornerRadius）与按钮胶囊圆角（ControlCornerRadius）全主题同步生效（液态玻璃自动呈现饱满 24px 水滴大圆角）
+        double rawCardR = isLiquidGlass ? Math.Max(profile.CardCornerRadius, 24.0) : profile.CardCornerRadius;
+        double cardRadius = Math.Clamp(rawCardR, 4, 24);
         double btnRadius = Math.Clamp(profile.ButtonCornerRadius, 4, 22);
         RootLayout.Resources["OverlayCornerRadius"] = new CornerRadius(cardRadius);
         RootLayout.Resources["ControlCornerRadius"] = new CornerRadius(btnRadius);

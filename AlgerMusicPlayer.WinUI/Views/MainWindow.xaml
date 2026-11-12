@@ -4070,7 +4070,8 @@
                                             <TextBlock Text="全局材质、动态流光背景与氛围粒子" Style="{StaticResource SettingsGroupHeaderTextStyle}" />
                                         </Border>
                                         <Border Style="{StaticResource SettingSectionCardStyle}">
-                                            <StackPanel HorizontalAlignment="Stretch">
+                                            <Grid HorizontalAlignment="Stretch">
+                                                <StackPanel HorizontalAlignment="Stretch">
                                                 <Border Style="{StaticResource SettingItemRowStyle}">
                                                     <Grid ColumnSpacing="16">
                                                         <StackPanel Spacing="2" VerticalAlignment="Center">
@@ -4176,13 +4177,17 @@
                                                 <!-- 静态图片壁纸专属调节行 -->
                                                 <Border x:Name="PageImageWallpaperRow" Style="{StaticResource SettingItemRowStyle}" Visibility="Collapsed">
                                                     <StackPanel Spacing="14" HorizontalAlignment="Stretch">
-                                                        <Grid>
-                                                            <StackPanel Spacing="2" VerticalAlignment="Center">
+                                                        <Grid ColumnSpacing="16">
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="*" />
+                                                                <ColumnDefinition Width="Auto" />
+                                                            </Grid.ColumnDefinitions>
+                                                            <StackPanel Grid.Column="0" Spacing="2" VerticalAlignment="Center">
                                                                 <TextBlock Text="自定义背景图片与模糊遮罩" FontSize="15" FontWeight="Medium" />
                                                                 <TextBlock x:Name="PageWallpaperPathText" Text="尚未选择背景图片" FontSize="13" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
                                                             </StackPanel>
-                                                            <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right" VerticalAlignment="Center">
-                                                                <Button Content="选择本地图片..." Style="{StaticResource BrandPrimaryButtonStyle}" CornerRadius="8" Padding="14,6" FontSize="13" Click="OnPickThemeWallpaperClick" />
+                                                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right" VerticalAlignment="Center">
+                                                                <Button x:Name="PagePickWallpaperBtn" Content="选择本地图片..." Style="{StaticResource BrandPrimaryButtonStyle}" CornerRadius="8" Padding="14,6" FontSize="13" Click="OnPickThemeWallpaperClick" />
                                                                 <Button Content="清除壁纸" Style="{StaticResource SecondaryTabButtonStyle}" CornerRadius="8" Padding="12,6" FontSize="13" Click="OnClearThemeWallpaperClick" />
                                                             </StackPanel>
                                                         </Grid>
@@ -4231,12 +4236,16 @@
                                                 <!-- 动态视频壁纸专属调节行 -->
                                                 <Border x:Name="PageVideoDetailBox" Style="{StaticResource SettingItemRowStyle}" Visibility="Collapsed">
                                                     <StackPanel Spacing="12" HorizontalAlignment="Stretch">
-                                                        <Grid>
-                                                            <StackPanel Spacing="2" VerticalAlignment="Center">
+                                                        <Grid ColumnSpacing="16">
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="*" />
+                                                                <ColumnDefinition Width="Auto" />
+                                                            </Grid.ColumnDefinitions>
+                                                            <StackPanel Grid.Column="0" Spacing="2" VerticalAlignment="Center">
                                                                 <TextBlock Text="动态循环视频壁纸 (.mp4 / .webm)" FontSize="15" FontWeight="Medium" />
                                                                 <TextBlock x:Name="PageVideoPathText" Text="尚未选择动态视频壁纸（自动静音无缝循环，后台最小化自动暂停省电）" FontSize="13" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
                                                             </StackPanel>
-                                                            <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right" VerticalAlignment="Center">
+                                                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right" VerticalAlignment="Center">
                                                                 <Button Content="选择动态视频..." Style="{StaticResource BrandPrimaryButtonStyle}" CornerRadius="8" Padding="14,6" FontSize="13" Click="OnPickThemeVideoWallpaperClick" />
                                                                 <Button Content="清除视频" Style="{StaticResource SecondaryTabButtonStyle}" CornerRadius="8" Padding="12,6" FontSize="13" Click="OnClearThemeVideoWallpaperClick" />
                                                             </StackPanel>
@@ -4313,7 +4322,8 @@
                                                         </StackPanel>
                                                     </StackPanel>
                                                 </Border>
-                                            </StackPanel>
+                                                </StackPanel>
+                                            </Grid>
                                         </Border>
                                     </StackPanel>
 
@@ -4323,7 +4333,8 @@
                                             <TextBlock Text="全局品牌强调色与双色流光渐变" Style="{StaticResource SettingsGroupHeaderTextStyle}" />
                                         </Border>
                                         <Border Style="{StaticResource SettingSectionCardStyle}">
-                                            <StackPanel HorizontalAlignment="Stretch">
+                                            <Grid HorizontalAlignment="Stretch">
+                                                <StackPanel HorizontalAlignment="Stretch">
                                                 <Border Style="{StaticResource SettingItemRowStyle}">
                                                     <Grid ColumnSpacing="16">
                                                         <StackPanel Spacing="2" VerticalAlignment="Center">
@@ -4410,7 +4421,8 @@
                                                         </StackPanel>
                                                     </StackPanel>
                                                 </Border>
-                                            </StackPanel>
+                                                </StackPanel>
+                                            </Grid>
                                         </Border>
                                     </StackPanel>
 
@@ -4742,7 +4754,8 @@
                                             <TextBlock Text="歌词高亮、迷你窗口与封面动态联动" Style="{StaticResource SettingsGroupHeaderTextStyle}" />
                                         </Border>
                                         <Border Style="{StaticResource SettingSectionCardStyle}">
-                                            <StackPanel HorizontalAlignment="Stretch">
+                                            <Grid HorizontalAlignment="Stretch">
+                                                <StackPanel HorizontalAlignment="Stretch">
                                                 <Border Style="{StaticResource SettingItemRowStyle}">
                                                     <Grid ColumnSpacing="16">
                                                         <StackPanel Spacing="2" VerticalAlignment="Center">
@@ -4786,7 +4799,8 @@
                                                         </StackPanel>
                                                     </Grid>
                                                 </Border>
-                                            </StackPanel>
+                                                </StackPanel>
+                                            </Grid>
                                         </Border>
                                     </StackPanel>
                                 </StackPanel>
@@ -9266,17 +9280,22 @@
                                                 BorderThickness="1"
                                                 CornerRadius="10"
                                                 Padding="14,12">
-                                                <StackPanel Spacing="12">
-                                                    <Grid>
-                                                        <StackPanel Spacing="2" VerticalAlignment="Center">
-                                                            <TextBlock Text="自定义背景图片" FontSize="13" FontWeight="SemiBold" />
-                                                            <TextBlock x:Name="ThemeWallpaperPathText" Text="尚未选择背景图片" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" MaxWidth="360" TextTrimming="CharacterEllipsis" />
-                                                        </StackPanel>
-                                                        <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right" VerticalAlignment="Center">
-                                                            <Button Content="选择本地图片..." Style="{StaticResource BrandPrimaryButtonStyle}" CornerRadius="8" Padding="12,5" FontSize="12" Click="OnPickThemeWallpaperClick" />
-                                                            <Button Content="清除" Style="{StaticResource SecondaryTabButtonStyle}" CornerRadius="8" Padding="10,5" FontSize="12" Click="OnClearThemeWallpaperClick" />
-                                                        </StackPanel>
-                                                    </Grid>
+                                                <Grid>
+                                                    <StackPanel Spacing="12">
+                                                        <Grid ColumnSpacing="12">
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="*" />
+                                                                <ColumnDefinition Width="Auto" />
+                                                            </Grid.ColumnDefinitions>
+                                                            <StackPanel Grid.Column="0" Spacing="2" VerticalAlignment="Center">
+                                                                <TextBlock Text="自定义背景图片" FontSize="13" FontWeight="SemiBold" />
+                                                                <TextBlock x:Name="ThemeWallpaperPathText" Text="尚未选择背景图片" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" MaxWidth="360" TextTrimming="CharacterEllipsis" />
+                                                            </StackPanel>
+                                                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right" VerticalAlignment="Center">
+                                                                <Button x:Name="ModalPickWallpaperBtn" Content="选择本地图片..." Style="{StaticResource BrandPrimaryButtonStyle}" CornerRadius="8" Padding="12,5" FontSize="12" Click="OnPickThemeWallpaperClick" />
+                                                                <Button Content="清除" Style="{StaticResource SecondaryTabButtonStyle}" CornerRadius="8" Padding="10,5" FontSize="12" Click="OnClearThemeWallpaperClick" />
+                                                            </StackPanel>
+                                                        </Grid>
 
                                                     <Grid ColumnSpacing="14">
                                                         <Grid.ColumnDefinitions>
@@ -9311,7 +9330,8 @@
                                                         </StackPanel>
                                                         <ToggleSwitch x:Name="ThemeAdaptiveWallpaperTextToggle" Tag="EnableAdaptiveWallpaperText" HorizontalAlignment="Right" VerticalAlignment="Center" MinWidth="0" OnContent="已开启" OffContent="关闭" Toggled="OnTaggedThemeSwitchToggled" />
                                                     </Grid>
-                                                </StackPanel>
+                                                    </StackPanel>
+                                                </Grid>
                                             </Border>
 
                                             <!-- 动态循环视频壁纸专属控制面板 -->
@@ -9323,18 +9343,24 @@
                                                 CornerRadius="10"
                                                 Padding="14,12"
                                                 Visibility="Collapsed">
-                                                <StackPanel Spacing="10">
-                                                    <Grid>
-                                                        <StackPanel Spacing="2" VerticalAlignment="Center">
-                                                            <TextBlock Text="动态视频壁纸 (.mp4 / .webm)" FontSize="13" FontWeight="SemiBold" />
-                                                            <TextBlock x:Name="ThemeVideoPathText" Text="尚未选择动态视频" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" MaxWidth="360" TextTrimming="CharacterEllipsis" />
-                                                        </StackPanel>
-                                                        <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right" VerticalAlignment="Center">
-                                                            <Button Content="选择视频..." Style="{StaticResource BrandPrimaryButtonStyle}" CornerRadius="8" Padding="12,5" FontSize="12" Click="OnPickThemeVideoWallpaperClick" />
-                                                            <Button Content="清除" Style="{StaticResource SecondaryTabButtonStyle}" CornerRadius="8" Padding="10,5" FontSize="12" Click="OnClearThemeVideoWallpaperClick" />
-                                                        </StackPanel>
-                                                    </Grid>
-                                                </StackPanel>
+                                                <Grid>
+                                                    <StackPanel Spacing="10">
+                                                        <Grid ColumnSpacing="12">
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="*" />
+                                                                <ColumnDefinition Width="Auto" />
+                                                            </Grid.ColumnDefinitions>
+                                                            <StackPanel Grid.Column="0" Spacing="2" VerticalAlignment="Center">
+                                                                <TextBlock Text="动态视频壁纸 (.mp4 / .webm)" FontSize="13" FontWeight="SemiBold" />
+                                                                <TextBlock x:Name="ThemeVideoPathText" Text="尚未选择动态视频" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" MaxWidth="360" TextTrimming="CharacterEllipsis" />
+                                                            </StackPanel>
+                                                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right" VerticalAlignment="Center">
+                                                                <Button Content="选择视频..." Style="{StaticResource BrandPrimaryButtonStyle}" CornerRadius="8" Padding="12,5" FontSize="12" Click="OnPickThemeVideoWallpaperClick" />
+                                                                <Button Content="清除" Style="{StaticResource SecondaryTabButtonStyle}" CornerRadius="8" Padding="10,5" FontSize="12" Click="OnClearThemeVideoWallpaperClick" />
+                                                            </StackPanel>
+                                                        </Grid>
+                                                    </StackPanel>
+                                                </Grid>
                                             </Border>
 
                                             <!-- 独立氛围粒子特效层控制 -->
