@@ -1,21 +1,36 @@
 using System.Collections.Concurrent;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using AlgerMusicPlayer.WinUI.Models;
+using AlgerMusicPlayer.WinUI.Services.Api;
 using Microsoft.UI.Dispatching;
-using Microsoft.UI.Xaml.Controls;
 using Microsoft.Web.WebView2.Core;
+using Windows.Foundation;
 
 namespace AlgerMusicPlayer.WinUI.Services.Unblock;
 
 /// <summary>
-/// 落雪音源 (LX Music) JS 脚本宿主：借助隐藏 WebView2 运行脚本（每个脚本独立 Worker），
-/// 脚本内 lx.request 发起的网络请求由 C# HttpClient 代理以绕过 CORS
+/// 落雪音源 (LX Music) JS 脚本宿主：使用独立离屏消息窗口挂载 CoreWebView2Controller 运行脚本（每个脚本独立 Worker），
+/// 不进入主窗口 DirectComposition 视觉树，避免干扰主窗口 144Hz/240Hz 高刷合成；lx.request 由 C# HttpClient 代理以绕过 CORS
 /// </summary>
-public sealed class LxScriptHostService
+public sealed class LxScriptHostService : IDisposable
 {
     private const string HostName = "lxhost.local";
+    private static readonly IntPtr HWND_MESSAGE = new(-3);
+    private const int WS_POPUP = unchecked((int)0x80000000);
+    private const int WS_EX_TOOLWINDOW = 0x00000080;
+    private const int WS_EX_NOACTIVATE = 0x08000000;
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr CreateWindowExW(
+        int dwExStyle, string lpClassName, string lpWindowName, int dwStyle,
+        int x, int y, int nWidth, int nHeight,
+        IntPtr hWndParent, IntPtr hMenu, IntPtr hInstance, IntPtr lpParam);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool DestroyWindow(IntPtr hWnd);
 
     private sealed class RunnerState
     {
@@ -25,17 +40,21 @@ public sealed class LxScriptHostService
         public string? LastMusicUrl;
     }
 
+    private readonly ThirdPartyMusicService _thirdPartyService;
     private readonly HttpClient _httpClient;
     private readonly TaskCompletionSource<bool> _hostReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly ConcurrentDictionary<string, RunnerState> _runners = new();
     private readonly ConcurrentDictionary<string, TaskCompletionSource<JsonElement>> _pendingCalls = new();
     private readonly SemaphoreSlim _initLock = new(1, 1);
+    private IntPtr _offscreenHwnd;
+    private CoreWebView2Controller? _controller;
     private CoreWebView2? _core;
     private DispatcherQueue? _dispatcher;
     private long _callSeq;
 
-    public LxScriptHostService()
+    public LxScriptHostService(ThirdPartyMusicService thirdPartyService)
     {
+        _thirdPartyService = thirdPartyService;
         _httpClient = new HttpClient(new HttpClientHandler
         {
             AutomaticDecompression = global::System.Net.DecompressionMethods.All,
@@ -46,17 +65,56 @@ public sealed class LxScriptHostService
         };
     }
 
+    public void RemoveScriptRunner(string scriptId)
+    {
+        if (!string.IsNullOrWhiteSpace(scriptId))
+        {
+            _runners.TryRemove(scriptId, out _);
+        }
+    }
+
     /// <summary>
-    /// 挂载隐藏 WebView2 并加载宿主页（需在 UI 线程调用）
+    /// 在独立离屏隐藏窗口上初始化 CoreWebView2Controller（完全脱离 MainWindow 视觉树，需在 UI 线程调用）
     /// </summary>
-    public async Task AttachAsync(WebView2 view)
+    public async Task InitializeOffscreenAsync(DispatcherQueue dispatcher)
     {
         if (_core != null) return;
         try
         {
-            _dispatcher = DispatcherQueue.GetForCurrentThread();
-            await App.EnsureWebView2Async(view);
-            _core = view.CoreWebView2;
+            _dispatcher = dispatcher;
+            var env = await App.GetSharedWebViewEnvironmentAsync();
+
+            _offscreenHwnd = CreateWindowExW(
+                WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                "Static",
+                "AlgerLxScriptHost",
+                WS_POPUP,
+                -32000, -32000, 1, 1,
+                HWND_MESSAGE,
+                IntPtr.Zero,
+                IntPtr.Zero,
+                IntPtr.Zero);
+
+            if (_offscreenHwnd == IntPtr.Zero)
+            {
+                _offscreenHwnd = CreateWindowExW(
+                    WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                    "Static",
+                    "AlgerLxScriptHost",
+                    WS_POPUP,
+                    -32000, -32000, 1, 1,
+                    IntPtr.Zero,
+                    IntPtr.Zero,
+                    IntPtr.Zero,
+                    IntPtr.Zero);
+            }
+
+            var windowRef = CoreWebView2ControllerWindowReference.CreateFromWindowHandle((ulong)_offscreenHwnd);
+            _controller = await env.CreateCoreWebView2ControllerAsync(windowRef);
+            _controller.Bounds = new Rect(0, 0, 1, 1);
+            _controller.IsVisible = false;
+
+            _core = _controller.CoreWebView2;
             var folder = Path.Combine(AppContext.BaseDirectory, "LxHost");
             _core.SetVirtualHostNameToFolderMapping(HostName, folder, CoreWebView2HostResourceAccessKind.Allow);
             _core.WebMessageReceived += OnWebMessageReceived;
@@ -68,8 +126,69 @@ public sealed class LxScriptHostService
         }
     }
 
+    public void Dispose()
+    {
+        try { _controller?.Close(); } catch { }
+        _controller = null;
+        _core = null;
+        if (_offscreenHwnd != IntPtr.Zero)
+        {
+            try { DestroyWindow(_offscreenHwnd); } catch { }
+            _offscreenHwnd = IntPtr.Zero;
+        }
+        _httpClient.Dispose();
+    }
+
     /// <summary>
-    /// 使用指定脚本解析歌曲直链，返回 (url, 实际音质)；失败返回 (null, "")
+    /// 按“首选脚本优先 + 其余已启用脚本自动轮询”解析歌曲直链
+    /// </summary>
+    public async Task<(string? Url, string Quality, string ScriptName)> GetMusicUrlFromScriptsAsync(
+        IReadOnlyList<LxScriptItem> allScripts,
+        string? activeScriptId,
+        SongItem song,
+        string preferQuality,
+        Func<string, Task<bool>>? urlValidator,
+        CancellationToken ct)
+    {
+        if (allScripts == null || allScripts.Count == 0) return (null, "", "");
+
+        var ordered = allScripts
+            .Where(s => s.Enabled && !string.IsNullOrWhiteSpace(s.ScriptContent))
+            .OrderByDescending(s => !string.IsNullOrWhiteSpace(activeScriptId) && s.Id == activeScriptId)
+            .ToList();
+
+        if (ordered.Count == 0) return (null, "", "");
+
+        bool wantsLossless = preferQuality.StartsWith("flac", StringComparison.OrdinalIgnoreCase);
+        (string? Url, string Quality, string ScriptName)? fallback = null;
+
+        foreach (var script in ordered)
+        {
+            if (ct.IsCancellationRequested) break;
+
+            var (url, quality) = await GetMusicUrlAsync(script, song, preferQuality, ct);
+            if (string.IsNullOrWhiteSpace(url)) continue;
+
+            if (urlValidator != null && !await urlValidator(url))
+            {
+                continue;
+            }
+
+            bool isLossless = quality.StartsWith("flac", StringComparison.OrdinalIgnoreCase) ||
+                              url.Contains(".flac", StringComparison.OrdinalIgnoreCase);
+            if (!wantsLossless || isLossless)
+            {
+                return (url, quality, script.Name);
+            }
+
+            fallback ??= (url, quality, script.Name);
+        }
+
+        return fallback ?? (null, "", "");
+    }
+
+    /// <summary>
+    /// 使用指定脚本解析歌曲直链，自动匹配最佳子源（tx/kg/kw/mg/wy）并补齐原生 ID/Hash，返回 (url, 实际音质)
     /// </summary>
     public async Task<(string? Url, string Quality)> GetMusicUrlAsync(
         LxScriptItem script, SongItem song, string preferQuality, CancellationToken ct)
@@ -79,28 +198,73 @@ public sealed class LxScriptHostService
         var state = await EnsureInitializedAsync(script, ct);
         if (state == null || state.Sources.ValueKind != JsonValueKind.Object) return (null, "");
 
-        // 选择支持 musicUrl 的音源，按 wy > kw > mg > kg > tx 优先
-        string? source = null;
-        JsonElement srcCfg = default;
-        foreach (var key in new[] { "wy", "kw", "mg", "kg", "tx" })
+        var nativeLxSource = MapSongSourceToLxKey(song.Source);
+        bool wantsLossless = preferQuality.StartsWith("flac", StringComparison.OrdinalIgnoreCase);
+
+        // 收集该脚本支持 musicUrl 的全部子源并按匹配度与无损能力排序
+        var candidates = new List<(string Key, JsonElement Cfg, int Score)>();
+        foreach (var key in new[] { "tx", "kg", "kw", "mg", "wy" })
         {
-            if (state.Sources.TryGetProperty(key, out var cfg) && HasArrayValue(cfg, "actions", "musicUrl"))
+            if (!state.Sources.TryGetProperty(key, out var cfg) || !HasArrayValue(cfg, "actions", "musicUrl"))
             {
-                source = key;
-                srcCfg = cfg;
-                break;
+                continue;
+            }
+
+            int score = 0;
+            if (key == nativeLxSource) score += 100;
+            if (HasArrayValue(cfg, "qualitys", "flac24bit")) score += 30;
+            else if (HasArrayValue(cfg, "qualitys", "flac")) score += 20;
+            else if (HasArrayValue(cfg, "qualitys", "320k")) score += 10;
+
+            // 普通网易云歌曲若脚本本身对 wy 支持无损，无需跨平台搜歌，小幅优先
+            if (nativeLxSource == "wy" && key == "wy" &&
+                (HasArrayValue(cfg, "qualitys", "flac") || HasArrayValue(cfg, "qualitys", "flac24bit")))
+            {
+                score += 15;
+            }
+
+            candidates.Add((key, cfg, score));
+        }
+
+        if (candidates.Count == 0) return (null, "");
+
+        (string? Url, string Quality)? fallback = null;
+        foreach (var (source, srcCfg, _) in candidates.OrderByDescending(c => c.Score))
+        {
+            if (ct.IsCancellationRequested) break;
+
+            // 确保歌曲具备当前子源所需的原生 songmid / hash（第三方专区歌曲本身已带，0 开销直接通过）
+            if (!await _thirdPartyService.EnsurePlatformMetaAsync(song, source, ct))
+            {
+                continue;
+            }
+
+            var qualityCandidates = BuildQualityFallbackChain(srcCfg, song, source, preferQuality);
+            foreach (var quality in qualityCandidates)
+            {
+                if (ct.IsCancellationRequested) break;
+
+                var url = await InvokeMusicUrlOnceAsync(script.Id, state, song, source, quality, ct);
+                if (string.IsNullOrWhiteSpace(url)) continue;
+
+                bool gotLossless = quality.StartsWith("flac", StringComparison.OrdinalIgnoreCase) ||
+                                   url.Contains(".flac", StringComparison.OrdinalIgnoreCase);
+                if (!wantsLossless || gotLossless)
+                {
+                    return (url, quality);
+                }
+
+                fallback ??= (url, quality);
+                break; // 当前子源仅拿到有损，继续看下一个子源是否有无损
             }
         }
-        if (source == null) return (null, "");
 
-        // 音质回退：所选音质不支持时按 flac24bit > flac > 320k > 128k 选择
-        var quality = preferQuality;
-        if (!HasArrayValue(srcCfg, "qualitys", quality))
-        {
-            quality = new[] { "flac24bit", "flac", "320k", "128k" }
-                .FirstOrDefault(q => HasArrayValue(srcCfg, "qualitys", q)) ?? preferQuality;
-        }
+        return fallback ?? (null, "");
+    }
 
+    private async Task<string?> InvokeMusicUrlOnceAsync(
+        string scriptId, RunnerState state, SongItem song, string source, string quality, CancellationToken ct)
+    {
         var payload = new JsonObject
         {
             ["source"] = source,
@@ -108,18 +272,18 @@ public sealed class LxScriptHostService
             ["info"] = new JsonObject
             {
                 ["type"] = quality,
-                ["musicInfo"] = BuildMusicInfo(song)
+                ["musicInfo"] = BuildMusicInfo(song, source, quality)
             }
         };
 
         JsonElement result;
         try
         {
-            result = await InvokeAsync(script.Id, payload, ct);
+            result = await InvokeAsync(scriptId, payload, ct);
         }
         catch
         {
-            return (null, "");
+            return null;
         }
 
         string? url = null;
@@ -131,11 +295,52 @@ public sealed class LxScriptHostService
         }
         if (string.IsNullOrWhiteSpace(url)) url = state.LastMusicUrl;
         state.LastMusicUrl = null;
-        if (string.IsNullOrWhiteSpace(url) || !url.StartsWith("http", StringComparison.OrdinalIgnoreCase)) return (null, "");
+        if (string.IsNullOrWhiteSpace(url) || !url.StartsWith("http", StringComparison.OrdinalIgnoreCase)) return null;
 
-        url = await ResolveAudioUrlAsync(url, ct);
-        return (url, url == null ? "" : quality);
+        return await ResolveAudioUrlAsync(url, ct);
     }
+
+    private static List<string> BuildQualityFallbackChain(
+        JsonElement srcCfg, SongItem song, string source, string preferQuality)
+    {
+        string[] order = preferQuality switch
+        {
+            "flac24bit" => ["flac24bit", "flac", "320k", "128k"],
+            "flac" => ["flac", "320k", "128k"],
+            "320k" => ["320k", "128k"],
+            _ => ["128k"]
+        };
+
+        var result = new List<string>();
+        foreach (var q in order)
+        {
+            if (!HasArrayValue(srcCfg, "qualitys", q)) continue;
+            // 酷狗必须具备对应档位的真实文件 hash 才能请求该档位
+            if (source == "kg" && string.IsNullOrWhiteSpace(GetKugouHashForQuality(song, q, strict: true)))
+            {
+                continue;
+            }
+            result.Add(q);
+        }
+
+        if (result.Count == 0)
+        {
+            var anySupported = new[] { "flac24bit", "flac", "320k", "128k" }
+                .FirstOrDefault(q => HasArrayValue(srcCfg, "qualitys", q));
+            if (anySupported != null) result.Add(anySupported);
+        }
+        return result;
+    }
+
+    private static string MapSongSourceToLxKey(string? songSource) =>
+        (songSource ?? string.Empty).ToLowerInvariant() switch
+        {
+            "qq" or "tx" => "tx",
+            "kugou" or "kg" => "kg",
+            "kuwo" or "kw" => "kw",
+            "migu" or "mg" => "mg",
+            _ => "wy"
+        };
 
     private async Task<RunnerState?> EnsureInitializedAsync(LxScriptItem script, CancellationToken ct)
     {
@@ -439,22 +644,105 @@ public sealed class LxScriptHostService
         }
     }
 
-    private static JsonObject BuildMusicInfo(SongItem song)
+    private static JsonObject BuildMusicInfo(SongItem song, string source, string quality)
     {
         var dur = song.DurationMs;
         var interval = $"{dur / 60000:00}:{dur % 60000 / 1000:00}";
-        return new JsonObject
+        var albumName = song.Album?.Name ?? "";
+        var albumId = song.Album?.Id > 0 ? song.Album.Id.ToString() : "";
+
+        var info = new JsonObject
         {
-            ["songmid"] = song.NumericId > 0 ? JsonValue.Create(song.NumericId) : JsonValue.Create(song.Id),
             ["name"] = song.Name,
             ["singer"] = string.Join("、", song.Artists.Select(a => a.Name)),
-            ["album"] = song.Album?.Name ?? "",
-            ["albumId"] = song.Album?.Id.ToString() ?? "",
-            ["source"] = "wy",
+            ["album"] = albumName,
+            ["albumName"] = albumName,
+            ["albumId"] = albumId,
+            ["source"] = source,
             ["interval"] = interval,
             ["img"] = song.PicUrl ?? ""
         };
+
+        switch (source)
+        {
+            case "tx":
+                info["songmid"] = song.QqSongMid ?? "";
+                info["strMediaMid"] = song.QqSongMid ?? "";
+                if (song.QqSongId > 0) info["songId"] = song.QqSongId;
+                break;
+
+            case "kg":
+                var activeHash = GetKugouHashForQuality(song, quality, strict: false);
+                info["hash"] = activeHash;
+                info["songmid"] = activeHash;
+                info["albumId"] = song.KugouAlbumId ?? albumId;
+                var kgTypes = new JsonObject();
+                if (!string.IsNullOrWhiteSpace(song.KugouHash))
+                    kgTypes["128k"] = new JsonObject { ["size"] = "", ["hash"] = song.KugouHash };
+                if (!string.IsNullOrWhiteSpace(song.Kugou320Hash))
+                    kgTypes["320k"] = new JsonObject { ["size"] = "", ["hash"] = song.Kugou320Hash };
+                if (!string.IsNullOrWhiteSpace(song.KugouSqHash))
+                    kgTypes["flac"] = new JsonObject { ["size"] = "", ["hash"] = song.KugouSqHash };
+                if (!string.IsNullOrWhiteSpace(song.KugouResHash))
+                    kgTypes["flac24bit"] = new JsonObject { ["size"] = "", ["hash"] = song.KugouResHash };
+                info["_types"] = kgTypes;
+                break;
+
+            case "kw":
+                info["songmid"] = song.KuwoRid ?? "";
+                break;
+
+            case "mg":
+                info["copyrightId"] = song.MiguCopyrightId ?? "";
+                info["songmid"] = song.MiguCopyrightId ?? "";
+                info["id"] = !string.IsNullOrWhiteSpace(song.MiguContentId) ? song.MiguContentId : (song.MiguCopyrightId ?? "");
+                info["lrcUrl"] = song.MiguLrcUrl ?? "";
+                break;
+
+            default: // wy
+                info["songmid"] = song.NumericId > 0 ? JsonValue.Create(song.NumericId) : JsonValue.Create(song.Id);
+                break;
+        }
+
+        if (!info.ContainsKey("_types"))
+        {
+            info["_types"] = new JsonObject
+            {
+                ["128k"] = new JsonObject { ["size"] = "" },
+                ["320k"] = new JsonObject { ["size"] = "" },
+                ["flac"] = new JsonObject { ["size"] = "" },
+                ["flac24bit"] = new JsonObject { ["size"] = "" }
+            };
+        }
+
+        return info;
     }
+
+    private static string GetKugouHashForQuality(SongItem song, string quality, bool strict)
+    {
+        if (strict)
+        {
+            return quality switch
+            {
+                "flac24bit" => song.KugouResHash ?? "",
+                "flac" => song.KugouSqHash ?? "",
+                "320k" => song.Kugou320Hash ?? "",
+                "128k" => song.KugouHash ?? "",
+                _ => ""
+            };
+        }
+
+        return quality switch
+        {
+            "flac24bit" => FirstNonEmpty(song.KugouResHash, song.KugouSqHash, song.Kugou320Hash, song.KugouHash),
+            "flac" => FirstNonEmpty(song.KugouSqHash, song.KugouResHash, song.Kugou320Hash, song.KugouHash),
+            "320k" => FirstNonEmpty(song.Kugou320Hash, song.KugouHash, song.KugouSqHash),
+            _ => FirstNonEmpty(song.KugouHash, song.Kugou320Hash, song.KugouSqHash)
+        };
+    }
+
+    private static string FirstNonEmpty(params string?[] values) =>
+        values.FirstOrDefault(v => !string.IsNullOrWhiteSpace(v)) ?? "";
 
     private static bool HasArrayValue(JsonElement obj, string prop, string value)
     {

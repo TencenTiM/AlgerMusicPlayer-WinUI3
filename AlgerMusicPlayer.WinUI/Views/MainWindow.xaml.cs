@@ -77,9 +77,9 @@ public sealed partial class MainWindow : Window
         _multichannelService = App.Services.GetRequiredService<MultichannelManagerService>();
         InitializeComponent();
 
-        // 挂载落雪音源 JS 脚本隐藏宿主
-        LxHostWebView.Loaded += async (_, _) =>
-            await App.Services.GetRequiredService<AlgerMusicPlayer.WinUI.Services.Unblock.LxScriptHostService>().AttachAsync(LxHostWebView);
+        // 在独立离屏隐藏窗口上初始化落雪音源 JS 宿主（不进入 MainWindow 视觉树，确保主窗口满帧高刷合成）
+        _ = App.Services.GetRequiredService<AlgerMusicPlayer.WinUI.Services.Unblock.LxScriptHostService>()
+            .InitializeOffscreenAsync(DispatcherQueue);
 
         _hWnd = WindowNative.GetWindowHandle(this);
         var windowId = Microsoft.UI.Win32Interop.GetWindowIdFromWindow(_hWnd);
@@ -203,6 +203,8 @@ public sealed partial class MainWindow : Window
         SearchMvsGrid.ItemsSource = ViewModel.SearchMvs;
         SearchBiliListView.ItemsSource = ViewModel.BilibiliVideos;
         BiliDedicatedListView.ItemsSource = ViewModel.BilibiliVideos;
+        ThirdPartySongsListView.ItemsSource = ViewModel.ThirdPartySongs;
+        ThirdPartyPlaylistsGrid.ItemsSource = ViewModel.ThirdPartyPlaylists;
 
         // MV、历史收藏、本地音乐（双视图与文件夹树）、下载、QQ音乐独立歌单
         MvGridView.ItemsSource = ViewModel.MvList;
@@ -299,6 +301,7 @@ public sealed partial class MainWindow : Window
         // 落雪音源脚本与快捷键列表同步
         ViewModel.LxScriptsList.Clear();
         foreach (var lx in s.LxMusicScripts) ViewModel.LxScriptsList.Add(lx);
+        SyncLxScriptsPrimaryState();
         ViewModel.ShortcutsList.Clear();
         foreach (var sc in s.Shortcuts) ViewModel.ShortcutsList.Add(sc);
 
@@ -773,6 +776,8 @@ public sealed partial class MainWindow : Window
             SearchArtistsGrid,
             SearchBiliListView,
             BiliDedicatedListView,
+            ThirdPartyPlaylistsGrid,
+            ThirdPartySongsListView,
             MvGridView,
             FavoriteSongsListView,
             HistorySongsListView,
@@ -1083,11 +1088,12 @@ public sealed partial class MainWindow : Window
             }
             DetailBatchActionPanel.Visibility = ViewModel.IsDetailSelecting ? Visibility.Visible : Visibility.Collapsed;
             DetailStartSelectBtn.Visibility = ViewModel.IsDetailSelecting ? Visibility.Collapsed : Visibility.Visible;
-            DetailPageScrollViewer.ChangeView(null, 0, null, true);
+            ScrollDetailListToTop(disableAnimation: true);
         }
         SearchView.Visibility = section == "Search" ? Visibility.Visible : Visibility.Collapsed;
         MvView.Visibility = section == "Mv" ? Visibility.Visible : Visibility.Collapsed;
         BilibiliView.Visibility = section == "Bilibili" ? Visibility.Visible : Visibility.Collapsed;
+        ThirdPartyView.Visibility = section == "ThirdParty" ? Visibility.Visible : Visibility.Collapsed;
         HistoryFavoriteView.Visibility = section == "HistoryFavorite" ? Visibility.Visible : Visibility.Collapsed;
         LocalMusicView.Visibility = section == "LocalMusic" ? Visibility.Visible : Visibility.Collapsed;
         QqMusicView.Visibility = section == "QqMusic" ? Visibility.Visible : Visibility.Collapsed;
@@ -1106,6 +1112,7 @@ public sealed partial class MainWindow : Window
             "Search" => SearchView,
             "Mv" => MvView,
             "Bilibili" => BilibiliView,
+            "ThirdParty" => ThirdPartyView,
             "HistoryFavorite" => HistoryFavoriteView,
             "LocalMusic" => LocalMusicView,
             "QqMusic" => QqMusicView,
@@ -1388,6 +1395,28 @@ public sealed partial class MainWindow : Window
                 break;
             case "HistoryFavorite":
                 ViewModel.RefreshHistoryAndFavorites();
+                break;
+            case "ThirdParty":
+                RefreshThirdPartyLxStatusText();
+                SyncThirdPartyViewModeUi();
+                if (_thirdPartyViewMode == "playlists")
+                {
+                    var defCat = Services.Api.ThirdPartyMusicService.GetPlaylistCategories(ViewModel.ThirdPartySource).FirstOrDefault().Key ?? "all";
+                    var catToUse = string.IsNullOrWhiteSpace(ViewModel.ThirdPartyCategoryKey) ? defCat : ViewModel.ThirdPartyCategoryKey;
+                    RebuildThirdPartyCategoryButtonsUi(ViewModel.ThirdPartySource, catToUse);
+                    if (ViewModel.ThirdPartyPlaylists.Count == 0)
+                    {
+                        await ViewModel.LoadThirdPartyPlaylistsAsync(ViewModel.ThirdPartySource, catToUse, nextPage: false);
+                    }
+                }
+                else
+                {
+                    RebuildThirdPartyBoardButtonsUi(ViewModel.ThirdPartySource, string.IsNullOrWhiteSpace(ViewModel.ThirdPartyKeyword) ? ViewModel.ThirdPartyBoardKey : "");
+                    if (ViewModel.ThirdPartySongs.Count == 0)
+                    {
+                        await ViewModel.LoadThirdPartyBoardAsync(ViewModel.ThirdPartySource, ViewModel.ThirdPartyBoardKey);
+                    }
+                }
                 break;
             case "LocalMusic":
                 ViewModel.SyncConfiguredFoldersList();
@@ -1931,6 +1960,16 @@ public sealed partial class MainWindow : Window
     {
         ViewModel.IsDetailCompactLayout = !ViewModel.IsDetailCompactLayout;
         bool compact = ViewModel.IsDetailCompactLayout;
+        if (compact)
+        {
+            DetailSongsListView.Header = null;
+            DetailCompactSongsListView.Header = DetailHeaderStackPanel;
+        }
+        else
+        {
+            DetailCompactSongsListView.Header = null;
+            DetailSongsListView.Header = DetailHeaderStackPanel;
+        }
         DetailSongsListView.Visibility = compact ? Visibility.Collapsed : Visibility.Visible;
         DetailCompactSongsListView.Visibility = compact ? Visibility.Visible : Visibility.Collapsed;
         DetailLayoutIcon.Glyph = compact ? "\uE8FD" : "\uE80A";
@@ -1939,7 +1978,14 @@ public sealed partial class MainWindow : Window
 
     private void OnDetailScrollToTopClick(object sender, RoutedEventArgs e)
     {
-        DetailPageScrollViewer.ChangeView(null, 0, null, false);
+        ScrollDetailListToTop(disableAnimation: false);
+    }
+
+    private void ScrollDetailListToTop(bool disableAnimation)
+    {
+        var activeList = ViewModel.IsDetailCompactLayout ? DetailCompactSongsListView : DetailSongsListView;
+        var sv = FindDescendantScrollViewer(activeList);
+        sv?.ChangeView(null, 0, null, disableAnimation);
     }
 
     // ==================== 全局歌曲右键菜单 (1:1 SongItemDropdown.vue) & 添加到歌单抽屉 (PlaylistDrawer.vue) ====================
@@ -2011,6 +2057,10 @@ public sealed partial class MainWindow : Window
         if (ViewModel.CurrentSection == "Detail" && ViewModel.FilteredDetailSongs.Count > 0)
         {
             await ViewModel.Player.PlaySongAsync(_contextMenuSong, ViewModel.FilteredDetailSongs);
+        }
+        else if (ViewModel.CurrentSection == "ThirdParty" && ViewModel.ThirdPartySongs.Count > 0)
+        {
+            await ViewModel.Player.PlaySongAsync(_contextMenuSong, ViewModel.ThirdPartySongs);
         }
         else
         {
@@ -2416,6 +2466,7 @@ public sealed partial class MainWindow : Window
             ViewModel.DailyPreviewSongs,
             ViewModel.HomeNewSongs,
             ViewModel.SearchSongs,
+            ViewModel.ThirdPartySongs,
             ViewModel.HistorySongs,
             ViewModel.FavoriteSongs,
             ViewModel.LocalSongs
@@ -2446,6 +2497,237 @@ public sealed partial class MainWindow : Window
             e.Handled = true;
             await ViewModel.PlayBilibiliVideoAsAudioAsync(video);
         }
+    }
+
+    // ==================== 第三方音源独立专区交互事件 ====================
+
+    private string _thirdPartyViewMode = "playlists";
+
+    private void SyncThirdPartyViewModeUi()
+    {
+        bool isPlaylists = _thirdPartyViewMode == "playlists";
+        ApplyDynamicAccentButtonState(ThirdPartyModePlaylistsBtn, isPlaylists);
+        ApplyDynamicAccentButtonState(ThirdPartyModeSongsBtn, !isPlaylists);
+
+        ThirdPartyCategoryButtonsPanel.Visibility = isPlaylists ? Visibility.Visible : Visibility.Collapsed;
+        ThirdPartyBoardButtonsPanel.Visibility = isPlaylists ? Visibility.Collapsed : Visibility.Visible;
+        ThirdPartyRefreshPlaylistsBtn.Visibility = isPlaylists ? Visibility.Visible : Visibility.Collapsed;
+        ThirdPartyPlayAllBtn.Visibility = isPlaylists ? Visibility.Collapsed : Visibility.Visible;
+
+        ThirdPartyPlaylistsScrollViewer.Visibility = isPlaylists ? Visibility.Visible : Visibility.Collapsed;
+        ThirdPartySongsListView.Visibility = isPlaylists ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    private async void OnThirdPartyModeSwitchClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button btn || btn.Tag is not string mode) return;
+        _thirdPartyViewMode = mode == "songs" ? "songs" : "playlists";
+        SyncThirdPartyViewModeUi();
+
+        if (_thirdPartyViewMode == "playlists")
+        {
+            var defCat = Services.Api.ThirdPartyMusicService.GetPlaylistCategories(ViewModel.ThirdPartySource).FirstOrDefault().Key ?? "all";
+            var cat = string.IsNullOrWhiteSpace(ViewModel.ThirdPartyCategoryKey) ? defCat : ViewModel.ThirdPartyCategoryKey;
+            RebuildThirdPartyCategoryButtonsUi(ViewModel.ThirdPartySource, cat);
+            if (ViewModel.ThirdPartyPlaylists.Count == 0)
+            {
+                await ViewModel.LoadThirdPartyPlaylistsAsync(ViewModel.ThirdPartySource, cat, nextPage: false);
+            }
+        }
+        else
+        {
+            var kw = ThirdPartySearchBox.Text.Trim();
+            RebuildThirdPartyBoardButtonsUi(ViewModel.ThirdPartySource, string.IsNullOrWhiteSpace(kw) ? ViewModel.ThirdPartyBoardKey : "");
+            if (ViewModel.ThirdPartySongs.Count == 0 && string.IsNullOrWhiteSpace(kw))
+            {
+                await ViewModel.LoadThirdPartyBoardAsync(ViewModel.ThirdPartySource, ViewModel.ThirdPartyBoardKey);
+            }
+        }
+    }
+
+    private async void OnThirdPartyRefreshPlaylistsClick(object sender, RoutedEventArgs e)
+    {
+        ThirdPartyPlaylistsScrollViewer.ChangeView(null, 0, null, disableAnimation: true);
+        await ViewModel.LoadThirdPartyPlaylistsAsync(ViewModel.ThirdPartySource, ViewModel.ThirdPartyCategoryKey, nextPage: true);
+    }
+
+    private async void OnThirdPartyRowPlayButtonClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button btn && btn.Tag is SongItem song)
+        {
+            if (ViewModel.Player.CurrentSong?.Id == song.Id)
+            {
+                ViewModel.Player.TogglePlayPause();
+            }
+            else
+            {
+                ViewModel.IsFmModeActive = false;
+                await ViewModel.Player.PlaySongAsync(song, ViewModel.ThirdPartySongs);
+            }
+        }
+    }
+
+    private async void OnThirdPartySongRowDoubleTapped(object sender, DoubleTappedRoutedEventArgs e)
+    {
+        if (sender is FrameworkElement fe && fe.Tag is SongItem song)
+        {
+            e.Handled = true;
+            ViewModel.IsFmModeActive = false;
+            await ViewModel.Player.PlaySongAsync(song, ViewModel.ThirdPartySongs);
+        }
+    }
+
+    private async void OnThirdPartyPlatformNavItemInvoked(NavigationView sender, NavigationViewItemInvokedEventArgs args)
+    {
+        if (args.InvokedItemContainer is not NavigationViewItem item || item.Tag is not string srcKey) return;
+        var kw = ThirdPartySearchBox.Text.Trim();
+
+        // 清空另一个模式下的旧平台缓存，确保切模式时自动加载新平台数据
+        if (_thirdPartyViewMode == "playlists")
+        {
+            ViewModel.ThirdPartySongs.Clear();
+            var defCat = Services.Api.ThirdPartyMusicService.GetPlaylistCategories(srcKey).FirstOrDefault().Key ?? "all";
+            RebuildThirdPartyCategoryButtonsUi(srcKey, defCat);
+            ThirdPartyPlaylistsScrollViewer.ChangeView(null, 0, null, disableAnimation: true);
+            await ViewModel.LoadThirdPartyPlaylistsAsync(srcKey, defCat, nextPage: false);
+        }
+        else
+        {
+            ViewModel.ThirdPartyPlaylists.Clear();
+            RebuildThirdPartyBoardButtonsUi(srcKey, string.IsNullOrWhiteSpace(kw) ? "hot" : "");
+            if (!string.IsNullOrWhiteSpace(kw))
+            {
+                await ViewModel.SearchThirdPartySongsAsync(srcKey, kw);
+            }
+            else
+            {
+                await ViewModel.LoadThirdPartyBoardAsync(srcKey, "hot");
+            }
+        }
+    }
+
+    private async void OnThirdPartySearchBoxKeyDown(object sender, KeyRoutedEventArgs e)
+    {
+        if (e.Key == Windows.System.VirtualKey.Enter)
+        {
+            e.Handled = true;
+            await ExecuteThirdPartySearchFromUiAsync();
+        }
+    }
+
+    private async void OnThirdPartySearchClick(object sender, RoutedEventArgs e)
+    {
+        await ExecuteThirdPartySearchFromUiAsync();
+    }
+
+    private async Task ExecuteThirdPartySearchFromUiAsync()
+    {
+        var kw = ThirdPartySearchBox.Text.Trim();
+        if (string.IsNullOrWhiteSpace(kw))
+        {
+            if (_thirdPartyViewMode == "songs")
+            {
+                RebuildThirdPartyBoardButtonsUi(ViewModel.ThirdPartySource, ViewModel.ThirdPartyBoardKey);
+                await ViewModel.LoadThirdPartyBoardAsync(ViewModel.ThirdPartySource, ViewModel.ThirdPartyBoardKey);
+            }
+            return;
+        }
+
+        _thirdPartyViewMode = "songs";
+        SyncThirdPartyViewModeUi();
+        RebuildThirdPartyBoardButtonsUi(ViewModel.ThirdPartySource, "");
+        await ViewModel.SearchThirdPartySongsAsync(ViewModel.ThirdPartySource, kw);
+    }
+
+    private async void OnThirdPartyPlayAllClick(object sender, RoutedEventArgs e)
+    {
+        if (ViewModel.ThirdPartySongs.Count == 0) return;
+        ViewModel.IsFmModeActive = false;
+        await ViewModel.Player.PlaySongAsync(ViewModel.ThirdPartySongs[0], ViewModel.ThirdPartySongs);
+    }
+
+    private void OnOpenLxScriptsManagerClick(object sender, RoutedEventArgs e)
+    {
+        SyncLxScriptsPrimaryState();
+        SyncMusicSourceCardsUi();
+        SwitchMusicSourceModalTab("lxMusic");
+        MusicSourcesModalOverlay.Visibility = Visibility.Visible;
+        PlayEntranceAnimation(MusicSourcesModalOverlay, 0, 14, 220);
+    }
+
+    private void RebuildThirdPartyCategoryButtonsUi(string sourceKey, string activeCategoryKey)
+    {
+        if (ThirdPartyCategoryButtonsPanel == null) return;
+        ThirdPartyCategoryButtonsPanel.Children.Clear();
+        var cats = Services.Api.ThirdPartyMusicService.GetPlaylistCategories(sourceKey);
+        if (cats.Count > 0 && !cats.Any(c => c.Key == activeCategoryKey))
+        {
+            activeCategoryKey = cats[0].Key;
+        }
+
+        foreach (var (key, title) in cats)
+        {
+            var btn = new Button
+            {
+                Content = title,
+                Tag = key,
+                Padding = new Thickness(12, 4, 12, 4),
+                CornerRadius = new CornerRadius(14),
+                FontSize = 12
+            };
+            ApplyDynamicAccentButtonState(btn, key == activeCategoryKey);
+            btn.Click += async (s, _) =>
+            {
+                if (s is not Button b || b.Tag is not string cKey) return;
+                RebuildThirdPartyCategoryButtonsUi(ViewModel.ThirdPartySource, cKey);
+                ThirdPartyPlaylistsScrollViewer.ChangeView(null, 0, null, disableAnimation: true);
+                await ViewModel.LoadThirdPartyPlaylistsAsync(ViewModel.ThirdPartySource, cKey, nextPage: false);
+            };
+            ThirdPartyCategoryButtonsPanel.Children.Add(btn);
+        }
+    }
+
+    private void RebuildThirdPartyBoardButtonsUi(string sourceKey, string activeBoardKey)
+    {
+        if (ThirdPartyBoardButtonsPanel == null) return;
+        ThirdPartyBoardButtonsPanel.Children.Clear();
+        foreach (var (key, title) in Services.Api.ThirdPartyMusicService.GetBoards(sourceKey))
+        {
+            var btn = new Button
+            {
+                Content = title,
+                Tag = key,
+                Padding = new Thickness(12, 4, 12, 4),
+                CornerRadius = new CornerRadius(14),
+                FontSize = 12
+            };
+            ApplyDynamicAccentButtonState(btn, key == activeBoardKey);
+            btn.Click += async (s, _) =>
+            {
+                if (s is not Button b || b.Tag is not string bKey) return;
+                ThirdPartySearchBox.Text = string.Empty;
+                RebuildThirdPartyBoardButtonsUi(ViewModel.ThirdPartySource, bKey);
+                await ViewModel.LoadThirdPartyBoardAsync(ViewModel.ThirdPartySource, bKey);
+            };
+            ThirdPartyBoardButtonsPanel.Children.Add(btn);
+        }
+    }
+
+    private void RefreshThirdPartyLxStatusText()
+    {
+        if (ThirdPartyLxStatusText == null) return;
+        var s = ViewModel.Config.Settings;
+        var enabledScripts = ViewModel.LxScriptsList.Where(x => x.Enabled).ToList();
+        if (enabledScripts.Count == 0)
+        {
+            ThirdPartyLxStatusText.Text = "当前未启用洛雪音源脚本 · 可点击右侧「管理洛雪脚本」导入脚本以解锁 24bit Hi-Res / FLAC 无损直连";
+            return;
+        }
+
+        var primary = enabledScripts.FirstOrDefault(x => x.Id == s.ActiveLxMusicApiId) ?? enabledScripts[0];
+        ThirdPartyLxStatusText.Text = enabledScripts.Count == 1
+            ? $"当前洛雪脚本：{primary.Name} · 原生 ID/Hash 无损直连已就绪"
+            : $"已启用 {enabledScripts.Count} 个洛雪脚本（首选：{primary.Name}，失败自动轮询）· 原生 ID/Hash 无损直连已就绪";
     }
 
     private async void OnBiliSearchButtonClick(object sender, RoutedEventArgs e)
@@ -6551,12 +6833,24 @@ public sealed partial class MainWindow : Window
             SrcCard_gdmusic, SrcIconBg_gdmusic, SrcIconPath_gdmusic, SrcCheckBg_gdmusic, SrcCheckIcon_gdmusic,
             selected.Contains("gdmusic"), Windows.UI.Color.FromArgb(255, 66, 133, 244), true);
 
-        var activeLx = ViewModel.LxScriptsList.FirstOrDefault(x => x.Id == s.ActiveLxMusicApiId) ?? ViewModel.LxScriptsList.FirstOrDefault();
+        SyncLxScriptsPrimaryState();
+        var enabledLxList = ViewModel.LxScriptsList.Where(x => x.Enabled).ToList();
+        var activeLx = enabledLxList.FirstOrDefault(x => x.Id == s.ActiveLxMusicApiId) ?? enabledLxList.FirstOrDefault();
         bool lxAvailable = activeLx != null;
-        SrcSubText_lxMusic.Text = activeLx != null ? activeLx.Name : "未配置";
+        if (activeLx != null)
+        {
+            SrcSubText_lxMusic.Text = enabledLxList.Count > 1
+                ? $"{activeLx.Name} 等 {enabledLxList.Count} 个"
+                : activeLx.Name;
+        }
+        else
+        {
+            SrcSubText_lxMusic.Text = ViewModel.LxScriptsList.Count > 0 ? "全部已停用" : "未配置";
+        }
         UpdateSingleMusicSourceCard(
             SrcCard_lxMusic, SrcIconBg_lxMusic, SrcIconPath_lxMusic, SrcCheckBg_lxMusic, SrcCheckIcon_lxMusic,
             selected.Contains("lxmusic"), Windows.UI.Color.FromArgb(255, 34, 197, 94), lxAvailable);
+        RefreshThirdPartyLxStatusText();
 
         bool customAvailable = !string.IsNullOrWhiteSpace(s.CustomUnblockApiUrl);
         SrcSubText_custom.Text = customAvailable ? "已导入" : "未导入";
@@ -6669,12 +6963,67 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    private void SyncLxScriptsPrimaryState()
+    {
+        var s = ViewModel.Config.Settings;
+        var enabledScripts = ViewModel.LxScriptsList.Where(x => x.Enabled).ToList();
+        if (enabledScripts.Count > 0)
+        {
+            if (!enabledScripts.Any(x => x.Id == s.ActiveLxMusicApiId))
+            {
+                s.ActiveLxMusicApiId = enabledScripts[0].Id;
+            }
+        }
+        else if (ViewModel.LxScriptsList.Count == 0)
+        {
+            s.ActiveLxMusicApiId = string.Empty;
+        }
+
+        foreach (var lx in ViewModel.LxScriptsList)
+        {
+            lx.IsPrimary = lx.Enabled && lx.Id == s.ActiveLxMusicApiId;
+        }
+    }
+
+    private async void OnSetPrimaryLxScriptClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button btn || btn.Tag is not LxScriptItem item) return;
+
+        item.Enabled = true;
+        var cfgItem = ViewModel.Config.Settings.LxMusicScripts.FirstOrDefault(x => x.Id == item.Id);
+        if (cfgItem != null) cfgItem.Enabled = true;
+
+        ViewModel.Config.Settings.ActiveLxMusicApiId = item.Id;
+        if (!ViewModel.Config.Settings.EnabledMusicSources.Any(x => string.Equals(x, "lxMusic", StringComparison.OrdinalIgnoreCase)))
+        {
+            ViewModel.Config.Settings.EnabledMusicSources.Add("lxMusic");
+        }
+
+        SyncMusicSourceCardsUi();
+        await ViewModel.Config.SaveSettingsAsync();
+        ViewModel.StatusToast = $"已设为首选洛雪脚本：{item.Name}";
+    }
+
+    private async void OnLxScriptEnabledClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not CheckBox cb || cb.Tag is not LxScriptItem item) return;
+
+        bool isEnabled = cb.IsChecked == true;
+        item.Enabled = isEnabled;
+        var cfgItem = ViewModel.Config.Settings.LxMusicScripts.FirstOrDefault(x => x.Id == item.Id);
+        if (cfgItem != null) cfgItem.Enabled = isEnabled;
+
+        SyncMusicSourceCardsUi();
+        await ViewModel.Config.SaveSettingsAsync();
+    }
+
     private async void OnRemoveLxScriptClick(object sender, RoutedEventArgs e)
     {
         if (sender is Button btn && btn.Tag is LxScriptItem item)
         {
             ViewModel.LxScriptsList.Remove(item);
             ViewModel.Config.Settings.LxMusicScripts.RemoveAll(x => x.Id == item.Id);
+            App.Services.GetRequiredService<AlgerMusicPlayer.WinUI.Services.Unblock.LxScriptHostService>().RemoveScriptRunner(item.Id);
             if (ViewModel.LxScriptsList.Count == 0)
             {
                 ViewModel.Config.Settings.ActiveLxMusicApiId = string.Empty;

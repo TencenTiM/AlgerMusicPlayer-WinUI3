@@ -1071,6 +1071,16 @@ public partial class QqMusicService
             : "ms-appx:///Assets/DefaultCover.png";
 
         int intervalSeconds = item.GetIntProp("interval");
+        string qualityHint = string.Empty;
+        if (item.TryGetProperty("file", out var fileObj) && fileObj.ValueKind == JsonValueKind.Object)
+        {
+            if (fileObj.GetLongProp("size_hires") > 0 || fileObj.GetLongProp("size_new") > 0)
+                qualityHint = "Hi-Res";
+            else if (fileObj.GetLongProp("size_flac") > 0)
+                qualityHint = "FLAC";
+            else if (fileObj.GetLongProp("size_320mp3") > 0)
+                qualityHint = "320k";
+        }
 
         return new SongItem
         {
@@ -1088,7 +1098,8 @@ public partial class QqMusicService
             },
             DurationMs = intervalSeconds * 1000L,
             Source = "qq",
-            ResolvedPlatform = "qq"
+            ResolvedPlatform = "qq",
+            NativeQualityHint = qualityHint
         };
     }
 

@@ -22,6 +22,7 @@ public partial class MainViewModel : ObservableObject
     public I18nService I18n { get; }
     public NeteaseApiClient Api { get; }
     public QqMusicService QqMusic { get; }
+    public ThirdPartyMusicService ThirdParty { get; }
     public UnblockMusicService Unblock { get; }
     public BilibiliService Bilibili { get; }
     public LyricService Lyric { get; }
@@ -557,6 +558,8 @@ public partial class MainViewModel : ObservableObject
     public ObservableCollection<ArtistItem> SearchArtists { get; } = [];
     public ObservableCollection<MvItem> SearchMvs { get; } = [];
     public ObservableCollection<BilibiliVideoItem> BilibiliVideos { get; } = [];
+    public ObservableCollection<SongItem> ThirdPartySongs { get; } = [];
+    public ObservableCollection<PlaylistItem> ThirdPartyPlaylists { get; } = [];
     public ObservableCollection<MvItem> MvList { get; } = [];
 
     public ObservableCollection<LyricLine> LyricLines { get; } = [];
@@ -584,6 +587,14 @@ public partial class MainViewModel : ObservableObject
 
     private readonly List<SongItem> _fmQueue = [];
     private int _fmIndex;
+    private CancellationTokenSource? _thirdPartyCts;
+    private CancellationTokenSource? _thirdPartyPlaylistsCts;
+
+    public string ThirdPartySource { get; private set; } = "tx";
+    public string ThirdPartyBoardKey { get; private set; } = "hot";
+    public string ThirdPartyCategoryKey { get; private set; } = "10000000";
+    public int ThirdPartyPlaylistPage { get; private set; } = 1;
+    public string ThirdPartyKeyword { get; set; } = string.Empty;
 
     public bool IsDraggingSeek { get; set; }
 
@@ -593,6 +604,7 @@ public partial class MainViewModel : ObservableObject
         I18nService i18n,
         NeteaseApiClient api,
         QqMusicService qqMusic,
+        ThirdPartyMusicService thirdParty,
         UnblockMusicService unblock,
         BilibiliService bilibili,
         LyricService lyric,
@@ -607,6 +619,7 @@ public partial class MainViewModel : ObservableObject
         I18n = i18n;
         Api = api;
         QqMusic = qqMusic;
+        ThirdParty = thirdParty;
         Unblock = unblock;
         Bilibili = bilibili;
         Lyric = lyric;
@@ -1050,16 +1063,21 @@ public partial class MainViewModel : ObservableObject
     public async Task OpenPlaylistDetailAsync(PlaylistItem playlist)
     {
         if (playlist == null) return;
+        bool isQq = playlist.Source == "qq" || !string.IsNullOrWhiteSpace(playlist.QqDissId);
+        bool isOtherThirdParty = playlist.Source is "kugou" or "kuwo" or "migu" or "kg" or "kw" or "mg";
+
         CurrentSection = "Detail";
-        DetailType = (playlist.Source == "qq" || !string.IsNullOrWhiteSpace(playlist.QqDissId)) ? "qqPlaylist" : "playlist";
+        DetailType = isQq ? "qqPlaylist" : (isOtherThirdParty ? "thirdPartyPlaylist" : "playlist");
         DetailPlaylistId = playlist.Id;
         DetailQqDirId = playlist.QqDirId;
         DetailBadgeText = "PLAYLIST";
         DetailTitle = playlist.Name;
         DetailCreatorName = playlist.CreatorName;
         DetailCreatorAvatarUrl = playlist.CreatorAvatarUrl;
-        DetailSongCountText = $"{playlist.TrackCount} 首音乐";
-        DetailSubtitle = $"播放 {playlist.PlayCountText} · 共 {playlist.TrackCount} 首";
+        DetailSongCountText = playlist.TrackCount > 0 ? $"{playlist.TrackCount} 首音乐" : "加载中...";
+        DetailSubtitle = playlist.TrackCount > 0
+            ? $"播放 {playlist.PlayCountText} · 共 {playlist.TrackCount} 首"
+            : $"播放 {playlist.PlayCountText}";
         DetailDescription = playlist.Description;
         DetailCoverUrl = playlist.CoverImgUrl;
         CanCollectDetail = DetailType == "playlist" && playlist.Id > 0;
@@ -1074,25 +1092,18 @@ public partial class MainViewModel : ObservableObject
         IsLoading = true;
         try
         {
-            if (playlist.Source == "qq" || !string.IsNullOrWhiteSpace(playlist.QqDissId))
+            if (isQq)
             {
                 var dissId = !string.IsNullOrWhiteSpace(playlist.QqDissId) ? playlist.QqDissId : playlist.Id.ToString();
                 var qqFull = await QqMusic.GetPlaylistDetailAsync(dissId);
                 if (qqFull != null)
                 {
-                    if (DetailQqDirId <= 0 && qqFull.QqDirId > 0)
+                    var matchedCreated = QqCreatedPlaylists.FirstOrDefault(p => p.QqDissId == dissId || p.Id == playlist.Id);
+                    if (matchedCreated != null)
                     {
-                        DetailQqDirId = qqFull.QqDirId;
+                        DetailQqDirId = matchedCreated.QqDirId > 0 ? matchedCreated.QqDirId : qqFull.QqDirId;
                     }
-                    if (DetailQqDirId <= 0)
-                    {
-                        var matchedCreated = QqCreatedPlaylists.FirstOrDefault(p => p.QqDissId == dissId || p.Id == playlist.Id);
-                        if (matchedCreated != null && matchedCreated.QqDirId > 0)
-                        {
-                            DetailQqDirId = matchedCreated.QqDirId;
-                        }
-                    }
-                    CanRemoveFromCurrentDetail = DetailQqDirId > 0 || QqCreatedPlaylists.Any(p => p.QqDissId == dissId || p.Id == playlist.Id);
+                    CanRemoveFromCurrentDetail = matchedCreated != null;
                     DetailTitle = qqFull.Name;
                     DetailDescription = qqFull.Description;
                     DetailCreatorName = qqFull.CreatorName;
@@ -1109,6 +1120,39 @@ public partial class MainViewModel : ObservableObject
                         DetailSongs.Add(s);
                     }
                     RebuildFilteredDetailSongs();
+                    SyncSongPlayingStates(Player.CurrentSong?.Id, Player.IsPlaying);
+                }
+                return;
+            }
+
+            if (isOtherThirdParty)
+            {
+                var tpFull = await ThirdParty.GetPlaylistDetailAsync(playlist);
+                if (tpFull != null)
+                {
+                    string platformLabel = playlist.Source switch
+                    {
+                        "kugou" or "kg" => "酷狗歌单",
+                        "kuwo" or "kw" => "酷我歌单",
+                        "migu" or "mg" => "咪咕歌单",
+                        _ => "第三方歌单"
+                    };
+                    DetailTitle = tpFull.Name;
+                    DetailDescription = tpFull.Description;
+                    DetailCreatorName = tpFull.CreatorName;
+                    DetailSongCountText = $"{tpFull.Tracks.Count} 首音乐";
+                    DetailSubtitle = $"[{platformLabel}] 创建者: {tpFull.CreatorName} · 播放 {tpFull.PlayCountText} · 共 {tpFull.Tracks.Count} 首";
+                    if (!string.IsNullOrWhiteSpace(tpFull.CoverImgUrl))
+                    {
+                        DetailCoverUrl = tpFull.CoverImgUrl;
+                    }
+                    foreach (var s in tpFull.Tracks)
+                    {
+                        s.IsLiked = Config.IsFavorite(s.Id);
+                        DetailSongs.Add(s);
+                    }
+                    RebuildFilteredDetailSongs();
+                    SyncSongPlayingStates(Player.CurrentSong?.Id, Player.IsPlaying);
                 }
                 return;
             }
@@ -1136,6 +1180,7 @@ public partial class MainViewModel : ObservableObject
                     DetailSongs.Add(s);
                 }
                 RebuildFilteredDetailSongs();
+                SyncSongPlayingStates(Player.CurrentSong?.Id, Player.IsPlaying);
             }
         }
         finally
@@ -1460,6 +1505,124 @@ public partial class MainViewModel : ObservableObject
         var detail = await Bilibili.GetVideoDetailAsync(video.Bvid) ?? video;
         var song = BilibiliService.ToSongItem(detail, detail.Pages.FirstOrDefault());
         await Player.PlaySongAsync(song);
+    }
+
+    public async Task LoadThirdPartyPlaylistsAsync(
+        string sourceKey, string categoryKey = "", bool nextPage = false)
+    {
+        _thirdPartyPlaylistsCts?.Cancel();
+        var cts = new CancellationTokenSource();
+        _thirdPartyPlaylistsCts = cts;
+
+        var defaultCat = Services.Api.ThirdPartyMusicService.GetPlaylistCategories(sourceKey).FirstOrDefault().Key ?? "all";
+        var targetCat = string.IsNullOrWhiteSpace(categoryKey) ? defaultCat : categoryKey;
+
+        if (ThirdPartySource != sourceKey || ThirdPartyCategoryKey != targetCat || !nextPage)
+        {
+            ThirdPartyPlaylistPage = 1;
+        }
+        else
+        {
+            ThirdPartyPlaylistPage++;
+        }
+
+        ThirdPartySource = sourceKey;
+        ThirdPartyCategoryKey = targetCat;
+        IsLoading = true;
+
+        try
+        {
+            var playlists = await ThirdParty.GetRecommendPlaylistsAsync(sourceKey, targetCat, ThirdPartyPlaylistPage, 30, cts.Token);
+            if (cts.IsCancellationRequested) return;
+
+            if (playlists.Count == 0 && ThirdPartyPlaylistPage > 1)
+            {
+                ThirdPartyPlaylistPage = 1;
+                playlists = await ThirdParty.GetRecommendPlaylistsAsync(sourceKey, targetCat, 1, 30, cts.Token);
+                if (cts.IsCancellationRequested) return;
+            }
+
+            ThirdPartyPlaylists.Clear();
+            foreach (var pl in playlists)
+            {
+                ThirdPartyPlaylists.Add(pl);
+            }
+        }
+        finally
+        {
+            if (_thirdPartyPlaylistsCts == cts) IsLoading = false;
+        }
+    }
+
+    public async Task LoadThirdPartyBoardAsync(string sourceKey, string boardKey = "hot")
+    {
+        _thirdPartyCts?.Cancel();
+        var cts = new CancellationTokenSource();
+        _thirdPartyCts = cts;
+
+        ThirdPartySource = sourceKey;
+        ThirdPartyBoardKey = boardKey;
+        ThirdPartyKeyword = string.Empty;
+        IsLoading = true;
+
+        try
+        {
+            var songs = await ThirdParty.GetBoardSongsAsync(sourceKey, boardKey, cts.Token);
+            if (cts.IsCancellationRequested) return;
+
+            var curId = Player.CurrentSong?.Id;
+            ThirdPartySongs.Clear();
+            foreach (var s in songs)
+            {
+                s.IsLiked = Config.IsFavorite(s.Id);
+                s.IsPlaying = curId != null && s.Id == curId;
+                s.IsAudioActivelyPlaying = s.IsPlaying && Player.IsPlaying;
+                ThirdPartySongs.Add(s);
+            }
+        }
+        finally
+        {
+            if (_thirdPartyCts == cts) IsLoading = false;
+        }
+    }
+
+    public async Task SearchThirdPartySongsAsync(string sourceKey, string keyword)
+    {
+        var trimmed = keyword?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(trimmed))
+        {
+            await LoadThirdPartyBoardAsync(sourceKey, ThirdPartyBoardKey);
+            return;
+        }
+
+        _thirdPartyCts?.Cancel();
+        var cts = new CancellationTokenSource();
+        _thirdPartyCts = cts;
+
+        ThirdPartySource = sourceKey;
+        ThirdPartyKeyword = trimmed;
+        IsLoading = true;
+
+        try
+        {
+            var songs = await ThirdParty.SearchSongsAsync(sourceKey, trimmed, 1, 40, cts.Token);
+            if (cts.IsCancellationRequested) return;
+
+            var curId = Player.CurrentSong?.Id;
+            ThirdPartySongs.Clear();
+            foreach (var s in songs)
+            {
+                s.IsLiked = Config.IsFavorite(s.Id);
+                s.IsPlaying = curId != null && s.Id == curId;
+                s.IsAudioActivelyPlaying = s.IsPlaying && Player.IsPlaying;
+                ThirdPartySongs.Add(s);
+            }
+            StatusToast = $"找到 {songs.Count} 首原生曲目";
+        }
+        finally
+        {
+            if (_thirdPartyCts == cts) IsLoading = false;
+        }
     }
 
     public async Task ScanLocalMusicAsync()
@@ -2012,6 +2175,7 @@ public partial class MainViewModel : ObservableObject
             DailyPreviewSongs,
             HomeNewSongs,
             SearchSongs,
+            ThirdPartySongs,
             HistorySongs,
             FavoriteSongs,
             LocalSongs,

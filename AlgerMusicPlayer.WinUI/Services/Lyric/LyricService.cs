@@ -58,8 +58,8 @@ public partial class LyricService
             }
         }
 
-        // QQ 音乐歌单曲目获取 QQ 音乐官方歌词
-        if (song.Source == "qq" && !string.IsNullOrWhiteSpace(song.QqSongMid))
+        // QQ 音乐曲目获取 QQ 音乐官方歌词
+        if (!string.IsNullOrWhiteSpace(song.QqSongMid))
         {
             var (qqLrc, qqTrans) = await _qqMusicService.GetLyricAsync(song.QqSongMid);
             if (!string.IsNullOrWhiteSpace(qqLrc))
@@ -68,12 +68,46 @@ public partial class LyricService
             }
         }
 
-        if (song.NumericId <= 0)
+        // 咪咕曲目自带直链歌词
+        if (!string.IsNullOrWhiteSpace(song.MiguLrcUrl) && song.MiguLrcUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+                var miguLrc = await http.GetStringAsync(song.MiguLrcUrl);
+                var miguParsed = ParseLyric(song.Id, miguLrc, string.Empty, string.Empty, string.Empty);
+                if (miguParsed.Lines.Count > 0) return miguParsed;
+            }
+            catch
+            {
+            }
+        }
+
+        long targetNeteaseId = song.NumericId;
+        if (targetNeteaseId <= 0 && !string.IsNullOrWhiteSpace(song.Name))
+        {
+            // 第三方音源歌曲自动匹配网易云同名歌曲歌词（支持翻译与 YRC 逐字歌词）
+            try
+            {
+                var kw = $"{song.Name} {song.ArtistText}".Trim();
+                var matches = await _apiClient.SearchSongsAsync(kw, limit: 3);
+                var matched = matches.FirstOrDefault();
+                if (matched != null && matched.NumericId > 0)
+                {
+                    targetNeteaseId = matched.NumericId;
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        if (targetNeteaseId <= 0)
         {
             return CreateFallbackLyric("纯音乐或外部音源，请欣赏");
         }
 
-        var cachePath = Path.Combine(_configService.CacheDirectory, $"lyric_{song.NumericId}.json");
+        var cachePath = Path.Combine(_configService.CacheDirectory, $"lyric_{targetNeteaseId}.json");
         if (File.Exists(cachePath))
         {
             try
@@ -88,7 +122,7 @@ public partial class LyricService
             }
         }
 
-        var (lrc, tlrc, roma, yrc) = await _apiClient.GetLyricRawAsync(song.NumericId);
+        var (lrc, tlrc, roma, yrc) = await _apiClient.GetLyricRawAsync(targetNeteaseId);
         var parsed = ParseLyric(song.Id, lrc, tlrc, roma, yrc);
 
         if (parsed.Lines.Count > 0)

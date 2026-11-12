@@ -48,11 +48,11 @@ public partial class App : Application
     }
 
     /// <summary>
-    /// 使用位于用户 AppData 下的共享环境初始化 WebView2，避免在 Program Files 下因无写权限报错
+    /// 获取位于用户 AppData 下的全局共享 WebView2 运行环境（关闭后台定时器与渲染节流，确保离屏 JS 宿主低延迟）
     /// </summary>
-    public static async Task EnsureWebView2Async(WebView2 view)
+    public static async Task<CoreWebView2Environment> GetSharedWebViewEnvironmentAsync()
     {
-        if (view.CoreWebView2 != null) return;
+        if (_sharedWebViewEnv != null) return _sharedWebViewEnv;
 
         await _webViewEnvLock.WaitAsync();
         try
@@ -61,14 +61,26 @@ public partial class App : Application
             _sharedWebViewEnv ??= await CoreWebView2Environment.CreateWithOptionsAsync(
                 string.Empty,
                 WebView2DataDirectory,
-                new CoreWebView2EnvironmentOptions());
+                new CoreWebView2EnvironmentOptions
+                {
+                    AdditionalBrowserArguments = "--disable-background-timer-throttling --disable-renderer-backgrounding"
+                });
+            return _sharedWebViewEnv;
         }
         finally
         {
             _webViewEnvLock.Release();
         }
+    }
 
-        await view.EnsureCoreWebView2Async(_sharedWebViewEnv);
+    /// <summary>
+    /// 使用位于用户 AppData 下的共享环境初始化 WebView2，避免在 Program Files 下因无写权限报错
+    /// </summary>
+    public static async Task EnsureWebView2Async(WebView2 view)
+    {
+        if (view.CoreWebView2 != null) return;
+        var env = await GetSharedWebViewEnvironmentAsync();
+        await view.EnsureCoreWebView2Async(env);
     }
 
     private static IServiceProvider ConfigureServices()
@@ -81,6 +93,7 @@ public partial class App : Application
         services.AddSingleton<I18nService>();
         services.AddSingleton<NeteaseApiClient>();
         services.AddSingleton<QqMusicService>();
+        services.AddSingleton<ThirdPartyMusicService>();
         services.AddSingleton<LxScriptHostService>();
         services.AddSingleton<UnblockMusicService>();
         services.AddSingleton<BilibiliService>();

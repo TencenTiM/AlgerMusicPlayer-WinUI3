@@ -389,6 +389,11 @@
                             <FontIcon Glyph="&#xE714;" />
                         </NavigationViewItem.Icon>
                     </NavigationViewItem>
+                    <NavigationViewItem Content="第三方音源" Tag="ThirdParty">
+                        <NavigationViewItem.Icon>
+                            <FontIcon Glyph="&#xEC4F;" />
+                        </NavigationViewItem.Icon>
+                    </NavigationViewItem>
 
                     <NavigationViewItemSeparator />
                     <NavigationViewItemHeader Content="我的音乐" />
@@ -959,9 +964,16 @@
                             <RowDefinition Height="*" />
                         </Grid.RowDefinitions>
 
-                        <!-- 顶部固定粘性操作栏在滚动时的补充区或直接一体化滚动视图 -->
-                        <ScrollViewer x:Name="DetailPageScrollViewer" Grid.Row="1" Padding="0,0,10,24">
-                            <StackPanel Spacing="12">
+                        <!-- 原生虚拟化滚动列表：头部 Hero 与工具栏通过 ListView.Header 随列表一体化滚动，确保百首/千首歌单满帧 144Hz/240Hz -->
+                        <ListView
+                            x:Name="DetailSongsListView"
+                            Grid.Row="1"
+                            Padding="0,0,10,24"
+                            SelectionMode="Single"
+                            IsItemClickEnabled="True"
+                            ItemClick="OnDetailSongItemClick">
+                            <ListView.Header>
+                                <StackPanel x:Name="DetailHeaderStackPanel" Spacing="12" Margin="0,0,0,12">
                                 <!-- 1. Hero Section (hero-section: 柔和氛围渐变底 + 152x152 圆角封面与悬浮播放按钮 + PLAYLIST/ALBUM 徽章 + 标题 + 创建者头像/歌曲数 + 简介) -->
                                 <Border CornerRadius="16" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
                                     <Grid>
@@ -1216,21 +1228,16 @@
                                         </StackPanel>
                                     </Grid>
                                 </Border>
-
-                                <!-- 3A. 标准布局列表 (1:1 还原 StandardSongItem.vue: 48x48 圆角封面 + 标题/歌手 + 右侧 [ ♥ (▶) ] 胶囊，支持双击播放与右键菜单) -->
-                                <ListView
-                                    x:Name="DetailSongsListView"
-                                    SelectionMode="Single"
-                                    IsItemClickEnabled="True"
-                                    ItemClick="OnDetailSongItemClick">
-                                    <ListView.ItemContainerStyle>
-                                        <Style TargetType="ListViewItem">
-                                            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-                                            <Setter Property="Padding" Value="4,2" />
-                                            <Setter Property="Margin" Value="0,0,0,4" />
-                                        </Style>
-                                    </ListView.ItemContainerStyle>
-                                    <ListView.ItemTemplate>
+                                </StackPanel>
+                            </ListView.Header>
+                            <ListView.ItemContainerStyle>
+                                <Style TargetType="ListViewItem">
+                                    <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                    <Setter Property="Padding" Value="4,2" />
+                                    <Setter Property="Margin" Value="0,0,0,4" />
+                                </Style>
+                            </ListView.ItemContainerStyle>
+                            <ListView.ItemTemplate>
                                         <DataTemplate x:DataType="models:SongItem">
                                             <Border
                                                 Padding="12,10"
@@ -1269,25 +1276,37 @@
 
                                                     <!-- 歌曲标题与歌手 (song-item-content) -->
                                                     <StackPanel Grid.Column="2" VerticalAlignment="Center" Spacing="4">
-                                                        <Grid>
-                                                            <TextBlock
-                                                                Text="{x:Bind Name}"
-                                                                FontSize="15"
-                                                                FontWeight="Medium"
-                                                                Foreground="#22C55E"
-                                                                MaxLines="1"
-                                                                TextTrimming="CharacterEllipsis"
-                                                                Visibility="{x:Bind PlayingIndicatorVisibility, Mode=OneWay}" />
-                                                            <TextBlock
-                                                                FontSize="15"
-                                                                FontWeight="Medium"
-                                                                MaxLines="1"
-                                                                TextTrimming="CharacterEllipsis"
-                                                                Visibility="{x:Bind NotPlayingVisibility, Mode=OneWay}">
-                                                                <Run Text="{x:Bind Name}" />
-                                                                <Run Text="{x:Bind BracketSubtitleText}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                                                            </TextBlock>
-                                                        </Grid>
+                                                        <StackPanel Orientation="Horizontal" Spacing="8">
+                                                            <Grid VerticalAlignment="Center">
+                                                                <TextBlock
+                                                                    Text="{x:Bind Name}"
+                                                                    FontSize="15"
+                                                                    FontWeight="SemiBold"
+                                                                    Foreground="#22C55E"
+                                                                    MaxLines="1"
+                                                                    MaxWidth="420"
+                                                                    TextTrimming="CharacterEllipsis"
+                                                                    Visibility="{x:Bind PlayingIndicatorVisibility, Mode=OneWay}" />
+                                                                <TextBlock
+                                                                    FontSize="15"
+                                                                    FontWeight="Medium"
+                                                                    MaxLines="1"
+                                                                    MaxWidth="420"
+                                                                    TextTrimming="CharacterEllipsis"
+                                                                    Visibility="{x:Bind NotPlayingVisibility, Mode=OneWay}">
+                                                                    <Run Text="{x:Bind Name}" />
+                                                                    <Run Text="{x:Bind BracketSubtitleText}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                                                </TextBlock>
+                                                            </Grid>
+                                                            <Border
+                                                                Background="{StaticResource BrandAccentSubtleBrush}"
+                                                                CornerRadius="4"
+                                                                Padding="6,1"
+                                                                VerticalAlignment="Center"
+                                                                Visibility="{x:Bind NativeQualityBadgeVisibility}">
+                                                                <TextBlock Text="{x:Bind NativeQualityHint}" FontSize="10" Foreground="{StaticResource BrandAccentBrush}" FontWeight="SemiBold" />
+                                                            </Border>
+                                                        </StackPanel>
                                                         <TextBlock
                                                             Text="{x:Bind ArtistText}"
                                                             FontSize="12"
@@ -1393,16 +1412,18 @@
                                                 </Grid>
                                             </Border>
                                         </DataTemplate>
-                                    </ListView.ItemTemplate>
-                                </ListView>
+                            </ListView.ItemTemplate>
+                        </ListView>
 
-                                <!-- 3B. 紧凑布局列表 (1:1 还原 CompactSongItem.vue: 序号 + 歌名 + 歌手 + 专辑 + 时长 + 喜欢/播放/更多菜单) -->
-                                <ListView
-                                    x:Name="DetailCompactSongsListView"
-                                    Visibility="Collapsed"
-                                    SelectionMode="Single"
-                                    IsItemClickEnabled="True"
-                                    ItemClick="OnDetailSongItemClick">
+                        <!-- 3B. 紧凑布局列表 (1:1 还原 CompactSongItem.vue: 序号 + 歌名 + 歌手 + 专辑 + 时长 + 喜欢/播放/更多菜单) -->
+                        <ListView
+                            x:Name="DetailCompactSongsListView"
+                            Grid.Row="1"
+                            Padding="0,0,10,24"
+                            Visibility="Collapsed"
+                            SelectionMode="Single"
+                            IsItemClickEnabled="True"
+                            ItemClick="OnDetailSongItemClick">
                                     <ListView.ItemContainerStyle>
                                         <Style TargetType="ListViewItem">
                                             <Setter Property="HorizontalContentAlignment" Value="Stretch" />
@@ -1605,9 +1626,7 @@
                                             </Border>
                                         </DataTemplate>
                                     </ListView.ItemTemplate>
-                                </ListView>
-                            </StackPanel>
-                        </ScrollViewer>
+                        </ListView>
                     </Grid>
 
                     <!-- ==================== 视图 7：综合搜索页 (SearchView — 使用 WinUI 3 SelectorBar) ==================== -->
@@ -1938,6 +1957,356 @@
                                 </DataTemplate>
                             </ListView.ItemTemplate>
                         </ListView>
+                    </Grid>
+
+                    <!-- ==================== 视图 9.5：第三方音源独立专区 (ThirdPartyView) ==================== -->
+                    <Grid x:Name="ThirdPartyView" Visibility="Collapsed" RowSpacing="12">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+
+                        <!-- 顶部专区说明与洛雪多脚本状态栏 -->
+                        <Border Grid.Row="0" Style="{StaticResource FluentSurfaceCardStyle}" Padding="18,12">
+                            <Grid ColumnSpacing="12">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0" Spacing="4" VerticalAlignment="Center">
+                                    <StackPanel Orientation="Horizontal" Spacing="8">
+                                        <TextBlock Text="第三方音源专区" FontSize="20" FontWeight="Bold" VerticalAlignment="Center" />
+                                        <Border Background="{StaticResource BrandAccentSubtleBrush}" CornerRadius="6" Padding="8,2" VerticalAlignment="Center">
+                                            <TextBlock Text="原生曲库直通" FontSize="11" Foreground="{StaticResource BrandAccentBrush}" FontWeight="SemiBold" />
+                                        </Border>
+                                    </StackPanel>
+                                    <TextBlock
+                                        x:Name="ThirdPartyLxStatusText"
+                                        Text="直接浏览四大平台推荐歌单与榜单，携带原生 ID/Hash 交由洛雪多脚本直取无损音频，免去跨源模糊匹配与试听限制"
+                                        FontSize="12"
+                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                        TextTrimming="CharacterEllipsis" />
+                                </StackPanel>
+                                <Button Grid.Column="1" Click="OnOpenLxScriptsManagerClick" VerticalAlignment="Center">
+                                    <StackPanel Orientation="Horizontal" Spacing="6">
+                                        <FontIcon Glyph="&#xE713;" FontSize="12" />
+                                        <TextBlock Text="管理洛雪脚本" FontSize="12" />
+                                    </StackPanel>
+                                </Button>
+                            </Grid>
+                        </Border>
+
+                        <!-- 平台切换 + 推荐歌单/排行榜单切换 + 搜索框 + 分类/榜单胶囊标签 -->
+                        <StackPanel Grid.Row="1" Spacing="8">
+                            <NavigationView
+                                x:Name="ThirdPartyPlatformNavView"
+                                PaneDisplayMode="Top"
+                                IsBackButtonVisible="Collapsed"
+                                IsSettingsVisible="False"
+                                ItemInvoked="OnThirdPartyPlatformNavItemInvoked">
+                                <NavigationView.MenuItems>
+                                    <NavigationViewItem Content="QQ 音乐" Tag="tx" IsSelected="True">
+                                        <NavigationViewItem.Icon>
+                                            <FontIcon Glyph="&#xE8D6;" />
+                                        </NavigationViewItem.Icon>
+                                    </NavigationViewItem>
+                                    <NavigationViewItem Content="酷狗音乐" Tag="kg">
+                                        <NavigationViewItem.Icon>
+                                            <FontIcon Glyph="&#xEC4F;" />
+                                        </NavigationViewItem.Icon>
+                                    </NavigationViewItem>
+                                    <NavigationViewItem Content="酷我音乐" Tag="kw">
+                                        <NavigationViewItem.Icon>
+                                            <FontIcon Glyph="&#xE93C;" />
+                                        </NavigationViewItem.Icon>
+                                    </NavigationViewItem>
+                                    <NavigationViewItem Content="咪咕音乐" Tag="mg">
+                                        <NavigationViewItem.Icon>
+                                            <FontIcon Glyph="&#xE95A;" />
+                                        </NavigationViewItem.Icon>
+                                    </NavigationViewItem>
+                                </NavigationView.MenuItems>
+                            </NavigationView>
+
+                            <!-- 模式切换 + 搜索框 + 右侧动作按钮 -->
+                            <Grid ColumnSpacing="10">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+
+                                <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                                    <Button
+                                        x:Name="ThirdPartyModePlaylistsBtn"
+                                        Content="推荐歌单"
+                                        Tag="playlists"
+                                        Click="OnThirdPartyModeSwitchClick"
+                                        CornerRadius="16"
+                                        Padding="14,5"
+                                        FontSize="13" />
+                                    <Button
+                                        x:Name="ThirdPartyModeSongsBtn"
+                                        Content="排行榜单"
+                                        Tag="songs"
+                                        Click="OnThirdPartyModeSwitchClick"
+                                        CornerRadius="16"
+                                        Padding="14,5"
+                                        FontSize="13" />
+                                </StackPanel>
+
+                                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                                    <TextBox
+                                        x:Name="ThirdPartySearchBox"
+                                        Width="260"
+                                        PlaceholderText="搜索当前平台单曲、歌手..."
+                                        KeyDown="OnThirdPartySearchBoxKeyDown" />
+                                    <Button Content="搜索" Click="OnThirdPartySearchClick" Style="{StaticResource BrandPrimaryButtonStyle}" />
+                                </StackPanel>
+
+                                <!-- 二级分类胶囊栏 / 榜单胶囊栏 -->
+                                <ScrollViewer Grid.Column="2" HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Disabled" HorizontalScrollMode="Enabled" VerticalScrollMode="Disabled" VerticalAlignment="Center">
+                                    <Grid>
+                                        <StackPanel x:Name="ThirdPartyCategoryButtonsPanel" Orientation="Horizontal" Spacing="6" />
+                                        <StackPanel x:Name="ThirdPartyBoardButtonsPanel" Visibility="Collapsed" Orientation="Horizontal" Spacing="6" />
+                                    </Grid>
+                                </ScrollViewer>
+
+                                <!-- 右侧操作：换一批（歌单模式）/ 播放全部（单曲模式） -->
+                                <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                                    <Button x:Name="ThirdPartyRefreshPlaylistsBtn" Click="OnThirdPartyRefreshPlaylistsClick" Padding="12,5" FontSize="12">
+                                        <StackPanel Orientation="Horizontal" Spacing="6">
+                                            <FontIcon Glyph="&#xE72C;" FontSize="12" />
+                                            <TextBlock Text="换一批" />
+                                        </StackPanel>
+                                    </Button>
+                                    <Button x:Name="ThirdPartyPlayAllBtn" Visibility="Collapsed" Click="OnThirdPartyPlayAllClick" Style="{StaticResource BrandPrimaryButtonStyle}">
+                                        <StackPanel Orientation="Horizontal" Spacing="6">
+                                            <FontIcon Glyph="&#xE768;" FontSize="12" />
+                                            <TextBlock Text="播放全部" />
+                                        </StackPanel>
+                                    </Button>
+                                </StackPanel>
+                            </Grid>
+                        </StackPanel>
+
+                        <!-- 主内容区：推荐歌单网格 & 原生单曲列表 -->
+                        <Grid Grid.Row="2">
+                            <!-- A. 推荐歌单封面网格（与主页 HomePlaylistsGrid 视觉对齐） -->
+                            <ScrollViewer x:Name="ThirdPartyPlaylistsScrollViewer" Padding="0,2,8,20">
+                                <GridView
+                                    x:Name="ThirdPartyPlaylistsGrid"
+                                    SelectionMode="None"
+                                    IsItemClickEnabled="True"
+                                    ItemClick="OnPlaylistCardClick">
+                                    <GridView.ItemTemplate>
+                                        <DataTemplate x:DataType="models:PlaylistItem">
+                                            <Border
+                                                Width="162"
+                                                Margin="0,0,12,12"
+                                                Padding="8"
+                                                CornerRadius="10"
+                                                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                                BorderThickness="1">
+                                                <StackPanel Spacing="8">
+                                                    <Border Width="144" Height="144" CornerRadius="8" Background="{ThemeResource ControlFillColorSecondaryBrush}">
+                                                        <Grid>
+                                                            <Image Source="{x:Bind CoverImgUrl}" Stretch="UniformToFill" />
+                                                            <Border HorizontalAlignment="Right" VerticalAlignment="Top" Margin="6" Background="#B3000000" CornerRadius="4" Padding="6,2">
+                                                                <TextBlock Text="{x:Bind PlayCountText}" FontSize="11" Foreground="White" />
+                                                            </Border>
+                                                        </Grid>
+                                                    </Border>
+                                                    <TextBlock Text="{x:Bind Name}" MaxLines="2" Height="36" TextWrapping="Wrap" FontSize="13" FontWeight="Medium" TextTrimming="CharacterEllipsis" />
+                                                </StackPanel>
+                                            </Border>
+                                        </DataTemplate>
+                                    </GridView.ItemTemplate>
+                                </GridView>
+                            </ScrollViewer>
+
+                            <!-- B. 原生曲目列表（带完整正在播放高亮状态与右侧播放/暂停胶囊） -->
+                            <ListView
+                                x:Name="ThirdPartySongsListView"
+                                Visibility="Collapsed"
+                                SelectionMode="Single"
+                                IsItemClickEnabled="False">
+                                <ListView.ItemContainerStyle>
+                                    <Style TargetType="ListViewItem">
+                                        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                        <Setter Property="Padding" Value="4,2" />
+                                        <Setter Property="Margin" Value="0,0,0,4" />
+                                    </Style>
+                                </ListView.ItemContainerStyle>
+                                <ListView.ItemTemplate>
+                                    <DataTemplate x:DataType="models:SongItem">
+                                        <Grid Tag="{x:Bind}" DoubleTapped="OnThirdPartySongRowDoubleTapped" RightTapped="OnSongItemRightTapped">
+                                            <!-- 正在播放整行柔光绿底边框 -->
+                                            <Border
+                                                CornerRadius="12"
+                                                Background="#1422C55E"
+                                                BorderBrush="#4522C55E"
+                                                BorderThickness="1"
+                                                Visibility="{x:Bind PlayingIndicatorVisibility, Mode=OneWay}" />
+
+                                            <Grid Padding="10,8" ColumnSpacing="12" Background="Transparent">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="34" />
+                                                    <ColumnDefinition Width="44" />
+                                                    <ColumnDefinition Width="2.3*" />
+                                                    <ColumnDefinition Width="1.2*" />
+                                                    <ColumnDefinition Width="1.1*" />
+                                                    <ColumnDefinition Width="58" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+
+                                                <!-- 序号 / 正在播放音符 -->
+                                                <Grid Grid.Column="0" VerticalAlignment="Center" HorizontalAlignment="Center">
+                                                    <TextBlock Text="{x:Bind DisplayIndex}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Visibility="{x:Bind NotPlayingVisibility, Mode=OneWay}" />
+                                                    <FontIcon Glyph="&#xE8D6;" FontSize="14" Foreground="#22C55E" Visibility="{x:Bind PlayingIndicatorVisibility, Mode=OneWay}" />
+                                                </Grid>
+
+                                                <!-- 封面 + 正在播放悬浮动效图标 -->
+                                                <Border Grid.Column="1" Width="42" Height="42" CornerRadius="8" Background="{ThemeResource ControlFillColorSecondaryBrush}">
+                                                    <Grid>
+                                                        <Image Source="{x:Bind CoverThumbnailUrl}" Stretch="UniformToFill" />
+                                                        <Border Background="#66000000" CornerRadius="8" Visibility="{x:Bind PlayingIndicatorVisibility, Mode=OneWay}">
+                                                            <FontIcon Glyph="{x:Bind ActivePlayGlyph, Mode=OneWay}" FontSize="14" Foreground="#22C55E" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                                        </Border>
+                                                    </Grid>
+                                                </Border>
+
+                                                <!-- 歌名（正在播放亮绿高亮）+ 正在播放徽章 + 原生音质标签 -->
+                                                <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                                                    <TextBlock
+                                                        Text="{x:Bind Name}"
+                                                        FontWeight="Bold"
+                                                        Foreground="#22C55E"
+                                                        VerticalAlignment="Center"
+                                                        TextTrimming="CharacterEllipsis"
+                                                        MaxWidth="290"
+                                                        Visibility="{x:Bind PlayingIndicatorVisibility, Mode=OneWay}" />
+                                                    <TextBlock
+                                                        Text="{x:Bind Name}"
+                                                        FontWeight="SemiBold"
+                                                        VerticalAlignment="Center"
+                                                        TextTrimming="CharacterEllipsis"
+                                                        MaxWidth="290"
+                                                        Visibility="{x:Bind NotPlayingVisibility, Mode=OneWay}" />
+                                                    <Border
+                                                        Background="#2222C55E"
+                                                        BorderBrush="#6622C55E"
+                                                        BorderThickness="1"
+                                                        CornerRadius="4"
+                                                        Padding="6,1"
+                                                        VerticalAlignment="Center"
+                                                        Visibility="{x:Bind PlayingIndicatorVisibility, Mode=OneWay}">
+                                                        <TextBlock Text="正在播放" FontSize="10" Foreground="#22C55E" FontWeight="SemiBold" />
+                                                    </Border>
+                                                    <Border
+                                                        Background="{StaticResource BrandAccentSubtleBrush}"
+                                                        CornerRadius="4"
+                                                        Padding="6,1"
+                                                        VerticalAlignment="Center"
+                                                        Visibility="{x:Bind NativeQualityBadgeVisibility}">
+                                                        <TextBlock Text="{x:Bind NativeQualityHint}" FontSize="10" Foreground="{StaticResource BrandAccentBrush}" FontWeight="SemiBold" />
+                                                    </Border>
+                                                </StackPanel>
+
+                                                <TextBlock Grid.Column="3" Text="{x:Bind ArtistText}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Grid.Column="4" Text="{x:Bind AlbumText}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Grid.Column="5" Text="{x:Bind DurationText}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
+
+                                                <!-- 右侧与歌单详情页一致的胶囊操作区：[ ♥ | ⬇ | (▶/⏸ 绿色播放态圆钮) ] -->
+                                                <Border
+                                                    Grid.Column="6"
+                                                    Height="36"
+                                                    Padding="8,0,0,0"
+                                                    CornerRadius="18"
+                                                    VerticalAlignment="Center"
+                                                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                                    BorderThickness="1">
+                                                    <StackPanel Orientation="Horizontal" Spacing="2" VerticalAlignment="Center">
+                                                        <Button
+                                                            Tag="{x:Bind}"
+                                                            Click="OnSongLikeButtonClick"
+                                                            Width="30"
+                                                            Height="30"
+                                                            Padding="0"
+                                                            CornerRadius="15"
+                                                            Background="Transparent"
+                                                            BorderThickness="0"
+                                                            ToolTipService.ToolTip="收藏">
+                                                            <Grid>
+                                                                <FontIcon Glyph="&#xEB51;" FontSize="13" Visibility="{x:Bind NotLikedVisibility, Mode=OneWay}" />
+                                                                <FontIcon Glyph="&#xEB52;" FontSize="13" Foreground="#F43F5E" Visibility="{x:Bind LikedVisibility, Mode=OneWay}" />
+                                                            </Grid>
+                                                        </Button>
+                                                        <Button
+                                                            Tag="{x:Bind}"
+                                                            Click="OnSongDownloadButtonClick"
+                                                            Width="30"
+                                                            Height="30"
+                                                            Padding="0"
+                                                            CornerRadius="15"
+                                                            Background="Transparent"
+                                                            BorderThickness="0"
+                                                            ToolTipService.ToolTip="选择音质下载">
+                                                            <FontIcon Glyph="&#xE896;" FontSize="13" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                                        </Button>
+                                                        <Button
+                                                            Tag="{x:Bind}"
+                                                            Click="OnThirdPartyRowPlayButtonClick"
+                                                            Width="34"
+                                                            Height="34"
+                                                            Padding="0"
+                                                            CornerRadius="17"
+                                                            Background="Transparent"
+                                                            BorderThickness="0"
+                                                            ToolTipService.ToolTip="播放/暂停">
+                                                            <Grid Width="34" Height="34">
+                                                                <Border
+                                                                    Width="34"
+                                                                    Height="34"
+                                                                    CornerRadius="17"
+                                                                    Background="#22C55E"
+                                                                    Visibility="{x:Bind PlayingIndicatorVisibility, Mode=OneWay}">
+                                                                    <FontIcon
+                                                                        Glyph="{x:Bind ActivePlayGlyph, Mode=OneWay}"
+                                                                        FontSize="12"
+                                                                        Foreground="White"
+                                                                        HorizontalAlignment="Center"
+                                                                        VerticalAlignment="Center" />
+                                                                </Border>
+                                                                <Border
+                                                                    Width="34"
+                                                                    Height="34"
+                                                                    CornerRadius="17"
+                                                                    Background="#2464748B"
+                                                                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                                                    BorderThickness="1"
+                                                                    Visibility="{x:Bind NotPlayingVisibility, Mode=OneWay}">
+                                                                    <FontIcon
+                                                                        Glyph="&#xE768;"
+                                                                        FontSize="12"
+                                                                        Foreground="{ThemeResource TextFillColorPrimaryBrush}"
+                                                                        HorizontalAlignment="Center"
+                                                                        VerticalAlignment="Center" />
+                                                                </Border>
+                                                            </Grid>
+                                                        </Button>
+                                                    </StackPanel>
+                                                </Border>
+                                            </Grid>
+                                        </Grid>
+                                    </DataTemplate>
+                                </ListView.ItemTemplate>
+                            </ListView>
+                        </Grid>
                     </Grid>
 
                     <!-- ==================== 视图 10：收藏与历史 (HistoryFavoriteView — 使用 WinUI 3 SelectorBar) ==================== -->
@@ -5829,31 +6198,62 @@
                                             </StackPanel>
 
                                             <!-- 子面板 B：洛雪音源 -->
-                                            <StackPanel x:Name="MusicSourceModalLxPanel" Visibility="Collapsed" Spacing="12">
+                                            <StackPanel x:Name="MusicSourceModalLxPanel" Visibility="Collapsed" Spacing="10">
                                                 <Grid>
-                                                    <TextBlock Text="已导入的音源脚本" FontSize="12" FontWeight="Medium" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
-                                                    <Button HorizontalAlignment="Right" Click="OnImportLocalLxScriptClick" Style="{StaticResource BrandPrimaryButtonStyle}" Padding="12,5" FontSize="12">
+                                                    <StackPanel Spacing="2" VerticalAlignment="Center">
+                                                        <TextBlock Text="已导入的音源脚本" FontSize="12" FontWeight="Medium" />
+                                                        <TextBlock Text="优先调用首选脚本，失败或无无损时自动轮询其余已勾选脚本" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                                    </StackPanel>
+                                                    <Button HorizontalAlignment="Right" VerticalAlignment="Center" Click="OnImportLocalLxScriptClick" Style="{StaticResource BrandPrimaryButtonStyle}" Padding="12,5" FontSize="12">
                                                         <StackPanel Orientation="Horizontal" Spacing="6">
                                                             <FontIcon Glyph="&#xE8E5;" FontSize="11" />
                                                             <TextBlock Text="本地导入" />
                                                         </StackPanel>
                                                     </Button>
                                                 </Grid>
-                                                <ListView x:Name="LxScriptsListView" MaxHeight="180" SelectionMode="Single">
+                                                <ListView x:Name="LxScriptsListView" MaxHeight="190" SelectionMode="None">
                                                     <ListView.ItemTemplate>
                                                         <DataTemplate x:DataType="models:LxScriptItem">
-                                                            <Grid Padding="6,6" ColumnSpacing="10">
+                                                            <Grid Padding="4,6" ColumnSpacing="8" Opacity="{x:Bind RowOpacity, Mode=OneWay}">
                                                                 <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="Auto" />
                                                                     <ColumnDefinition Width="*" />
                                                                     <ColumnDefinition Width="Auto" />
                                                                     <ColumnDefinition Width="Auto" />
                                                                 </Grid.ColumnDefinitions>
-                                                                <StackPanel Grid.Column="0">
-                                                                    <TextBlock Text="{x:Bind Name}" FontWeight="SemiBold" FontSize="13" />
+                                                                <CheckBox
+                                                                    Grid.Column="0"
+                                                                    MinWidth="0"
+                                                                    Padding="0"
+                                                                    VerticalAlignment="Center"
+                                                                    IsChecked="{x:Bind Enabled, Mode=TwoWay}"
+                                                                    Tag="{x:Bind}"
+                                                                    Click="OnLxScriptEnabledClick"
+                                                                    ToolTipService.ToolTip="参与多脚本自动轮询" />
+                                                                <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
+                                                                    <StackPanel Orientation="Horizontal" Spacing="6">
+                                                                        <TextBlock Text="{x:Bind Name}" FontWeight="SemiBold" FontSize="13" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="200" />
+                                                                        <Border
+                                                                            Background="{StaticResource BrandAccentSubtleBrush}"
+                                                                            CornerRadius="4"
+                                                                            Padding="6,1"
+                                                                            VerticalAlignment="Center"
+                                                                            Visibility="{x:Bind PrimaryBadgeVisibility, Mode=OneWay}">
+                                                                            <TextBlock Text="首选" FontSize="10" Foreground="{StaticResource BrandAccentBrush}" FontWeight="SemiBold" />
+                                                                        </Border>
+                                                                    </StackPanel>
                                                                     <TextBlock Text="{x:Bind DisplayMeta}" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                                                                 </StackPanel>
-                                                                <TextBlock Grid.Column="1" Text="{x:Bind Description}" FontSize="11" Foreground="{StaticResource BrandAccentBrush}" VerticalAlignment="Center" />
-                                                                <Button Grid.Column="2" Content="删除" Tag="{x:Bind}" Click="OnRemoveLxScriptClick" Style="{StaticResource DangerOutlineButtonStyle}" Padding="8,3" FontSize="11" />
+                                                                <Button
+                                                                    Grid.Column="2"
+                                                                    Content="设为首选"
+                                                                    Tag="{x:Bind}"
+                                                                    Click="OnSetPrimaryLxScriptClick"
+                                                                    Visibility="{x:Bind SetPrimaryButtonVisibility, Mode=OneWay}"
+                                                                    Padding="8,3"
+                                                                    FontSize="11"
+                                                                    VerticalAlignment="Center" />
+                                                                <Button Grid.Column="3" Content="删除" Tag="{x:Bind}" Click="OnRemoveLxScriptClick" Style="{StaticResource DangerOutlineButtonStyle}" Padding="8,3" FontSize="11" VerticalAlignment="Center" />
                                                             </Grid>
                                                         </DataTemplate>
                                                     </ListView.ItemTemplate>
@@ -9987,9 +10387,5 @@
                 </Grid>
             </Border>
         </Grid>
-
-        <!-- 落雪音源 JS 脚本隐藏宿主（1x1 透明，不参与交互） -->
-        <WebView2 x:Name="LxHostWebView" Grid.Row="0" Width="1" Height="1" Opacity="0"
-                  IsHitTestVisible="False" HorizontalAlignment="Left" VerticalAlignment="Top" />
     </Grid>
 </Window>

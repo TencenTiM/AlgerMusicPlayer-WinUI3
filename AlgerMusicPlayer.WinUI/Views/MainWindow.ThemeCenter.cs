@@ -658,7 +658,8 @@ public sealed partial class MainWindow
                 rootRes.Remove("SecondaryPillBorderBrush");
                 var cardBg = ThemeService.ParseColorOrDefault(profile.CardBgHex, isLight ? iceWhite : Color.FromArgb(255, 30, 41, 59));
                 Brush? curCardPrimary = rootRes.TryGetValue("CardBackgroundFillColorDefaultBrush", out var ccp) ? ccp as Brush : null;
-                Brush cardPrimaryBrush = ThemeService.UpdateOrCreateSectionBrush(curCardPrimary, cardBg, false, null, profile.CardOpacity, 0, useAcrylicBlur: true);
+                // 列表行胶囊与卡片会被数十个虚拟化项高频复用，使用轻量半透明染色画刷避免滚动时海量 30px Backdrop 高斯模糊拖垮 144Hz+ 帧率
+                Brush cardPrimaryBrush = ThemeService.UpdateOrCreateSectionBrush(curCardPrimary, cardBg, false, null, profile.CardOpacity, 0, useAcrylicBlur: false);
 
                 var secondaryCardCol = ThemeService.AdjustLightness(cardBg, isLight ? -0.02 : 0.04);
                 var secondaryFinalCol = isLight
@@ -744,9 +745,10 @@ public sealed partial class MainWindow
                 var tintedCardSurface = ThemeService.CreateThemeTintedSurfaceColor(profile, accent, isLight, isLight ? 0.11 : 0.20);
                 var borderTint = ThemeService.LerpColor(Colors.White, accent, isLight ? 0.20 : 0.38);
 
-                rootRes["CardBackgroundFillColorDefaultBrush"] = isLight
-                    ? ThemeService.CreateFrostedGlassBrush(tintedCardSurface, tintOpacity: 0.09, luminosityOpacity: 0.15, fallbackAlpha: 40)
-                    : ThemeService.CreateFrostedGlassBrush(tintedCardSurface, tintOpacity: 0.26, luminosityOpacity: 0.38, fallbackAlpha: 78);
+                // 滚动列表项与卡片采用高通透半透明染色画刷（保留侧栏/底栏/抽屉底板的实时毛玻璃），杜绝几十层重叠高斯模糊拉低高刷帧率
+                ThemeService.SetOrUpdateSolidBrush(rootRes, "CardBackgroundFillColorDefaultBrush", isLight
+                    ? Color.FromArgb(148, 255, 255, 255)
+                    : Color.FromArgb(108, tintedCardSurface.R, tintedCardSurface.G, tintedCardSurface.B));
                 rootRes["CardBackgroundFillColorSecondaryBrush"] = new SolidColorBrush(isLight
                     ? Color.FromArgb(42, 255, 255, 255)
                     : Color.FromArgb(55, tintedCardSurface.R, tintedCardSurface.G, tintedCardSurface.B));

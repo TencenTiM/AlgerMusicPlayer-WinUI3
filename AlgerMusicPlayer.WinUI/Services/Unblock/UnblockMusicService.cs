@@ -114,13 +114,17 @@ public class UnblockMusicService
                 ? _configService.Settings.EnabledMusicSources.ToList()
                 : AllPlatforms.ToList());
 
-        // 若请求无损且未强制指定单一音源，始终将支持 999kbps FLAC/Hi-Res 的 gdmusic 与 pyncmd 排在最前面
+        // 若请求无损且未强制指定单一音源，优先使用已启用的落雪脚本音源，其次 gdmusic 与 pyncmd
         if (preferLossless && preferredPlatforms == null)
         {
+            bool hasEnabledLx = platforms.Any(p => p.Equals("lxmusic", StringComparison.OrdinalIgnoreCase)) &&
+                                _configService.Settings.LxMusicScripts.Any(x => x.Enabled);
             platforms.RemoveAll(p => p.Equals("gdmusic", StringComparison.OrdinalIgnoreCase) ||
-                                     p.Equals("pyncmd", StringComparison.OrdinalIgnoreCase));
+                                     p.Equals("pyncmd", StringComparison.OrdinalIgnoreCase) ||
+                                     (hasEnabledLx && p.Equals("lxmusic", StringComparison.OrdinalIgnoreCase)));
             platforms.Insert(0, "pyncmd");
             platforms.Insert(0, "gdmusic");
+            if (hasEnabledLx) platforms.Insert(0, "lxMusic");
         }
 
         // 若配置了自定义 Unblock HTTP 服务地址，优先尝试
@@ -133,54 +137,142 @@ public class UnblockMusicService
             }
         }
 
-        string? fallbackNonFlacUrl = null;
-        string fallbackPlatform = string.Empty;
+        // 各平台并发解析（总超时 12 秒，兼顾落雪 WebView2 首次冷启动），按平台优先级顺序取第一个合格结果
+        using var overallCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        overallCts.CancelAfter(TimeSpan.FromSeconds(12));
+        var tasks = platforms
+            .Select(p => ResolveSinglePlatformAsync(song, p, preferLossless, overallCts.Token))
+            .ToList();
 
-        foreach (var platform in platforms)
+        (string Url, string Platform, ResolveInfo Info)? fallback = null;
+        foreach (var task in tasks)
         {
-            if (cancellationToken.IsCancellationRequested) break;
+            var result = await task;
+            if (result == null) continue;
 
-            try
+            bool isLosslessResult = result.Value.Url.Contains(".flac", StringComparison.OrdinalIgnoreCase) ||
+                                    result.Value.Info.Kbps > 400;
+            if (!preferLossless || isLosslessResult)
             {
-                string? url = platform.ToLowerInvariant() switch
-                {
-                    "pyncmd" => await TryPyncmdAsync(song, preferLossless, cancellationToken),
-                    "kuwo" => await TryKuwoAsync(song, preferLossless, cancellationToken),
-                    "kugou" => await TryKugouAsync(song, preferLossless, cancellationToken),
-                    "migu" => await TryGdStudioSourceAsync(song, "migu", preferLossless, cancellationToken),
-                    "qq" => await TryGdStudioSourceAsync(song, "tencent", preferLossless, cancellationToken),
-                    "joox" => await TryGdStudioSourceAsync(song, "joox", preferLossless, cancellationToken),
-                    "gdmusic" => await TryGdMusicMultiSourceAsync(song, preferLossless, cancellationToken),
-                    "lxmusic" => await TryLxMusicAsync(song, preferLossless, cancellationToken),
-                    _ => null
-                };
-
-                if (!string.IsNullOrWhiteSpace(url))
-                {
-                    if (!preferLossless || url.Contains(".flac", StringComparison.OrdinalIgnoreCase))
-                    {
-                        return (url, platform);
-                    }
-
-                    if (string.IsNullOrWhiteSpace(fallbackNonFlacUrl))
-                    {
-                        fallbackNonFlacUrl = url;
-                        fallbackPlatform = platform;
-                    }
-                }
+                overallCts.Cancel();
+                LastResolvedBitrateKbps = result.Value.Info.Kbps;
+                LastResolvedSizeBytes = result.Value.Info.Size;
+                return (result.Value.Url, result.Value.Platform);
             }
-            catch
-            {
-                // 单个音源失败继续尝试下一个平台
-            }
+
+            fallback ??= result;
         }
 
-        if (!string.IsNullOrWhiteSpace(fallbackNonFlacUrl))
+        if (fallback != null)
         {
-            return (fallbackNonFlacUrl, fallbackPlatform);
+            LastResolvedBitrateKbps = fallback.Value.Info.Kbps;
+            LastResolvedSizeBytes = fallback.Value.Info.Size;
+            return (fallback.Value.Url, fallback.Value.Platform);
         }
 
         return (null, string.Empty);
+    }
+
+    // 并发解析时每个平台独立记录码率/体积，避免互相覆盖 LastResolved* 字段
+    private sealed class ResolveInfo
+    {
+        public int Kbps;
+        public long Size;
+    }
+
+    private readonly AsyncLocal<ResolveInfo?> _resolveInfo = new();
+
+    private void SetResolvedInfo(int kbps, long size)
+    {
+        var info = _resolveInfo.Value;
+        if (info != null)
+        {
+            info.Kbps = kbps;
+            info.Size = size;
+        }
+        else
+        {
+            LastResolvedBitrateKbps = kbps;
+            LastResolvedSizeBytes = size;
+        }
+    }
+
+    /// <summary>
+    /// 解析单个平台并校验结果是否为完整歌曲（异常或不合格返回 null）
+    /// </summary>
+    private async Task<(string Url, string Platform, ResolveInfo Info)?> ResolveSinglePlatformAsync(
+        SongItem song, string platform, bool preferLossless, CancellationToken ct)
+    {
+        var info = new ResolveInfo();
+        _resolveInfo.Value = info;
+        try
+        {
+            string? url = platform.ToLowerInvariant() switch
+            {
+                "pyncmd" => await TryPyncmdAsync(song, preferLossless, ct),
+                "kuwo" => await TryKuwoAsync(song, preferLossless, ct),
+                "kugou" => await TryKugouAsync(song, preferLossless, ct),
+                "migu" => await TryGdStudioSourceAsync(song, "migu", preferLossless, ct),
+                "qq" => await TryGdStudioSourceAsync(song, "tencent", preferLossless, ct),
+                "joox" => await TryGdStudioSourceAsync(song, "joox", preferLossless, ct),
+                "gdmusic" => await TryGdMusicMultiSourceAsync(song, preferLossless, ct),
+                "lxmusic" => await TryLxMusicAsync(song, preferLossless, ct),
+                _ => null
+            };
+
+            if (string.IsNullOrWhiteSpace(url)) return null;
+            if (!await IsLikelyFullTrackAsync(url, song, ct)) return null;
+            return (url, platform, info);
+        }
+        catch
+        {
+            // 单个音源失败不影响其他平台
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 通过文件体积粗略校验是否为完整歌曲：
+    /// 酷我/酷狗等对受限歌曲会返回几秒钟的“请使用客户端收听”提示音，部分音源会返回 30 秒试听片段，二者体积远小于完整歌曲
+    /// </summary>
+    private async Task<bool> IsLikelyFullTrackAsync(string url, SongItem song, CancellationToken ct)
+    {
+        // 无可靠时长（或本身就是短音频）时不做校验
+        if (song.DurationMs < 60_000) return true;
+
+        long size;
+        try
+        {
+            using var probeCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            probeCts.CancelAfter(TimeSpan.FromSeconds(3));
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            req.Headers.Range = new global::System.Net.Http.Headers.RangeHeaderValue(0, 0);
+            using var resp = await _httpClient.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, probeCts.Token);
+
+            if (resp.StatusCode is global::System.Net.HttpStatusCode.Unauthorized
+                or global::System.Net.HttpStatusCode.Forbidden
+                or global::System.Net.HttpStatusCode.NotFound
+                or global::System.Net.HttpStatusCode.Gone)
+            {
+                return false;
+            }
+
+            size = resp.Content.Headers.ContentRange?.Length
+                   ?? (resp.StatusCode == global::System.Net.HttpStatusCode.OK ? resp.Content.Headers.ContentLength ?? 0 : 0);
+        }
+        catch
+        {
+            // 整体已取消则视为不合格；单纯探测超时/失败时不阻断播放
+            return !ct.IsCancellationRequested;
+        }
+
+        if (size <= 0) return true;
+
+        // 按 FLAC 600kbps / 有损 128kbps 估算完整歌曲体积，低于其 40% 判定为试听片段或提示音
+        bool isFlac = url.Contains(".flac", StringComparison.OrdinalIgnoreCase);
+        int assumedKbps = isFlac ? 600 : 128;
+        long minBytes = (long)(song.DurationMs / 1000.0 * assumedKbps * 125 * 0.4);
+        return size >= minBytes;
     }
 
     /// <summary>
@@ -291,20 +383,24 @@ public class UnblockMusicService
             }
         }
 
-        var keyword = $"{song.Name} {song.ArtistText}".Trim();
-        var searchUrl = $"http://search.kuwo.cn/r.s?client=kt&all={Uri.EscapeDataString(keyword)}&pn=0&rn=5&uid=794762570&ver=kwplayer_ar_9.2.2.1&vipver=1&show_copyright_off=1&newver=1&ft=music&cluster=0&strategy=2012&encoding=utf8&rformat=json&vermerge=1&mobi=1&issubtitle=1";
-
-        var raw = await _httpClient.GetStringAsync(searchUrl, ct);
-        var jsonText = raw.Replace('\'', '"');
-        using var doc = JsonDocument.Parse(jsonText);
-
-        if (!doc.RootElement.TryGetProperty("abslist", out var abslist) || abslist.ValueKind != JsonValueKind.Array || abslist.GetArrayLength() == 0)
+        string? musicRid = song.KuwoRid;
+        if (string.IsNullOrWhiteSpace(musicRid))
         {
-            return null;
-        }
+            var keyword = $"{song.Name} {song.ArtistText}".Trim();
+            var searchUrl = $"http://search.kuwo.cn/r.s?client=kt&all={Uri.EscapeDataString(keyword)}&pn=0&rn=5&uid=794762570&ver=kwplayer_ar_9.2.2.1&vipver=1&show_copyright_off=1&newver=1&ft=music&cluster=0&strategy=2012&encoding=utf8&rformat=json&vermerge=1&mobi=1&issubtitle=1";
 
-        var first = abslist[0];
-        var musicRid = first.GetStringProp("MUSICRID").Replace("MUSIC_", "");
+            var raw = await _httpClient.GetStringAsync(searchUrl, ct);
+            var jsonText = raw.Replace('\'', '"');
+            using var doc = JsonDocument.Parse(jsonText);
+
+            if (!doc.RootElement.TryGetProperty("abslist", out var abslist) || abslist.ValueKind != JsonValueKind.Array || abslist.GetArrayLength() == 0)
+            {
+                return null;
+            }
+
+            var first = abslist[0];
+            musicRid = first.GetStringProp("MUSICRID").Replace("MUSIC_", "");
+        }
         if (string.IsNullOrWhiteSpace(musicRid)) return null;
 
         string[] formats = preferLossless ? ["flac|mp3", "mp3"] : ["mp3"];
@@ -333,27 +429,37 @@ public class UnblockMusicService
     /// </summary>
     private async Task<string?> TryKugouAsync(SongItem song, bool preferLossless, CancellationToken ct)
     {
-        var keyword = $"{song.Name} {song.ArtistText}".Trim();
-        var searchUrl = $"http://mobilecdn.kugou.com/api/v3/search/song?format=json&keyword={Uri.EscapeDataString(keyword)}&page=1&pagesize=5&showtype=1";
+        string? albumId = song.KugouAlbumId;
+        string? resHash = song.KugouResHash;
+        string? sqHash = song.KugouSqHash;
+        string? hqHash = song.Kugou320Hash;
+        string? stdHash = song.KugouHash;
 
-        var json = await _httpClient.GetStringAsync(searchUrl, ct);
-        using var doc = JsonDocument.Parse(json);
-        if (!doc.RootElement.TryGetProperty("data", out var data) ||
-            !data.TryGetProperty("info", out var infoArr) ||
-            infoArr.ValueKind != JsonValueKind.Array ||
-            infoArr.GetArrayLength() == 0)
+        if (string.IsNullOrWhiteSpace(resHash) && string.IsNullOrWhiteSpace(sqHash) &&
+            string.IsNullOrWhiteSpace(hqHash) && string.IsNullOrWhiteSpace(stdHash))
         {
-            return null;
-        }
+            var keyword = $"{song.Name} {song.ArtistText}".Trim();
+            var searchUrl = $"http://mobilecdn.kugou.com/api/v3/search/song?format=json&keyword={Uri.EscapeDataString(keyword)}&page=1&pagesize=5&showtype=1";
 
-        var first = infoArr[0];
-        var albumId = first.GetStringProp("album_id");
-        var resHash = first.GetStringProp("ResFileHash");
-        if (string.IsNullOrWhiteSpace(resHash)) resHash = first.GetStringProp("reshash");
-        var sqHash = first.GetStringProp("sqhash");
-        if (string.IsNullOrWhiteSpace(sqHash)) sqHash = first.GetStringProp("SQFileHash");
-        var hqHash = first.GetStringProp("320hash");
-        var stdHash = first.GetStringProp("hash");
+            var json = await _httpClient.GetStringAsync(searchUrl, ct);
+            using var doc = JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty("data", out var data) ||
+                !data.TryGetProperty("info", out var infoArr) ||
+                infoArr.ValueKind != JsonValueKind.Array ||
+                infoArr.GetArrayLength() == 0)
+            {
+                return null;
+            }
+
+            var first = infoArr[0];
+            albumId = first.GetStringProp("album_id");
+            resHash = first.GetStringProp("ResFileHash");
+            if (string.IsNullOrWhiteSpace(resHash)) resHash = first.GetStringProp("reshash");
+            sqHash = first.GetStringProp("sqhash");
+            if (string.IsNullOrWhiteSpace(sqHash)) sqHash = first.GetStringProp("SQFileHash");
+            hqHash = first.GetStringProp("320hash");
+            stdHash = first.GetStringProp("hash");
+        }
 
         var candidateHashes = new List<(string Hash, string Br)>();
         if (preferLossless && !string.IsNullOrWhiteSpace(resHash))
@@ -469,8 +575,7 @@ public class UnblockMusicService
                 var resolved = urlDoc.RootElement.GetStringProp("url").Replace("\\/", "/");
                 if (!string.IsNullOrWhiteSpace(resolved) && resolved.StartsWith("http", StringComparison.OrdinalIgnoreCase))
                 {
-                    LastResolvedBitrateKbps = urlDoc.RootElement.GetIntProp("br");
-                    LastResolvedSizeBytes = urlDoc.RootElement.GetLongProp("size");
+                    SetResolvedInfo(urlDoc.RootElement.GetIntProp("br"), urlDoc.RootElement.GetLongProp("size"));
                     return resolved;
                 }
             }
@@ -484,18 +589,24 @@ public class UnblockMusicService
     }
 
     /// <summary>
-    /// 落雪音源：使用当前激活的 JS 脚本解析直链
+    /// 落雪音源：按“首选脚本优先 + 其余已启用脚本自动轮询”解析直链，并校验文件体积拦截试听片段
     /// </summary>
-    private async Task<string?> TryLxMusicAsync(SongItem song, bool preferLossless, CancellationToken ct)
+    public async Task<string?> TryLxMusicAsync(SongItem song, bool preferLossless, CancellationToken ct)
     {
         var s = _configService.Settings;
-        var script = s.LxMusicScripts.FirstOrDefault(x => x.Id == s.ActiveLxMusicApiId) ?? s.LxMusicScripts.FirstOrDefault();
-        if (script == null) return null;
+        if (s.LxMusicScripts.Count == 0) return null;
 
-        var (url, quality) = await _lxHost.GetMusicUrlAsync(script, song, preferLossless ? "flac24bit" : "320k", ct);
+        var (url, quality, _) = await _lxHost.GetMusicUrlFromScriptsAsync(
+            s.LxMusicScripts,
+            s.ActiveLxMusicApiId,
+            song,
+            preferLossless ? "flac24bit" : "320k",
+            u => IsLikelyFullTrackAsync(u, song, ct),
+            ct);
+
         if (string.IsNullOrWhiteSpace(url)) return null;
 
-        LastResolvedBitrateKbps = LxQualityToKbps(quality);
+        SetResolvedInfo(LxQualityToKbps(quality), 0);
         return url;
     }
 
@@ -540,8 +651,7 @@ public class UnblockMusicService
             var resolved = doc.RootElement.GetStringProp("url").Replace("\\/", "/");
             if (!string.IsNullOrWhiteSpace(resolved) && resolved.StartsWith("http", StringComparison.OrdinalIgnoreCase))
             {
-                LastResolvedBitrateKbps = doc.RootElement.GetIntProp("br");
-                LastResolvedSizeBytes = doc.RootElement.GetLongProp("size");
+                SetResolvedInfo(doc.RootElement.GetIntProp("br"), doc.RootElement.GetLongProp("size"));
                 return resolved;
             }
         }

@@ -48,8 +48,10 @@ public sealed partial class MainWindow
     private Color _targetCoverC3 = Color.FromArgb(255, 168, 85, 247);
     private string _lastCoverFlowUrl = string.Empty;
 
-    // 底栏音频律动渐变画刷
+    // 底栏音频律动渐变画刷与合成器句柄
     private LinearGradientBrush? _rhythmGlowBrush;
+    private Microsoft.UI.Composition.Visual? _bottomCoverVisual;
+    private Microsoft.UI.Composition.Visual? _rhythmGlowVisual;
 
     // 粒子对象池（零帧内 GC 分配，支持密度增减与原地改色）
     private readonly List<ThemeParticleNode> _particlePool = [];
@@ -62,7 +64,7 @@ public sealed partial class MainWindow
     {
         public required FrameworkElement Element { get; init; }
         public required Microsoft.UI.Composition.Visual Visual { get; init; }
-        public RotateTransform? Rotation { get; init; }
+        public float AngleDegrees;
         public double X;
         public double Y;
         public double Vx;
@@ -477,22 +479,20 @@ public sealed partial class MainWindow
         double phase = _particleRng.NextDouble() * Math.PI * 2;
 
         FrameworkElement el;
-        RotateTransform? rot = null;
+        float initAngle = 0f;
         double vx = 0, vy = 0, size = 6, baseOp = 0.65, spin = 0;
 
         switch (type)
         {
             case "Sakura":
                 size = 7 + _particleRng.NextDouble() * 7;
-                rot = new RotateTransform { Angle = _particleRng.NextDouble() * 360 };
+                initAngle = (float)(_particleRng.NextDouble() * 360.0);
                 el = new Border
                 {
                     Width = size * 1.35,
                     Height = size * 0.82,
                     CornerRadius = new CornerRadius(size, 2, size, 2),
-                    Background = new SolidColorBrush(color),
-                    RenderTransformOrigin = new Point(0.5, 0.5),
-                    RenderTransform = rot
+                    Background = new SolidColorBrush(color)
                 };
                 vx = 14 + _particleRng.NextDouble() * 18;
                 vy = 26 + _particleRng.NextDouble() * 26;
@@ -562,12 +562,17 @@ public sealed partial class MainWindow
         var visual = ElementCompositionPreview.GetElementVisual(el);
         visual.Opacity = (float)baseOp;
         visual.Properties.InsertVector3("Translation", new Vector3((float)x, (float)y, 0f));
+        if (Math.Abs(spin) > 0.01)
+        {
+            visual.CenterPoint = new Vector3((float)(el.Width * 0.5), (float)(el.Height * 0.5), 0f);
+            visual.RotationAngleInDegrees = initAngle;
+        }
 
         return new ThemeParticleNode
         {
             Element = el,
             Visual = visual,
-            Rotation = rot,
+            AngleDegrees = initAngle,
             X = x,
             Y = y,
             Vx = vx,
@@ -609,16 +614,22 @@ public sealed partial class MainWindow
                 var goalC3 = ThemeService.AdaptAuroraColorForMode(_targetCoverC3, isLight);
 
                 double lerpT = Math.Clamp(1.0 - Math.Exp(-1.8 * dt), 0.002, 0.25);
-                _curAuroraC1 = ThemeService.LerpColor(_curAuroraC1, goalC1, lerpT);
-                _curAuroraC2 = ThemeService.LerpColor(_curAuroraC2, goalC2, lerpT);
-                _curAuroraC3 = ThemeService.LerpColor(_curAuroraC3, goalC3, lerpT);
-                double effIntensity = isLight ? Math.Clamp(profile.AuroraIntensity, 38, 56) : profile.AuroraIntensity;
-                ApplyAuroraOrbColors(effIntensity, isLight);
+                var nextC1 = ThemeService.LerpColor(_curAuroraC1, goalC1, lerpT);
+                var nextC2 = ThemeService.LerpColor(_curAuroraC2, goalC2, lerpT);
+                var nextC3 = ThemeService.LerpColor(_curAuroraC3, goalC3, lerpT);
+                if (nextC1 != _curAuroraC1 || nextC2 != _curAuroraC2 || nextC3 != _curAuroraC3)
+                {
+                    _curAuroraC1 = nextC1;
+                    _curAuroraC2 = nextC2;
+                    _curAuroraC3 = nextC3;
+                    double effIntensity = isLight ? Math.Clamp(profile.AuroraIntensity, 38, 56) : profile.AuroraIntensity;
+                    ApplyAuroraOrbColors(effIntensity, isLight);
+                }
             }
             UpdateAuroraOrbPositions(dt);
         }
 
-        // 2. 推进全屏粒子运动与呼吸闪烁（直接更新合成器 Visual.Translation 与 Opacity，零 XAML 布局重排）
+        // 2. 推进全屏粒子运动与呼吸闪烁（100% 直接更新合成器 Visual，零 XAML 依赖属性修改与布局重排）
         if (profile.EnableParticleOverlay && GlobalParticleOverlayCanvas.Visibility == Visibility.Visible && _particlePool.Count > 0)
         {
             double w = Math.Max(800, RootLayout.ActualWidth);
@@ -650,9 +661,10 @@ public sealed partial class MainWindow
 
                 p.Visual.Properties.InsertVector3("Translation", new Vector3((float)p.X, (float)p.Y, 0f));
 
-                if (p.Rotation != null)
+                if (Math.Abs(p.SpinSpeed) > 0.01)
                 {
-                    p.Rotation.Angle = (p.Rotation.Angle + p.SpinSpeed * speedMul * dt) % 360.0;
+                    p.AngleDegrees = (float)((p.AngleDegrees + p.SpinSpeed * speedMul * dt) % 360.0);
+                    p.Visual.RotationAngleInDegrees = p.AngleDegrees;
                 }
 
                 if (pType is "Starlight" or "Firefly")
@@ -662,20 +674,23 @@ public sealed partial class MainWindow
             }
         }
 
-        // 3. 推进左下角黑胶唱片旋转动画
+        // 3. 推进左下角黑胶唱片旋转动画（纯合成器 Visual 旋转，避免 UI 线程改写 XAML RotateTransform）
         if (profile.CoverArtShape == "VinylSpin" && ViewModel.IsPlaying)
         {
             _vinylRotationAngle = (_vinylRotationAngle + dt * 32.0) % 360.0;
-            BottomCoverRotateTransform.Angle = _vinylRotationAngle;
+            _bottomCoverVisual ??= ElementCompositionPreview.GetElementVisual(BottomCoverClipBorder);
+            float cx = (float)(BottomCoverClipBorder.ActualWidth > 0 ? BottomCoverClipBorder.ActualWidth * 0.5 : 24.0);
+            float cy = (float)(BottomCoverClipBorder.ActualHeight > 0 ? BottomCoverClipBorder.ActualHeight * 0.5 : 24.0);
+            _bottomCoverVisual.CenterPoint = new Vector3(cx, cy, 0f);
+            _bottomCoverVisual.RotationAngleInDegrees = (float)_vinylRotationAngle;
         }
 
-        // 4. 推进播放栏顶沿流光律动呼吸灯带
-        if (profile.EnablePlayBarRhythmGlow && ViewModel.IsPlaying && _rhythmGlowBrush != null && _rhythmGlowBrush.GradientStops.Count >= 3)
+        // 4. 推进播放栏顶沿流光律动呼吸灯带（纯合成器 Visual.Opacity，避免每帧弄脏底栏 XAML 子树）
+        if (profile.EnablePlayBarRhythmGlow && ViewModel.IsPlaying && PlayBarRhythmGlowBar.Visibility == Visibility.Visible)
         {
-            _rhythmPhase = (_rhythmPhase + dt * 1.6) % (Math.PI * 2);
-            double center = 0.5 + 0.38 * Math.Sin(_rhythmPhase);
-            _rhythmGlowBrush.GradientStops[1].Offset = Math.Clamp(center, 0.12, 0.88);
-            PlayBarRhythmGlowBar.Opacity = 0.65 + 0.35 * (0.5 + 0.5 * Math.Cos(_rhythmPhase * 2.0));
+            _rhythmPhase = (_rhythmPhase + dt * 2.4) % (Math.PI * 2);
+            _rhythmGlowVisual ??= ElementCompositionPreview.GetElementVisual(PlayBarRhythmGlowBar);
+            _rhythmGlowVisual.Opacity = (float)(0.52 + 0.48 * (0.5 + 0.5 * Math.Sin(_rhythmPhase)));
         }
     }
 
@@ -798,7 +813,9 @@ public sealed partial class MainWindow
             _rhythmGlowBrush.GradientStops.Add(new GradientStop { Offset = 1.0, Color = Color.FromArgb(30, accent.R, accent.G, accent.B) });
 
             PlayBarRhythmGlowBar.Background = _rhythmGlowBrush;
-            PlayBarRhythmGlowBar.Opacity = ViewModel.IsPlaying ? 0.9 : 0.45;
+            PlayBarRhythmGlowBar.Opacity = 1.0;
+            _rhythmGlowVisual ??= ElementCompositionPreview.GetElementVisual(PlayBarRhythmGlowBar);
+            _rhythmGlowVisual.Opacity = ViewModel.IsPlaying ? 0.9f : 0.45f;
             PlayBarRhythmGlowBar.Visibility = Visibility.Visible;
         }
         else
@@ -825,6 +842,7 @@ public sealed partial class MainWindow
             BottomCoverHoverArrowOverlay.CornerRadius = new CornerRadius(24);
             BottomCoverVinylCenterRing.Visibility = Visibility.Collapsed;
             BottomCoverRotateTransform.Angle = 0;
+            if (_bottomCoverVisual != null) _bottomCoverVisual.RotationAngleInDegrees = 0f;
         }
         else
         {
@@ -834,6 +852,7 @@ public sealed partial class MainWindow
             BottomCoverHoverArrowOverlay.CornerRadius = new CornerRadius(8);
             BottomCoverVinylCenterRing.Visibility = Visibility.Collapsed;
             BottomCoverRotateTransform.Angle = 0;
+            if (_bottomCoverVisual != null) _bottomCoverVisual.RotationAngleInDegrees = 0f;
         }
 
         // 4. 卡片质感预设覆盖（当未手动指定详细卡片颜色或叠加风格时赋予鲜明视觉辨识度）
@@ -883,13 +902,12 @@ public sealed partial class MainWindow
 
         switch (style)
         {
-
             case "FrostedGlass":
                 if (!profile.EnableCustomContent)
                 {
-                    rootRes["CardBackgroundFillColorDefaultBrush"] = isLight
-                        ? ThemeService.CreateFrostedGlassBrush(tintedSurface, tintOpacity: 0.08, luminosityOpacity: 0.14, fallbackAlpha: 38)
-                        : ThemeService.CreateFrostedGlassBrush(tintedSurface, tintOpacity: 0.24, luminosityOpacity: 0.36, fallbackAlpha: 72);
+                    ThemeService.SetOrUpdateSolidBrush(rootRes, "CardBackgroundFillColorDefaultBrush", isLight
+                        ? Color.FromArgb(136, 255, 255, 255)
+                        : Color.FromArgb(98, tintedSurface.R, tintedSurface.G, tintedSurface.B));
                     ThemeService.SetOrUpdateSolidBrush(rootRes, "CardBackgroundFillColorSecondaryBrush", isLight
                         ? Color.FromArgb(26, 255, 255, 255)
                         : Color.FromArgb(54, tintedSurface.R, tintedSurface.G, tintedSurface.B));
@@ -902,9 +920,9 @@ public sealed partial class MainWindow
             case "NeonBorder":
                 if (!profile.EnableCustomContent)
                 {
-                    rootRes["CardBackgroundFillColorDefaultBrush"] = isLight
-                        ? ThemeService.CreateFrostedGlassBrush(tintedSurface, tintOpacity: 0.11, luminosityOpacity: 0.18, fallbackAlpha: 45)
-                        : ThemeService.CreateFrostedGlassBrush(tintedSurface, tintOpacity: 0.32, luminosityOpacity: 0.45, fallbackAlpha: 85);
+                    ThemeService.SetOrUpdateSolidBrush(rootRes, "CardBackgroundFillColorDefaultBrush", isLight
+                        ? Color.FromArgb(146, 255, 255, 255)
+                        : Color.FromArgb(112, tintedSurface.R, tintedSurface.G, tintedSurface.B));
                 }
                 ThemeService.SetOrUpdateSolidBrush(rootRes, "CardStrokeColorDefaultBrush", Color.FromArgb(180, accent.R, accent.G, accent.B));
                 ThemeService.SetOrUpdateSolidBrush(rootRes, "DividerStrokeColorDefaultBrush", Color.FromArgb(80, accent.R, accent.G, accent.B));
@@ -913,9 +931,9 @@ public sealed partial class MainWindow
             case "FlatMinimal":
                 if (!profile.EnableCustomContent)
                 {
-                    rootRes["CardBackgroundFillColorDefaultBrush"] = isLight
-                        ? ThemeService.CreateFrostedGlassBrush(tintedSurface, tintOpacity: 0.12, luminosityOpacity: 0.20, fallbackAlpha: 48)
-                        : ThemeService.CreateFrostedGlassBrush(tintedSurface, tintOpacity: 0.28, luminosityOpacity: 0.40, fallbackAlpha: 78);
+                    ThemeService.SetOrUpdateSolidBrush(rootRes, "CardBackgroundFillColorDefaultBrush", isLight
+                        ? Color.FromArgb(152, 255, 255, 255)
+                        : Color.FromArgb(104, tintedSurface.R, tintedSurface.G, tintedSurface.B));
                 }
                 ThemeService.SetOrUpdateSolidBrush(rootRes, "CardStrokeColorDefaultBrush", Colors.Transparent);
                 break;
@@ -923,9 +941,9 @@ public sealed partial class MainWindow
             case "ElevatedCard":
                 if (!profile.EnableCustomContent)
                 {
-                    rootRes["CardBackgroundFillColorDefaultBrush"] = isLight
-                        ? ThemeService.CreateFrostedGlassBrush(tintedSurface, tintOpacity: 0.18, luminosityOpacity: 0.28, fallbackAlpha: 64)
-                        : ThemeService.CreateFrostedGlassBrush(tintedSurface, tintOpacity: 0.42, luminosityOpacity: 0.54, fallbackAlpha: 120);
+                    ThemeService.SetOrUpdateSolidBrush(rootRes, "CardBackgroundFillColorDefaultBrush", isLight
+                        ? Color.FromArgb(172, 255, 255, 255)
+                        : Color.FromArgb(142, tintedSurface.R, tintedSurface.G, tintedSurface.B));
                     ThemeService.SetOrUpdateSolidBrush(rootRes, "CardStrokeColorDefaultBrush", isLight
                         ? Color.FromArgb(205, borderMix.R, borderMix.G, borderMix.B)
                         : Color.FromArgb(145, accent.R, accent.G, accent.B));

@@ -183,6 +183,33 @@ public partial class SongItem : ObservableObject
     public string? BilibiliBvid { get; set; }
     public long? BilibiliCid { get; set; }
 
+    // 第三方平台原生曲库元数据（供第三方音源专区直连与落雪脚本精准解析使用）
+    public string? KugouHash { get; set; }
+    public string? Kugou320Hash { get; set; }
+    public string? KugouSqHash { get; set; }
+    public string? KugouResHash { get; set; }
+    public string? KugouAlbumId { get; set; }
+    public string? KuwoRid { get; set; }
+    public string? MiguCopyrightId { get; set; }
+    public string? MiguContentId { get; set; }
+    public string? MiguLrcUrl { get; set; }
+    public string? NativeQualityHint { get; set; }
+
+    public Microsoft.UI.Xaml.Visibility NativeQualityBadgeVisibility =>
+        string.IsNullOrWhiteSpace(NativeQualityHint)
+            ? Microsoft.UI.Xaml.Visibility.Collapsed
+            : Microsoft.UI.Xaml.Visibility.Visible;
+
+    public string SourcePlatformLabel => (Source ?? string.Empty).ToLowerInvariant() switch
+    {
+        "qq" or "tx" => "QQ音乐",
+        "kugou" or "kg" => "酷狗",
+        "kuwo" or "kw" => "酷我",
+        "migu" or "mg" => "咪咕",
+        "bilibili" => "B站",
+        _ => "网易云"
+    };
+
     public string ChannelText => ChannelCount switch
     {
         1 => "单声道",
@@ -354,9 +381,28 @@ public partial class SongItem : ObservableObject
         ? string.Empty
         : $" ({SubtitleText})";
 
-    public string CoverThumbnailUrl => string.IsNullOrWhiteSpace(PicUrl)
-        ? "ms-appx:///Assets/DefaultCover.png"
-        : (PicUrl.StartsWith("http") && !PicUrl.Contains("?param=") ? $"{PicUrl}?param=200y200" : PicUrl);
+    public string CoverThumbnailUrl => BuildSongCoverThumbnailUrl(PicUrl);
+
+    private static string BuildSongCoverThumbnailUrl(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+            return "ms-appx:///Assets/DefaultCover.png";
+        if (!url.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+            return url;
+
+        if (url.Contains("126.net", StringComparison.OrdinalIgnoreCase) && !url.Contains('?'))
+            return $"{url}?param=120y120";
+        if (url.Contains("gtimg.cn", StringComparison.OrdinalIgnoreCase))
+            return url.Replace("R500x500", "R150x150", StringComparison.OrdinalIgnoreCase)
+                      .Replace("R300x300", "R150x150", StringComparison.OrdinalIgnoreCase);
+        if (url.Contains("kugou.com", StringComparison.OrdinalIgnoreCase))
+            return url.Replace("/stdmusic/400/", "/stdmusic/150/", StringComparison.OrdinalIgnoreCase);
+        if (url.Contains("kuwo.cn", StringComparison.OrdinalIgnoreCase))
+            return url.Replace("/albumcover/500/", "/albumcover/120/", StringComparison.OrdinalIgnoreCase)
+                      .Replace("/albumcover/300/", "/albumcover/120/", StringComparison.OrdinalIgnoreCase);
+
+        return url;
+    }
 }
 
 /// <summary>
@@ -367,6 +413,7 @@ public class PlaylistItem
     public long Id { get; set; }
     public string Source { get; set; } = "netease";
     public string QqDissId { get; set; } = string.Empty;
+    public string ThirdPartyId { get; set; } = string.Empty;
     public int QqDirId { get; set; }
     public string Name { get; set; } = string.Empty;
     public string CoverImgUrl { get; set; } = string.Empty;
@@ -561,9 +608,9 @@ public class PlayRecordItem
 }
 
 /// <summary>
-/// 落雪音源 (LX Music) 脚本配置项（对应原 MusicSourceSettings.vue）
+/// 落雪音源 (LX Music) 脚本配置项（支持多脚本启用开关与首选标记）
 /// </summary>
-public class LxScriptItem
+public partial class LxScriptItem : ObservableObject
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public string Name { get; set; } = string.Empty;
@@ -572,6 +619,40 @@ public class LxScriptItem
     public string Description { get; set; } = string.Empty;
     public string ScriptContent { get; set; } = string.Empty;
     public string SourceUrl { get; set; } = string.Empty;
+
+    private bool _enabled = true;
+    public bool Enabled
+    {
+        get => _enabled;
+        set
+        {
+            if (SetProperty(ref _enabled, value))
+            {
+                OnPropertyChanged(nameof(RowOpacity));
+            }
+        }
+    }
+
+    private bool _isPrimary;
+    [global::System.Text.Json.Serialization.JsonIgnore]
+    public bool IsPrimary
+    {
+        get => _isPrimary;
+        set
+        {
+            if (SetProperty(ref _isPrimary, value))
+            {
+                OnPropertyChanged(nameof(PrimaryBadgeVisibility));
+                OnPropertyChanged(nameof(SetPrimaryButtonVisibility));
+            }
+        }
+    }
+
+    public double RowOpacity => _enabled ? 1.0 : 0.55;
+    public Microsoft.UI.Xaml.Visibility PrimaryBadgeVisibility =>
+        _isPrimary ? Microsoft.UI.Xaml.Visibility.Visible : Microsoft.UI.Xaml.Visibility.Collapsed;
+    public Microsoft.UI.Xaml.Visibility SetPrimaryButtonVisibility =>
+        _isPrimary ? Microsoft.UI.Xaml.Visibility.Collapsed : Microsoft.UI.Xaml.Visibility.Visible;
 
     public string DisplayMeta => $"v{Version}" + (string.IsNullOrWhiteSpace(Author) ? "" : $" · {Author}");
 }
