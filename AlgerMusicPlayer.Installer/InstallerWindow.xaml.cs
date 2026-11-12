@@ -15,7 +15,7 @@ public partial class InstallerWindow : Window
 {
     private const string AppId = "AlgerMusicPlayer";
     private const string AppDisplayName = "Alger Music Player";
-    private const string AppVersion = "5.1.2";
+    private const string AppVersion = "5.1.3";
     private const string MainExeName = "AlgerMusicPlayer.WinUI.exe";
     private const string UninstallExeName = "Uninstall.exe";
     private const string UninstallRegKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\AlgerMusicPlayer";
@@ -56,6 +56,46 @@ public partial class InstallerWindow : Window
             string.Equals(currentExeName, UninstallExeName, StringComparison.OrdinalIgnoreCase))
         {
             EnterUninstallMode();
+        }
+        else if (args.Any(a => string.Equals(a, "--silent", StringComparison.OrdinalIgnoreCase)))
+        {
+            // 软件内一键更新：跳过配置页，直接覆盖安装到原目录并自动重启主程序
+            var dirArg = args.FirstOrDefault(a => a.StartsWith("--dir=", StringComparison.OrdinalIgnoreCase));
+            if (!string.IsNullOrWhiteSpace(dirArg))
+            {
+                InstallPathTextBox.Text = dirArg.Substring("--dir=".Length).Trim('"');
+            }
+            Loaded += async (_, _) => await RunSilentUpdateAsync();
+        }
+    }
+
+    private async Task RunSilentUpdateAsync()
+    {
+        var targetDir = InstallPathTextBox.Text.Trim();
+        _isBusy = true;
+        CloseWindowBtn.IsEnabled = false;
+        SetupConfigPage.Visibility = Visibility.Collapsed;
+        SetupProgressPage.Visibility = Visibility.Visible;
+        ProgressTitleText.Text = "正在更新 Alger Music Player...";
+
+        try
+        {
+            // 仅保留用户原本已有的快捷方式，不擅自新增
+            bool hasDesktop = File.Exists(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), $"{AppDisplayName}.lnk"));
+            bool hasStartMenu = Directory.Exists(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), AppDisplayName));
+            await RunInstallCoreAsync(targetDir, hasDesktop, hasStartMenu);
+            _installedTargetExe = Path.Combine(targetDir, MainExeName);
+            LaunchInstalledApp();
+            _isBusy = false;
+            Close();
+        }
+        catch (Exception ex)
+        {
+            _isBusy = false;
+            CloseWindowBtn.IsEnabled = true;
+            System.Windows.MessageBox.Show(this, $"更新过程中发生错误：\n{ex.Message}", "更新失败", MessageBoxButton.OK, MessageBoxImage.Error);
+            SetupProgressPage.Visibility = Visibility.Collapsed;
+            SetupConfigPage.Visibility = Visibility.Visible;
         }
     }
 
@@ -362,37 +402,40 @@ public partial class InstallerWindow : Window
     {
         if (!_isUninstallMode && !_uninstalledDone && AutoLaunchCheck.IsChecked == true)
         {
-            if (!string.IsNullOrWhiteSpace(_installedTargetExe) && File.Exists(_installedTargetExe))
-            {
-                try
-                {
-                    // 通过 explorer.exe 代理以标准桌面用户权限启动，避免继承安装器管理员令牌导致首次缓存文件权限异常
-                    Process.Start(new ProcessStartInfo
-                    {
-                        FileName = "explorer.exe",
-                        Arguments = $"\"{_installedTargetExe}\"",
-                        UseShellExecute = true
-                    });
-                }
-                catch
-                {
-                    try
-                    {
-                        Process.Start(new ProcessStartInfo
-                        {
-                            FileName = _installedTargetExe,
-                            WorkingDirectory = Path.GetDirectoryName(_installedTargetExe) ?? string.Empty,
-                            UseShellExecute = true
-                        });
-                    }
-                    catch
-                    {
-                    }
-                }
-            }
+            LaunchInstalledApp();
         }
 
         Close();
+    }
+
+    private void LaunchInstalledApp()
+    {
+        if (string.IsNullOrWhiteSpace(_installedTargetExe) || !File.Exists(_installedTargetExe)) return;
+        try
+        {
+            // 通过 explorer.exe 代理以标准桌面用户权限启动，避免继承安装器管理员令牌导致首次缓存文件权限异常
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = "explorer.exe",
+                Arguments = $"\"{_installedTargetExe}\"",
+                UseShellExecute = true
+            });
+        }
+        catch
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = _installedTargetExe,
+                    WorkingDirectory = Path.GetDirectoryName(_installedTargetExe) ?? string.Empty,
+                    UseShellExecute = true
+                });
+            }
+            catch
+            {
+            }
+        }
     }
 
     private void UpdateProgressUi(int percent, string detail)

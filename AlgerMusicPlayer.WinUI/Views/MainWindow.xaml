@@ -5319,11 +5319,11 @@
                                                     </Grid.ColumnDefinitions>
                                                     <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="2">
                                                         <TextBlock Text="版本" FontSize="15" FontWeight="Medium" />
-                                                        <TextBlock x:Name="AboutVersionStatusText" Text="5.1.2" FontSize="13" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                                        <TextBlock x:Name="AboutVersionStatusText" Text="5.1.3" FontSize="13" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                                                     </StackPanel>
                                                     <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
                                                         <Button Content="检查更新" Click="OnCheckUpdateClick" CornerRadius="8" Padding="14,6" />
-                                                        <HyperlinkButton Content="前往更新" NavigateUri="https://github.com/TencenTiM/AlgerMusicPlayer-WinUI3/releases" />
+                                                        <HyperlinkButton Content="发布页" NavigateUri="https://github.com/TencenTiM/AlgerMusicPlayer-WinUI3/releases" />
                                                     </StackPanel>
                                                 </Grid>
                                             </Border>

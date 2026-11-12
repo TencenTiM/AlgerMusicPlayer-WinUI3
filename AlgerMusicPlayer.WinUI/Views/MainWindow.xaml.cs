@@ -7508,14 +7508,126 @@ public sealed partial class MainWindow : Window
         });
     }
 
+    private bool _isUpdating;
+
     private async void OnCheckUpdateClick(object sender, RoutedEventArgs e)
     {
+        if (_isUpdating) return;
+        string cur = Services.System.AppUpdateService.CurrentVersion.ToString();
         AboutVersionStatusText.Text = "正在连接 GitHub 检查最新版本...";
-        var (hasUpdate, latestVersion, _) = await ViewModel.Api.CheckGitHubUpdateAsync("v5.1.2");
-        AboutVersionStatusText.Text = hasUpdate
-            ? $"发现新版本：{latestVersion}（当前 5.1.2，可点击右侧前往更新）"
-            : $"5.1.2 (已是最新版本: {latestVersion})";
-        ViewModel.StatusToast = AboutVersionStatusText.Text;
+
+        Services.System.AppUpdateService.ReleaseInfo? info;
+        try
+        {
+            info = await Services.System.AppUpdateService.CheckForUpdateAsync();
+        }
+        catch (Exception ex)
+        {
+            AboutVersionStatusText.Text = $"{cur}（检查更新失败：{ex.Message}）";
+            ViewModel.StatusToast = AboutVersionStatusText.Text;
+            return;
+        }
+
+        if (info == null)
+        {
+            AboutVersionStatusText.Text = $"{cur}（已是最新版本）";
+            ViewModel.StatusToast = AboutVersionStatusText.Text;
+            return;
+        }
+
+        AboutVersionStatusText.Text = $"发现新版本：{info.Tag}（当前 {cur}）";
+
+        // 1. 展示更新说明并确认
+        var confirm = new ContentDialog
+        {
+            Title = $"发现新版本 {info.Tag}",
+            Content = new ScrollViewer
+            {
+                MaxHeight = 360,
+                Content = new TextBlock
+                {
+                    Text = string.IsNullOrWhiteSpace(info.Notes) ? "（暂无更新说明）" : info.Notes,
+                    TextWrapping = TextWrapping.Wrap,
+                    IsTextSelectionEnabled = true
+                }
+            },
+            PrimaryButtonText = "立即更新",
+            CloseButtonText = "以后再说",
+            DefaultButton = ContentDialogButton.Primary,
+            XamlRoot = RootLayout.XamlRoot
+        };
+        if (await confirm.ShowAsync() != ContentDialogResult.Primary) return;
+
+        // 2. 下载进度弹窗
+        _isUpdating = true;
+        using var cts = new CancellationTokenSource();
+        var bar = new ProgressBar { Minimum = 0, Maximum = 100, Height = 6 };
+        var detail = new TextBlock { Text = "正在连接下载线路...", FontSize = 13, TextWrapping = TextWrapping.Wrap };
+        var progressDialog = new ContentDialog
+        {
+            Title = $"正在下载 {info.Tag}",
+            Content = new StackPanel { Spacing = 12, MinWidth = 380, Children = { bar, detail } },
+            CloseButtonText = "取消",
+            XamlRoot = RootLayout.XamlRoot
+        };
+        progressDialog.CloseButtonClick += (_, _) => cts.Cancel();
+        _ = progressDialog.ShowAsync();
+
+        var speedWatch = global::System.Diagnostics.Stopwatch.StartNew();
+        string? setupPath = null;
+        try
+        {
+            setupPath = await Services.System.AppUpdateService.DownloadSetupAsync(info, (done, total, line) =>
+            {
+                DispatcherQueue.TryEnqueue(() =>
+                {
+                    double mb = done / 1048576.0;
+                    double totalMb = total / 1048576.0;
+                    double speed = mb / Math.Max(0.5, speedWatch.Elapsed.TotalSeconds);
+                    bar.IsIndeterminate = total <= 0;
+                    if (total > 0) bar.Value = done * 100.0 / total;
+                    detail.Text = total > 0
+                        ? $"{line}　{mb:F1} / {totalMb:F1} MB　{speed:F1} MB/s"
+                        : $"{line}　{mb:F1} MB　{speed:F1} MB/s";
+                });
+            }, cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            AboutVersionStatusText.Text = $"已取消更新（当前 {cur}）";
+        }
+        catch (Exception ex)
+        {
+            progressDialog.Hide();
+            AboutVersionStatusText.Text = $"下载更新失败（当前 {cur}）";
+            await ShowThemeFileDialogErrorAsync("下载更新失败", ex.Message);
+        }
+        finally
+        {
+            progressDialog.Hide();
+            _isUpdating = false;
+        }
+
+        if (setupPath == null) return;
+
+        // 3. 启动安装器静默覆盖安装（会弹出一次 UAC 授权），安装完成后自动重启
+        try
+        {
+            Services.System.AppUpdateService.LaunchSilentInstaller(setupPath);
+        }
+        catch (global::System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 1223)
+        {
+            AboutVersionStatusText.Text = "已取消管理员授权，更新未安装";
+            ViewModel.StatusToast = AboutVersionStatusText.Text;
+            return;
+        }
+        catch (Exception ex)
+        {
+            await ShowThemeFileDialogErrorAsync("启动安装程序失败", ex.Message);
+            return;
+        }
+
+        Application.Current.Exit();
     }
 
     private async void OnRemoteControlToggled(object sender, RoutedEventArgs e)

@@ -14,7 +14,7 @@
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
     <DebugType>embedded</DebugType>
-    <Version>5.1.2</Version>
+    <Version>5.1.3</Version>
     <Product>AlgerMusicPlayer Setup</Product>
     <Company>AlgerMusicPlayer</Company>
     <ApplicationManifest>app.manifest</ApplicationManifest>

@@ -16,7 +16,7 @@ $InstallerPublishDir = Join-Path $InstallerDir "bin\Release\Publish"
 $FinalSetupExePath = Join-Path $DistDir "AlgerMusicPlayer-Setup-x64.exe"
 
 Write-Host "==========================================================" -ForegroundColor Cyan
-Write-Host "  AlgerMusicPlayer WinUI 3 自研安装包构建工具 (v5.1.2)" -ForegroundColor Cyan
+Write-Host "  AlgerMusicPlayer WinUI 3 自研安装包构建工具 (v5.1.3)" -ForegroundColor Cyan
 Write-Host "==========================================================" -ForegroundColor Cyan
 
 # 1. 停止运行中的实例避免文件占用
