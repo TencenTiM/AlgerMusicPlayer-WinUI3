@@ -35,6 +35,7 @@
   <ItemGroup>
     <Content Include="Assets\icon.ico" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\icon.png" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets\Platforms\*.png" CopyToOutputDirectory="PreserveNewest" />
     <None Include="mpv\win-x64\*.*" CopyToOutputDirectory="PreserveNewest" />
     <!-- 落雪音源 JS 脚本宿主页与 Worker 沙箱 -->
     <Content Include="LxHost\*.*" CopyToOutputDirectory="PreserveNewest" />
@@ -48,28 +49,32 @@
       <PriConfigXml>$(IntermediateOutputPath)priconfig.xml</PriConfigXml>
     </PropertyGroup>
     <RemoveDir Directories="$(PriStagingDir)" />
-    <MakeDir Directories="$(PriStagingDir);$(PriStagingDir)\Views" />
+    <MakeDir Directories="$(PriStagingDir);$(PriStagingDir)\Views;$(PriStagingDir)\Assets\Platforms" />
     <Copy SourceFiles="$(TargetDir)Microsoft.UI.Xaml.Controls.pri;$(TargetDir)App.xbf" DestinationFolder="$(PriStagingDir)" SkipUnchangedFiles="true" />
     <ItemGroup>
       <_ViewXbfFiles Include="$(TargetDir)Views\*.xbf" />
+      <_PlatformAssetFiles Include="$(ProjectDir)Assets\Platforms\*.png" />
     </ItemGroup>
     <Copy SourceFiles="@(_ViewXbfFiles)" DestinationFolder="$(PriStagingDir)\Views" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(_PlatformAssetFiles)" DestinationFolder="$(PriStagingDir)\Assets\Platforms" SkipUnchangedFiles="true" />
     <Exec Command="&quot;$(MakePriExe)&quot; createconfig /cf &quot;$(PriConfigXml)&quot; /dq zh-CN /o /pv 10.0.0" Condition="Exists('$(MakePriExe)')" />
     <Exec Command="&quot;$(MakePriExe)&quot; new /pr &quot;$(PriStagingDir)&quot; /cf &quot;$(PriConfigXml)&quot; /of &quot;$(TargetDir)resources.pri&quot; /o" Condition="Exists('$(MakePriExe)')" />
   </Target>
 
   <!-- Publish 时同步复制合并后的 resources.pri 与 XBF 视图字节码到发布目录 -->
   <Target Name="CopyWinUIPriToPublishDir" AfterTargets="Publish" DependsOnTargets="GenerateWinUIPriFile">
-    <MakeDir Directories="$(PublishDir)Views;$(PublishDir)Assets;$(PublishDir)mpv\win-x64" />
+    <MakeDir Directories="$(PublishDir)Views;$(PublishDir)Assets;$(PublishDir)Assets\Platforms;$(PublishDir)mpv\win-x64" />
     <ItemGroup>
       <_PublishViewXbfFiles Include="$(TargetDir)Views\*.xbf" />
       <_PublishAssetFiles Include="$(ProjectDir)Assets\*.*" />
+      <_PublishPlatformAssetFiles Include="$(ProjectDir)Assets\Platforms\*.png" />
       <_PublishMpvFiles Include="$(ProjectDir)mpv\win-x64\*.*" />
     </ItemGroup>
     <Copy SourceFiles="$(TargetDir)resources.pri" DestinationFolder="$(PublishDir)" Condition="Exists('$(TargetDir)resources.pri')" />
     <Copy SourceFiles="$(TargetDir)App.xbf" DestinationFolder="$(PublishDir)" Condition="Exists('$(TargetDir)App.xbf')" />
     <Copy SourceFiles="@(_PublishViewXbfFiles)" DestinationFolder="$(PublishDir)Views" />
     <Copy SourceFiles="@(_PublishAssetFiles)" DestinationFolder="$(PublishDir)Assets" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(_PublishPlatformAssetFiles)" DestinationFolder="$(PublishDir)Assets\Platforms" SkipUnchangedFiles="true" />
     <Copy SourceFiles="@(_PublishMpvFiles)" DestinationFolder="$(PublishDir)mpv\win-x64" SkipUnchangedFiles="true" />
   </Target>
 </Project>

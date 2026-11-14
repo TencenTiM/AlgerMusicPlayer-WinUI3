@@ -43,6 +43,65 @@ public static class MusicQualityLevel
     public const string Sky = "sky";
     public const string Jymaster = "jymaster";
 
+    public static readonly string[] AllOrderedLevels =
+        [Standard, Higher, Exhigh, Lossless, Hires, Jyeffect, Sky, Jymaster];
+
+    public static int GetQualityRank(string? level) => (level ?? string.Empty).Trim().ToLowerInvariant() switch
+    {
+        Standard => 1,
+        Higher => 2,
+        Exhigh => 3,
+        Lossless => 4,
+        Hires => 5,
+        Jyeffect => 6,
+        Sky => 7,
+        Jymaster => 8,
+        _ => 3
+    };
+
+    public static string FormatFileSizeShort(long bytes) => bytes switch
+    {
+        <= 0 => string.Empty,
+        >= 1024L * 1024L => $"{bytes / 1048576.0:F1} MB",
+        _ => $"{Math.Max(1.0, bytes / 1024.0):F0} KB"
+    };
+
+    /// <summary>
+    /// 按接口返回等级或实际流地址/码率/体积推断真实落地的音质档位
+    /// </summary>
+    public static string InferActualQualityLevel(string? actualLevel, string? url, int kbps, long sizeBytes = 0)
+    {
+        var normalized = (actualLevel ?? string.Empty).Trim().ToLowerInvariant();
+        if (normalized is Standard or Higher or Exhigh or Lossless or Hires or Jyeffect or Sky or Jymaster)
+        {
+            return normalized;
+        }
+
+        bool isFlacUrl = !string.IsNullOrWhiteSpace(url) &&
+                         url.Contains(".flac", StringComparison.OrdinalIgnoreCase);
+        if (kbps >= 1350 || sizeBytes > 42L * 1024 * 1024)
+        {
+            return Hires;
+        }
+        if (isFlacUrl || kbps > 400)
+        {
+            return Lossless;
+        }
+        if (kbps >= 240)
+        {
+            return Exhigh;
+        }
+        if (kbps >= 160)
+        {
+            return Higher;
+        }
+        if (kbps > 0)
+        {
+            return Standard;
+        }
+        return Exhigh;
+    }
+
     public static string GetDisplayName(string level) => level switch
     {
         Standard => "标准 (128k)",
@@ -123,13 +182,108 @@ public static class MusicQualityLevel
 }
 
 /// <summary>
+/// 当前歌曲在当前音源下可用的单个音质选项
+/// </summary>
+public sealed class SongQualityOption
+{
+    public string Level { get; set; } = string.Empty;
+    public string Label { get; set; } = string.Empty;
+    public string Detail { get; set; } = string.Empty;
+    public bool IsCurrent { get; set; }
+    public bool IsSwitchable { get; set; } = true;
+
+    public string MenuDisplayText => string.IsNullOrWhiteSpace(Detail) ? Label : $"{Label}  ({Detail})";
+}
+
+/// <summary>
 /// 歌手信息模型
 /// </summary>
+/// <summary>
+/// 统一图片地址校验与安全兜底工具，防止空串或目录型 URI 触发 WinUI Image 解码 E_INVALIDARG 崩溃
+/// </summary>
+internal static class ImageUriHelper
+{
+    public const string DefaultCoverUri = "ms-appx:///Assets/icon.png";
+
+    public static bool HasRealImageUrl(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return false;
+
+        var trimmed = raw.Trim();
+        if (trimmed.Contains("DefaultCover.png", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.Equals(DefaultCoverUri, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return !string.IsNullOrWhiteSpace(Normalize(trimmed, string.Empty));
+    }
+
+    public static string SanitizeOrEmpty(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return string.Empty;
+
+        return Normalize(raw, string.Empty);
+    }
+
+    public static string Normalize(string? raw, string fallback = DefaultCoverUri)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return fallback;
+
+        var val = raw.Trim();
+        if (val.Contains("DefaultCover.png", StringComparison.OrdinalIgnoreCase))
+            return fallback;
+
+        if (val.StartsWith("//", StringComparison.Ordinal))
+            val = "https:" + val;
+
+        if (!Uri.TryCreate(val, UriKind.Absolute, out var uri))
+            return fallback;
+
+        if (uri.Scheme.Equals("http", StringComparison.OrdinalIgnoreCase) ||
+            uri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase))
+        {
+            if (string.IsNullOrWhiteSpace(uri.Host))
+                return fallback;
+
+            var path = uri.AbsolutePath.Trim('/');
+            // 拒绝无实际文件对象的裸路径（如汽水音乐 /img/ 目录前缀）
+            if (string.IsNullOrWhiteSpace(path) ||
+                uri.AbsolutePath.EndsWith("/", StringComparison.Ordinal) ||
+                path.Equals("img", StringComparison.OrdinalIgnoreCase))
+            {
+                return fallback;
+            }
+
+            return uri.AbsoluteUri;
+        }
+
+        if (uri.Scheme.Equals("ms-appx", StringComparison.OrdinalIgnoreCase) ||
+            uri.Scheme.Equals("ms-appdata", StringComparison.OrdinalIgnoreCase) ||
+            uri.Scheme.Equals("file", StringComparison.OrdinalIgnoreCase))
+        {
+            return val;
+        }
+
+        return fallback;
+    }
+}
+
 public class ArtistItem
 {
+    private string _picUrl = string.Empty;
+
     public long Id { get; set; }
     public string Name { get; set; } = string.Empty;
-    public string PicUrl { get; set; } = string.Empty;
+    public string PicUrl
+    {
+        get => _picUrl;
+        set => _picUrl = ImageUriHelper.SanitizeOrEmpty(value);
+    }
+    public string SafePicUrl => ImageUriHelper.Normalize(_picUrl);
     public int MusicSize { get; set; }
     public int AlbumSize { get; set; }
     public int MvSize { get; set; }
@@ -142,9 +296,16 @@ public class ArtistItem
 /// </summary>
 public class AlbumItem
 {
+    private string _picUrl = string.Empty;
+
     public long Id { get; set; }
     public string Name { get; set; } = string.Empty;
-    public string PicUrl { get; set; } = string.Empty;
+    public string PicUrl
+    {
+        get => _picUrl;
+        set => _picUrl = ImageUriHelper.SanitizeOrEmpty(value);
+    }
+    public string SafePicUrl => ImageUriHelper.Normalize(_picUrl);
     public string ArtistName { get; set; } = string.Empty;
     public long PublishTime { get; set; }
     public int Size { get; set; }
@@ -164,7 +325,14 @@ public partial class SongItem : ObservableObject
     public string Id { get; set; } = string.Empty;
     public long NumericId => long.TryParse(Id, out var id) ? id : 0;
     public string Name { get; set; } = string.Empty;
-    public string PicUrl { get; set; } = string.Empty;
+    private string _picUrl = string.Empty;
+
+    public string PicUrl
+    {
+        get => _picUrl;
+        set => _picUrl = ImageUriHelper.SanitizeOrEmpty(value);
+    }
+    public string SafePicUrl => ImageUriHelper.Normalize(_picUrl);
     public List<ArtistItem> Artists { get; set; } = [];
     public AlbumItem Album { get; set; } = new();
     public long DurationMs { get; set; }
@@ -193,6 +361,11 @@ public partial class SongItem : ObservableObject
     public string? MiguCopyrightId { get; set; }
     public string? MiguContentId { get; set; }
     public string? MiguLrcUrl { get; set; }
+    public string? QishuiTrackId { get; set; }
+    public string? NativeTrackId { get; set; }
+    public string? NativePlayUrl { get; set; }
+    public string? GdTrackId { get; set; }
+    public string? GdSource { get; set; }
     public string? NativeQualityHint { get; set; }
 
     public Microsoft.UI.Xaml.Visibility NativeQualityBadgeVisibility =>
@@ -203,9 +376,16 @@ public partial class SongItem : ObservableObject
     public string SourcePlatformLabel => (Source ?? string.Empty).ToLowerInvariant() switch
     {
         "qq" or "tx" => "QQ音乐",
+        "qishui" => "汽水音乐",
         "kugou" or "kg" => "酷狗",
         "kuwo" or "kw" => "酷我",
         "migu" or "mg" => "咪咕",
+        "spotify" => "Spotify",
+        "apple" => "Apple Music",
+        "deezer" => "Deezer",
+        "tidal" => "Tidal",
+        "qobuz" => "Qobuz",
+        "ytmusic" => "YT Music",
         "bilibili" => "B站",
         _ => "网易云"
     };
@@ -248,6 +428,16 @@ public partial class SongItem : ObservableObject
         get => _playingQualityBadge;
         set => SetProperty(ref _playingQualityBadge, value);
     }
+
+    // 运行期实际输出的音质档位、码率（kbps）与文件体积，供动态音质菜单高亮及详情展示使用
+    [global::System.Text.Json.Serialization.JsonIgnore]
+    public string? PlayingQualityLevel { get; set; }
+
+    [global::System.Text.Json.Serialization.JsonIgnore]
+    public int PlayingBitrateKbps { get; set; }
+
+    [global::System.Text.Json.Serialization.JsonIgnore]
+    public long PlayingSizeBytes { get; set; }
 
     private bool _isPlaying;
     public bool IsPlaying
@@ -385,23 +575,106 @@ public partial class SongItem : ObservableObject
 
     private static string BuildSongCoverThumbnailUrl(string? url)
     {
-        if (string.IsNullOrWhiteSpace(url))
-            return "ms-appx:///Assets/DefaultCover.png";
-        if (!url.StartsWith("http", StringComparison.OrdinalIgnoreCase))
-            return url;
+        var normalized = ImageUriHelper.Normalize(url, ImageUriHelper.DefaultCoverUri);
+        if (!normalized.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+            return normalized;
 
-        if (url.Contains("126.net", StringComparison.OrdinalIgnoreCase) && !url.Contains('?'))
-            return $"{url}?param=120y120";
-        if (url.Contains("gtimg.cn", StringComparison.OrdinalIgnoreCase))
-            return url.Replace("R500x500", "R150x150", StringComparison.OrdinalIgnoreCase)
-                      .Replace("R300x300", "R150x150", StringComparison.OrdinalIgnoreCase);
-        if (url.Contains("kugou.com", StringComparison.OrdinalIgnoreCase))
-            return url.Replace("/stdmusic/400/", "/stdmusic/150/", StringComparison.OrdinalIgnoreCase);
-        if (url.Contains("kuwo.cn", StringComparison.OrdinalIgnoreCase))
-            return url.Replace("/albumcover/500/", "/albumcover/120/", StringComparison.OrdinalIgnoreCase)
-                      .Replace("/albumcover/300/", "/albumcover/120/", StringComparison.OrdinalIgnoreCase);
+        if (normalized.Contains("126.net", StringComparison.OrdinalIgnoreCase) && !normalized.Contains('?'))
+            return $"{normalized}?param=120y120";
+        if (normalized.Contains("gtimg.cn", StringComparison.OrdinalIgnoreCase))
+            return normalized.Replace("R500x500", "R150x150", StringComparison.OrdinalIgnoreCase)
+                             .Replace("R300x300", "R150x150", StringComparison.OrdinalIgnoreCase);
+        if (normalized.Contains("kugou.com", StringComparison.OrdinalIgnoreCase))
+            return normalized.Replace("/stdmusic/400/", "/stdmusic/150/", StringComparison.OrdinalIgnoreCase);
+        if (normalized.Contains("kuwo.cn", StringComparison.OrdinalIgnoreCase))
+            return normalized.Replace("/albumcover/500/", "/albumcover/120/", StringComparison.OrdinalIgnoreCase)
+                             .Replace("/albumcover/300/", "/albumcover/120/", StringComparison.OrdinalIgnoreCase);
+        if (normalized.Contains("douyinpic.com", StringComparison.OrdinalIgnoreCase))
+            return normalized.Replace("resize:300:300", "resize:150:150", StringComparison.OrdinalIgnoreCase);
+        if (normalized.Contains("mzstatic.com", StringComparison.OrdinalIgnoreCase))
+            return normalized.Replace("600x600bb", "150x150bb", StringComparison.OrdinalIgnoreCase)
+                             .Replace("300x300bb", "150x150bb", StringComparison.OrdinalIgnoreCase);
+        if (normalized.Contains("dzcdn.net", StringComparison.OrdinalIgnoreCase))
+            return normalized.Replace("/500x500-", "/250x250-", StringComparison.OrdinalIgnoreCase);
 
-        return url;
+        return normalized;
+    }
+
+    public string HighResCoverUrl => BuildSongHighResCoverUrl(PicUrl);
+    public string ShortPlatformTag => PlatformVisualHelper.GetShortLabel(Source);
+    public Microsoft.UI.Xaml.Media.SolidColorBrush? SourcePlatformBrush => PlatformVisualHelper.GetPlatformBrush(Source);
+
+    public string DiscoverQualityTag
+    {
+        get
+        {
+            var hint = (NativeQualityHint ?? string.Empty).Trim();
+            if (string.IsNullOrEmpty(hint))
+            {
+                return string.Empty;
+            }
+            if (hint.Contains("母带", StringComparison.OrdinalIgnoreCase) || hint.Contains("master", StringComparison.OrdinalIgnoreCase))
+                return "母带";
+            if (hint.Contains("hi-res", StringComparison.OrdinalIgnoreCase) || hint.Contains("hires", StringComparison.OrdinalIgnoreCase) || hint.Contains("hr", StringComparison.OrdinalIgnoreCase) || hint.Contains("臻音", StringComparison.OrdinalIgnoreCase))
+                return "HI-RES";
+            if (hint.Contains("无损", StringComparison.OrdinalIgnoreCase) || hint.Contains("flac", StringComparison.OrdinalIgnoreCase) || hint.Contains("sq", StringComparison.OrdinalIgnoreCase))
+                return "SQ 无损";
+            if (hint.Contains("320", StringComparison.OrdinalIgnoreCase) || hint.Contains("hq", StringComparison.OrdinalIgnoreCase) || hint.Contains("极高", StringComparison.OrdinalIgnoreCase))
+                return "HQ 320k";
+            if (hint.Contains("aac", StringComparison.OrdinalIgnoreCase))
+                return hint.Contains("256") ? "AAC 256k" : "AAC";
+            if (hint.Contains("m4a", StringComparison.OrdinalIgnoreCase))
+                return "M4A 128k";
+            if (hint.Contains("mp3", StringComparison.OrdinalIgnoreCase))
+                return "MP3";
+            if (hint.Contains("preview", StringComparison.OrdinalIgnoreCase) || hint.Contains("试听", StringComparison.OrdinalIgnoreCase))
+                return "试听";
+            return hint.Length <= 8 ? hint.ToUpperInvariant() : hint[..8];
+        }
+    }
+
+    public Microsoft.UI.Xaml.Visibility DiscoverQualityBadgeVisibility =>
+        string.IsNullOrEmpty(DiscoverQualityTag)
+            ? Microsoft.UI.Xaml.Visibility.Collapsed
+            : Microsoft.UI.Xaml.Visibility.Visible;
+
+    private static string BuildSongHighResCoverUrl(string? url)
+    {
+        var normalized = ImageUriHelper.Normalize(url, ImageUriHelper.DefaultCoverUri);
+        if (!normalized.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+            return normalized;
+
+        if (normalized.Contains("{size}", StringComparison.OrdinalIgnoreCase))
+            normalized = normalized.Replace("{size}", "400", StringComparison.OrdinalIgnoreCase);
+
+        if (normalized.Contains("126.net", StringComparison.OrdinalIgnoreCase))
+        {
+            var qIdx = normalized.IndexOf('?');
+            if (qIdx >= 0)
+            {
+                var baseUrl = normalized[..qIdx];
+                return $"{baseUrl}?param=500y500";
+            }
+            return $"{normalized}?param=500y500";
+        }
+        if (normalized.Contains("gtimg.cn", StringComparison.OrdinalIgnoreCase))
+            return normalized.Replace("R150x150", "R500x500", StringComparison.OrdinalIgnoreCase)
+                             .Replace("R300x300", "R500x500", StringComparison.OrdinalIgnoreCase);
+        if (normalized.Contains("kugou.com", StringComparison.OrdinalIgnoreCase))
+            return normalized.Replace("/stdmusic/150/", "/stdmusic/400/", StringComparison.OrdinalIgnoreCase);
+        if (normalized.Contains("kuwo.cn", StringComparison.OrdinalIgnoreCase))
+            return normalized.Replace("/albumcover/120/", "/albumcover/500/", StringComparison.OrdinalIgnoreCase)
+                             .Replace("/albumcover/300/", "/albumcover/500/", StringComparison.OrdinalIgnoreCase);
+        if (normalized.Contains("douyinpic.com", StringComparison.OrdinalIgnoreCase))
+            return normalized.Replace("resize:150:150", "resize:500:500", StringComparison.OrdinalIgnoreCase)
+                             .Replace("resize:300:300", "resize:500:500", StringComparison.OrdinalIgnoreCase);
+        if (normalized.Contains("mzstatic.com", StringComparison.OrdinalIgnoreCase))
+            return normalized.Replace("150x150bb", "600x600bb", StringComparison.OrdinalIgnoreCase)
+                             .Replace("300x300bb", "600x600bb", StringComparison.OrdinalIgnoreCase);
+        if (normalized.Contains("dzcdn.net", StringComparison.OrdinalIgnoreCase))
+            return normalized.Replace("/250x250-", "/500x500-", StringComparison.OrdinalIgnoreCase);
+
+        return normalized;
     }
 }
 
@@ -416,7 +689,14 @@ public class PlaylistItem
     public string ThirdPartyId { get; set; } = string.Empty;
     public int QqDirId { get; set; }
     public string Name { get; set; } = string.Empty;
-    public string CoverImgUrl { get; set; } = string.Empty;
+    private string _coverImgUrl = string.Empty;
+
+    public string CoverImgUrl
+    {
+        get => _coverImgUrl;
+        set => _coverImgUrl = ImageUriHelper.SanitizeOrEmpty(value);
+    }
+    public string SafeCoverImgUrl => ImageUriHelper.Normalize(_coverImgUrl);
     public string Description { get; set; } = string.Empty;
     public long PlayCount { get; set; }
     public int TrackCount { get; set; }
@@ -466,9 +746,16 @@ public class MvItem
     public string BriefDesc { get; set; } = string.Empty;
     public string PublishTime { get; set; } = string.Empty;
 
-    public string CoverThumbnailUrl => string.IsNullOrWhiteSpace(Cover)
-        ? "ms-appx:///Assets/DefaultCover.png"
-        : (Cover.StartsWith("http") && !Cover.Contains("?param=") ? $"{Cover}?param=400y225" : Cover);
+    public string CoverThumbnailUrl
+    {
+        get
+        {
+            var normalized = ImageUriHelper.Normalize(Cover, ImageUriHelper.DefaultCoverUri);
+            return normalized.StartsWith("http", StringComparison.OrdinalIgnoreCase) && !normalized.Contains("?param=")
+                ? $"{normalized}?param=400y225"
+                : normalized;
+        }
+    }
 
     public string PlayCountText => PlayCount switch
     {
@@ -499,7 +786,14 @@ public class BilibiliVideoItem
     public string Bvid { get; set; } = string.Empty;
     public string Title { get; set; } = string.Empty;
     public string Author { get; set; } = string.Empty;
-    public string Pic { get; set; } = string.Empty;
+    private string _pic = string.Empty;
+
+    public string Pic
+    {
+        get => _pic;
+        set => _pic = ImageUriHelper.SanitizeOrEmpty(value);
+    }
+    public string SafePic => ImageUriHelper.Normalize(_pic);
     public string Description { get; set; } = string.Empty;
     public string Duration { get; set; } = string.Empty;
     public long ViewCount { get; set; }
@@ -553,7 +847,14 @@ public class RadioStationItem
 {
     public long Id { get; set; }
     public string Name { get; set; } = string.Empty;
-    public string PicUrl { get; set; } = string.Empty;
+    private string _picUrl = string.Empty;
+
+    public string PicUrl
+    {
+        get => _picUrl;
+        set => _picUrl = ImageUriHelper.SanitizeOrEmpty(value);
+    }
+    public string SafePicUrl => ImageUriHelper.Normalize(_picUrl);
     public string DjName { get; set; } = string.Empty;
     public string Category { get; set; } = string.Empty;
     public string RcmdText { get; set; } = string.Empty;
@@ -572,7 +873,14 @@ public class RadioProgramItem
     public string Name { get; set; } = string.Empty;
     public string DjName { get; set; } = string.Empty;
     public string Description { get; set; } = string.Empty;
-    public string CoverUrl { get; set; } = string.Empty;
+    private string _coverUrl = string.Empty;
+
+    public string CoverUrl
+    {
+        get => _coverUrl;
+        set => _coverUrl = ImageUriHelper.SanitizeOrEmpty(value);
+    }
+    public string SafeCoverUrl => ImageUriHelper.Normalize(_coverUrl);
     public long CreateTime { get; set; }
     public long DurationMs { get; set; }
     public long ListenerCount { get; set; }
@@ -700,9 +1008,9 @@ public class QqUserProfile
     public string Nickname { get; set; } = string.Empty;
     public string AvatarUrl { get; set; } = string.Empty;
 
-    public string DisplayAvatarUrl => !string.IsNullOrWhiteSpace(AvatarUrl)
-        ? AvatarUrl
-        : (!string.IsNullOrWhiteSpace(Uin) ? $"https://qlogo4.store.qq.com/qzone/{Uin}/{Uin}/100" : "ms-appx:///Assets/DefaultCover.png");
+    public string DisplayAvatarUrl => ImageUriHelper.HasRealImageUrl(AvatarUrl)
+        ? ImageUriHelper.Normalize(AvatarUrl)
+        : (!string.IsNullOrWhiteSpace(Uin) ? $"https://qlogo4.store.qq.com/qzone/{Uin}/{Uin}/100" : ImageUriHelper.DefaultCoverUri);
 }
 
 /// <summary>
@@ -766,9 +1074,16 @@ public class CompletedDownloadItem
     public double DurationSeconds { get; set; }
     public DateTime CreatedTime { get; set; } = DateTime.Now;
 
-    public string CoverThumbnailUrl => string.IsNullOrWhiteSpace(PicUrl)
-        ? "ms-appx:///Assets/DefaultCover.png"
-        : (PicUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase) && !PicUrl.Contains("param=") ? $"{PicUrl}?param=120y120" : PicUrl);
+    public string CoverThumbnailUrl
+    {
+        get
+        {
+            var normalized = ImageUriHelper.Normalize(PicUrl, ImageUriHelper.DefaultCoverUri);
+            return normalized.StartsWith("http", StringComparison.OrdinalIgnoreCase) && !normalized.Contains("param=")
+                ? $"{normalized}?param=120y120"
+                : normalized;
+        }
+    }
 
     public string FileSizeText => DownloadTaskItem.FormatBytes(FileSize);
 
@@ -861,9 +1176,173 @@ public partial class LocalQqAccountItem : ObservableObject
         _isSelected ? Microsoft.UI.Xaml.Visibility.Collapsed : Microsoft.UI.Xaml.Visibility.Visible;
 
     public string AvatarUrl => string.IsNullOrWhiteSpace(Uin)
-        ? "ms-appx:///Assets/DefaultCover.png"
+        ? ImageUriHelper.DefaultCoverUri
         : $"https://q.qlogo.cn/headimg_dl?dst_uin={Uin}&spec=100";
 
     public string DisplayNickname => string.IsNullOrWhiteSpace(Nickname) ? $"QQ用户 {Uin}" : Nickname;
     public string DisplayUin => $"QQ: {Uin}";
+}
+
+/// <summary>
+/// 跨平台视觉辅助工具（统一平台短徽章、筛选匹配与 UI 线程笔刷懒缓存）
+/// </summary>
+public static class PlatformVisualHelper
+{
+    private static readonly Dictionary<string, Microsoft.UI.Xaml.Media.SolidColorBrush> _brushCache = new(StringComparer.OrdinalIgnoreCase);
+
+    public static string NormalizeKey(string? source)
+    {
+        var s = (source ?? string.Empty).Trim().ToLowerInvariant();
+        return s switch
+        {
+            "wy" or "netease" or "music163" => "netease",
+            "tx" or "qq" or "qqmusic" => "qq",
+            "kg" or "kugou" => "kugou",
+            "kw" or "kuwo" => "kuwo",
+            "mg" or "migu" => "migu",
+            "qishui" or "soda" => "qishui",
+            "bili" or "bilibili" => "bilibili",
+            "apple" or "applemusic" => "apple",
+            "ytmusic" or "youtube" or "yt" => "ytmusic",
+            _ => s
+        };
+    }
+
+    public static bool MatchesFilter(string? source, string filterTag)
+    {
+        if (string.IsNullOrWhiteSpace(filterTag) || string.Equals(filterTag, "all", StringComparison.OrdinalIgnoreCase))
+            return true;
+        return string.Equals(NormalizeKey(source), NormalizeKey(filterTag), StringComparison.OrdinalIgnoreCase);
+    }
+
+    public static string GetShortLabel(string? source) => NormalizeKey(source) switch
+    {
+        "netease" => "网易云",
+        "qq" => "QQ音乐",
+        "qishui" => "汽水",
+        "kugou" => "酷狗",
+        "kuwo" => "酷我",
+        "migu" => "咪咕",
+        "bilibili" => "B站",
+        "spotify" => "Spotify",
+        "apple" => "Apple",
+        "deezer" => "Deezer",
+        "tidal" => "Tidal",
+        "ytmusic" => "YTMusic",
+        _ => "聚合"
+    };
+
+    public static Windows.UI.Color GetAccentColor(string? source) => NormalizeKey(source) switch
+    {
+        "netease" => Windows.UI.Color.FromArgb(255, 230, 0, 38),
+        "qq" => Windows.UI.Color.FromArgb(255, 18, 183, 106),
+        "qishui" => Windows.UI.Color.FromArgb(255, 0, 196, 154),
+        "kugou" => Windows.UI.Color.FromArgb(255, 16, 142, 255),
+        "kuwo" => Windows.UI.Color.FromArgb(255, 245, 158, 11),
+        "migu" => Windows.UI.Color.FromArgb(255, 232, 23, 107),
+        "bilibili" => Windows.UI.Color.FromArgb(255, 251, 114, 153),
+        "spotify" => Windows.UI.Color.FromArgb(255, 29, 185, 84),
+        "apple" => Windows.UI.Color.FromArgb(255, 250, 35, 59),
+        "deezer" => Windows.UI.Color.FromArgb(255, 155, 77, 255),
+        "tidal" => Windows.UI.Color.FromArgb(255, 59, 130, 246),
+        "ytmusic" => Windows.UI.Color.FromArgb(255, 255, 0, 51),
+        _ => Windows.UI.Color.FromArgb(255, 16, 185, 129)
+    };
+
+    /// <summary>
+    /// 仅在 UI 线程延迟构造与缓存 SolidColorBrush，严禁在后台线程实例化 WinUI DependencyObject
+    /// </summary>
+    public static Microsoft.UI.Xaml.Media.SolidColorBrush? GetPlatformBrush(string? source)
+    {
+        if (Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread() == null)
+            return null;
+
+        var key = NormalizeKey(source);
+        if (string.IsNullOrEmpty(key)) key = "default";
+        if (_brushCache.TryGetValue(key, out var cached))
+            return cached;
+
+        var brush = new Microsoft.UI.Xaml.Media.SolidColorBrush(GetAccentColor(key));
+        _brushCache[key] = brush;
+        return brush;
+    }
+}
+
+/// <summary>
+/// 综合首页顶部三联焦点画报卡片模型
+/// </summary>
+public partial class DiscoverBannerItem : ObservableObject
+{
+    public string Id { get; set; } = string.Empty;
+    public string BadgeText { get; set; } = string.Empty;
+    public string PlatformKey { get; set; } = "netease";
+    public string Headline { get; set; } = string.Empty;
+    public string Subtitle { get; set; } = string.Empty;
+
+    private string _coverUrl = ImageUriHelper.DefaultCoverUri;
+    public string CoverUrl
+    {
+        get => _coverUrl;
+        set => SetProperty(ref _coverUrl, ImageUriHelper.Normalize(value));
+    }
+
+    public List<SongItem> Songs { get; } = [];
+    public SongItem? LeadSong => Songs.Count > 0 ? Songs[0] : null;
+    public Microsoft.UI.Xaml.Media.SolidColorBrush? PlatformBrush => PlatformVisualHelper.GetPlatformBrush(PlatformKey);
+}
+
+/// <summary>
+/// 综合首页跨平台精选歌单卡片模型（支持 3 首曲目预览渐进式水合）
+/// </summary>
+public partial class DiscoverPlaylistCardItem : ObservableObject
+{
+    public PlaylistItem Playlist { get; set; } = new();
+
+    public string PlatformKey => PlatformVisualHelper.NormalizeKey(Playlist.Source);
+    public string ShortPlatformTag => PlatformVisualHelper.GetShortLabel(Playlist.Source);
+    public Microsoft.UI.Xaml.Media.SolidColorBrush? PlatformBrush => PlatformVisualHelper.GetPlatformBrush(Playlist.Source);
+    public string CoverUrl => ImageUriHelper.Normalize(Playlist.SafeCoverImgUrl);
+    public string Title => string.IsNullOrWhiteSpace(Playlist.Name) ? "精选歌单" : Playlist.Name;
+    public string MetaText => !string.IsNullOrWhiteSpace(Playlist.CreatorName)
+        ? $"{Playlist.CreatorName} · {Playlist.PlayCountText}"
+        : Playlist.PlayCountText;
+
+    private string _previewLine1 = "1. 精选曲目准备中...";
+    public string PreviewLine1
+    {
+        get => _previewLine1;
+        set => SetProperty(ref _previewLine1, value);
+    }
+
+    private string _previewLine2 = string.Empty;
+    public string PreviewLine2
+    {
+        get => _previewLine2;
+        set
+        {
+            if (SetProperty(ref _previewLine2, value))
+                OnPropertyChanged(nameof(PreviewLine2Visibility));
+        }
+    }
+
+    private string _previewLine3 = string.Empty;
+    public string PreviewLine3
+    {
+        get => _previewLine3;
+        set
+        {
+            if (SetProperty(ref _previewLine3, value))
+                OnPropertyChanged(nameof(PreviewLine3Visibility));
+        }
+    }
+
+    public Microsoft.UI.Xaml.Visibility PreviewLine2Visibility =>
+        string.IsNullOrWhiteSpace(_previewLine2)
+            ? Microsoft.UI.Xaml.Visibility.Collapsed
+            : Microsoft.UI.Xaml.Visibility.Visible;
+
+    public Microsoft.UI.Xaml.Visibility PreviewLine3Visibility =>
+        string.IsNullOrWhiteSpace(_previewLine3)
+            ? Microsoft.UI.Xaml.Visibility.Collapsed
+            : Microsoft.UI.Xaml.Visibility.Visible;
 }

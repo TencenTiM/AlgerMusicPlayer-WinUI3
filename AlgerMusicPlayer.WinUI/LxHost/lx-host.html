@@ -5,6 +5,8 @@
 <script>
   // 落雪音源脚本宿主页：每个脚本运行在独立 Worker 中，消息经 chrome.webview 与 C# 双向桥接
   const workers = {};
+  let gdMd5Fn = null;
+  let gdCrcTag = '';
 
   function toHost(scriptId, data) {
     try {
@@ -40,6 +42,29 @@
         break;
       case 'dispose':
         if (workers[m.scriptId]) { workers[m.scriptId].terminate(); delete workers[m.scriptId]; }
+        break;
+      case 'gd-md5':
+        try {
+          if (m.crcJs && m.crcTag !== gdCrcTag) {
+            const fakeWin = {
+              location: { hostname: 'music.gdstudio.org' },
+              XMLHttpRequest: function () {
+                this.open = function () {};
+                this.send = function () { this.status = 200; this.responseText = '1794625903'; };
+              }
+            };
+            const factory = new Function(
+              'window', 'mkPlayer', 'XMLHttpRequest', 'define', 'module', 'exports',
+              m.crcJs + '\nreturn (typeof md5 === "function" && md5) || this.md5 || window.md5;'
+            );
+            gdMd5Fn = factory.call(fakeWin, fakeWin, { version: '2026.11.11' }, fakeWin.XMLHttpRequest, undefined, undefined, undefined);
+            gdCrcTag = m.crcTag || '';
+          }
+          const hash = typeof gdMd5Fn === 'function' ? String(gdMd5Fn(String(m.raw || ''))) : '';
+          toHost(m.scriptId, { type: 'invoke-result', callId: m.callId, result: hash });
+        } catch (err) {
+          toHost(m.scriptId, { type: 'invoke-error', callId: m.callId, message: String(err) });
+        }
         break;
     }
   });

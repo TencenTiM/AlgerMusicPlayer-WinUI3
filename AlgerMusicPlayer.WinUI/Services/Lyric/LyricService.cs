@@ -83,6 +83,16 @@ public partial class LyricService
             }
         }
 
+        bool isInternational = song.Source is "spotify" or "apple" or "deezer" or "tidal" or "qobuz" or "ytmusic";
+        if (isInternational)
+        {
+            var lrcLibParsed = await TryFetchLrcLibAsync(song);
+            if (lrcLibParsed != null && lrcLibParsed.Lines.Count > 0)
+            {
+                return lrcLibParsed;
+            }
+        }
+
         long targetNeteaseId = song.NumericId;
         if (targetNeteaseId <= 0 && !string.IsNullOrWhiteSpace(song.Name))
         {
@@ -91,7 +101,9 @@ public partial class LyricService
             {
                 var kw = $"{song.Name} {song.ArtistText}".Trim();
                 var matches = await _apiClient.SearchSongsAsync(kw, limit: 3);
-                var matched = matches.FirstOrDefault();
+                var matched = isInternational
+                    ? matches.FirstOrDefault(m => IsRoughTitleMatch(song.Name, m.Name))
+                    : matches.FirstOrDefault();
                 if (matched != null && matched.NumericId > 0)
                 {
                     targetNeteaseId = matched.NumericId;
@@ -104,6 +116,14 @@ public partial class LyricService
 
         if (targetNeteaseId <= 0)
         {
+            if (!isInternational)
+            {
+                var lrcLibFallback = await TryFetchLrcLibAsync(song);
+                if (lrcLibFallback != null && lrcLibFallback.Lines.Count > 0)
+                {
+                    return lrcLibFallback;
+                }
+            }
             return CreateFallbackLyric("纯音乐或外部音源，请欣赏");
         }
 
@@ -135,9 +155,143 @@ public partial class LyricService
             {
                 // 忽略缓存写入错误
             }
+            return parsed;
+        }
+
+        if (!isInternational)
+        {
+            var lrcLibSecondary = await TryFetchLrcLibAsync(song);
+            if (lrcLibSecondary != null && lrcLibSecondary.Lines.Count > 0)
+            {
+                return lrcLibSecondary;
+            }
         }
 
         return parsed;
+    }
+
+    private static bool IsRoughTitleMatch(string targetTitle, string candidateTitle)
+    {
+        static string Normalize(string s)
+        {
+            var sb = new global::System.Text.StringBuilder(s.Length);
+            foreach (char ch in s)
+            {
+                if (char.IsLetterOrDigit(ch)) sb.Append(char.ToLowerInvariant(ch));
+            }
+            return sb.ToString();
+        }
+
+        var a = Normalize(targetTitle);
+        var b = Normalize(candidateTitle);
+        if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b)) return false;
+        return a == b || a.Contains(b, StringComparison.Ordinal) || b.Contains(a, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 从 LRCLIB 公共同步歌词库拉取国际/第三方歌曲歌词并写入本地缓存
+    /// </summary>
+    private async Task<ParsedLyric?> TryFetchLrcLibAsync(SongItem song)
+    {
+        if (string.IsNullOrWhiteSpace(song.Name)) return null;
+
+        var idBytes = global::System.Security.Cryptography.MD5.HashData(global::System.Text.Encoding.UTF8.GetBytes(song.Id));
+        var hash = Convert.ToHexString(idBytes).ToLowerInvariant();
+        var cachePath = Path.Combine(_configService.CacheDirectory, $"lyric_ext_{hash}.json");
+        if (File.Exists(cachePath))
+        {
+            try
+            {
+                var cachedJson = await File.ReadAllTextAsync(cachePath);
+                var cached = JsonSerializer.Deserialize<ParsedLyric>(cachedJson);
+                if (cached != null && cached.Lines.Count > 0) return cached;
+            }
+            catch
+            {
+            }
+        }
+
+        var firstArtist = song.Artists.FirstOrDefault()?.Name?.Trim() ?? string.Empty;
+        if (firstArtist is "未知歌手" or "Unknown Artist") firstArtist = string.Empty;
+
+        try
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+            http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "AlgerMusicPlayer/1.0");
+
+            string? bestRawLrc = null;
+            var trackEsc = Uri.EscapeDataString(song.Name.Trim());
+            var artistEsc = Uri.EscapeDataString(firstArtist);
+
+            var getUrl = string.IsNullOrWhiteSpace(firstArtist)
+                ? $"https://lrclib.net/api/get?track_name={trackEsc}"
+                : $"https://lrclib.net/api/get?track_name={trackEsc}&artist_name={artistEsc}";
+
+            using (var resp = await http.GetAsync(getUrl))
+            {
+                if (resp.IsSuccessStatusCode)
+                {
+                    var json = await resp.Content.ReadAsStringAsync();
+                    using var doc = JsonDocument.Parse(json);
+                    bestRawLrc = doc.RootElement.GetStringProp("syncedLyrics");
+                    if (string.IsNullOrWhiteSpace(bestRawLrc))
+                    {
+                        bestRawLrc = doc.RootElement.GetStringProp("plainLyrics");
+                    }
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(bestRawLrc))
+            {
+                var searchUrl = string.IsNullOrWhiteSpace(firstArtist)
+                    ? $"https://lrclib.net/api/search?track_name={trackEsc}"
+                    : $"https://lrclib.net/api/search?track_name={trackEsc}&artist_name={artistEsc}";
+                using var sResp = await http.GetAsync(searchUrl);
+                if (sResp.IsSuccessStatusCode)
+                {
+                    var json = await sResp.Content.ReadAsStringAsync();
+                    using var doc = JsonDocument.Parse(json);
+                    if (doc.RootElement.ValueKind == JsonValueKind.Array)
+                    {
+                        string? plainFallback = null;
+                        foreach (var item in doc.RootElement.EnumerateArray())
+                        {
+                            var synced = item.GetStringProp("syncedLyrics");
+                            if (!string.IsNullOrWhiteSpace(synced))
+                            {
+                                bestRawLrc = synced;
+                                break;
+                            }
+                            if (string.IsNullOrWhiteSpace(plainFallback))
+                            {
+                                plainFallback = item.GetStringProp("plainLyrics");
+                            }
+                        }
+                        if (string.IsNullOrWhiteSpace(bestRawLrc)) bestRawLrc = plainFallback;
+                    }
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(bestRawLrc)) return null;
+
+            var parsed = ParseLyric(song.Id, bestRawLrc, string.Empty, string.Empty, string.Empty);
+            if (parsed.Lines.Count > 0)
+            {
+                try
+                {
+                    await File.WriteAllTextAsync(cachePath, JsonSerializer.Serialize(parsed));
+                }
+                catch
+                {
+                }
+                return parsed;
+            }
+        }
+        catch
+        {
+        }
+
+        return null;
     }
 
     public static ParsedLyric ParseLyric(string songId, string lrc, string tlrc, string romaLrc, string yrc)

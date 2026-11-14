@@ -349,7 +349,7 @@
                 BackRequested="OnNavViewBackRequested"
                 ItemInvoked="OnMainNavViewItemInvoked">
                 <NavigationView.MenuItems>
-                    <NavigationViewItem Content="首页推荐" Tag="Home" IsSelected="True">
+                    <NavigationViewItem Content="综合首页" Tag="DiscoverHome" IsSelected="True">
                         <NavigationViewItem.Icon>
                             <FontIcon Glyph="&#xE80F;" />
                         </NavigationViewItem.Icon>
@@ -359,39 +359,77 @@
                             <FontIcon Glyph="&#xE721;" />
                         </NavigationViewItem.Icon>
                     </NavigationViewItem>
-                    <NavigationViewItem Content="歌单广场" Tag="Playlists">
+
+                    <NavigationViewItemHeader Content="国内平台" />
+                    <NavigationViewItem Content="网易云音乐" Tag="Home">
                         <NavigationViewItem.Icon>
-                            <FontIcon Glyph="&#xE93C;" />
+                            <ImageIcon x:Name="NavLogo_Netease" Width="18" Height="18" />
                         </NavigationViewItem.Icon>
                     </NavigationViewItem>
-                    <NavigationViewItem Content="新碟上架" Tag="Album">
+                    <NavigationViewItem Content="QQ 音乐" Tag="Platform_tx">
                         <NavigationViewItem.Icon>
-                            <FontIcon Glyph="&#xE958;" />
+                            <ImageIcon x:Name="NavLogo_Qq" Width="18" Height="18" />
                         </NavigationViewItem.Icon>
                     </NavigationViewItem>
-                    <NavigationViewItem Content="排行榜单" Tag="Toplist">
+                    <NavigationViewItem Content="汽水音乐" Tag="Platform_qishui">
                         <NavigationViewItem.Icon>
-                            <FontIcon Glyph="&#xE8FD;" />
+                            <ImageIcon x:Name="NavLogo_Qishui" Width="18" Height="18" />
                         </NavigationViewItem.Icon>
                     </NavigationViewItem>
-                    <NavigationViewItem Content="电台播客" Tag="Podcast">
+                    <NavigationViewItem Content="酷狗音乐" Tag="Platform_kg">
                         <NavigationViewItem.Icon>
-                            <FontIcon Glyph="&#xE95A;" />
+                            <ImageIcon x:Name="NavLogo_Kugou" Width="18" Height="18" />
                         </NavigationViewItem.Icon>
                     </NavigationViewItem>
-                    <NavigationViewItem Content="MV 视频" Tag="Mv">
+                    <NavigationViewItem Content="酷我音乐" Tag="Platform_kw">
                         <NavigationViewItem.Icon>
-                            <FontIcon Glyph="&#xE8B2;" />
+                            <ImageIcon x:Name="NavLogo_Kuwo" Width="18" Height="18" />
                         </NavigationViewItem.Icon>
                     </NavigationViewItem>
-                    <NavigationViewItem Content="B站音源" Tag="Bilibili">
+                    <NavigationViewItem Content="咪咕音乐" Tag="Platform_mg">
                         <NavigationViewItem.Icon>
-                            <FontIcon Glyph="&#xE714;" />
+                            <ImageIcon x:Name="NavLogo_Migu" Width="18" Height="18" />
                         </NavigationViewItem.Icon>
                     </NavigationViewItem>
+                    <NavigationViewItem Content="B站音乐" Tag="Bilibili">
+                        <NavigationViewItem.Icon>
+                            <ImageIcon x:Name="NavLogo_Bilibili" Width="18" Height="18" />
+                        </NavigationViewItem.Icon>
+                    </NavigationViewItem>
+
+                    <NavigationViewItemSeparator />
+                    <NavigationViewItemHeader Content="音源专区" />
                     <NavigationViewItem Content="第三方音源" Tag="ThirdParty">
                         <NavigationViewItem.Icon>
-                            <FontIcon Glyph="&#xEC4F;" />
+                            <FontIcon Glyph="&#xE895;" />
+                        </NavigationViewItem.Icon>
+                    </NavigationViewItem>
+                    <NavigationViewItem Content="自带音源" Tag="BuiltInSources">
+                        <NavigationViewItem.Icon>
+                            <FontIcon Glyph="&#xE995;" />
+                        </NavigationViewItem.Icon>
+                    </NavigationViewItem>
+
+                    <NavigationViewItemSeparator />
+                    <NavigationViewItemHeader Content="国际平台" />
+                    <NavigationViewItem Content="Spotify" Tag="Platform_spotify">
+                        <NavigationViewItem.Icon>
+                            <ImageIcon x:Name="NavLogo_Spotify" Width="18" Height="18" />
+                        </NavigationViewItem.Icon>
+                    </NavigationViewItem>
+                    <NavigationViewItem Content="Apple Music" Tag="Platform_apple">
+                        <NavigationViewItem.Icon>
+                            <ImageIcon x:Name="NavLogo_Apple" Width="18" Height="18" />
+                        </NavigationViewItem.Icon>
+                    </NavigationViewItem>
+                    <NavigationViewItem Content="Deezer 全球馆" Tag="Platform_deezer">
+                        <NavigationViewItem.Icon>
+                            <ImageIcon x:Name="NavLogo_Deezer" Width="18" Height="18" />
+                        </NavigationViewItem.Icon>
+                    </NavigationViewItem>
+                    <NavigationViewItem Content="Tidal &amp; YT Music" Tag="Platform_tidal">
+                        <NavigationViewItem.Icon>
+                            <ImageIcon x:Name="NavLogo_Tidal" Width="18" Height="18" />
                         </NavigationViewItem.Icon>
                     </NavigationViewItem>
 
@@ -421,11 +459,6 @@
                             <FontIcon Glyph="&#xE77B;" />
                         </NavigationViewItem.Icon>
                     </NavigationViewItem>
-                    <NavigationViewItem Content="QQ音乐歌单" Tag="QqMusic">
-                        <NavigationViewItem.Icon>
-                            <FontIcon Glyph="&#xE8D6;" />
-                        </NavigationViewItem.Icon>
-                    </NavigationViewItem>
                     <NavigationViewItem Content="系统设置" Tag="Settings">
                         <NavigationViewItem.Icon>
                             <FontIcon Glyph="&#xE713;" />
@@ -441,6 +474,33 @@
                         VerticalAlignment="Top"
                         Visibility="Collapsed"
                         Foreground="{StaticResource BrandAccentBrush}" />
+
+                    <!-- 网易云音乐专区顶部二级胶囊导航栏 -->
+                    <Border
+                        x:Name="NeteaseSubNavBar"
+                        VerticalAlignment="Top"
+                        Height="42"
+                        Canvas.ZIndex="10"
+                        CornerRadius="10"
+                        Padding="10,4"
+                        Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                        BorderThickness="1"
+                        Visibility="Collapsed">
+                        <ScrollViewer HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Disabled" HorizontalScrollMode="Enabled" VerticalScrollMode="Disabled">
+                            <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                                <Border Background="{StaticResource BrandAccentSubtleBrush}" CornerRadius="6" Padding="8,2" VerticalAlignment="Center">
+                                    <TextBlock Text="网易云音乐" FontSize="11" FontWeight="SemiBold" Foreground="{StaticResource BrandAccentBrush}" />
+                                </Border>
+                                <Button x:Name="NeteaseSubHomeBtn" Content="首页推荐" Tag="Home" Click="OnNavButtonClick" Padding="12,4" CornerRadius="14" FontSize="12" />
+                                <Button x:Name="NeteaseSubPlaylistsBtn" Content="歌单广场" Tag="Playlists" Click="OnNavButtonClick" Padding="12,4" CornerRadius="14" FontSize="12" />
+                                <Button x:Name="NeteaseSubToplistBtn" Content="排行榜单" Tag="Toplist" Click="OnNavButtonClick" Padding="12,4" CornerRadius="14" FontSize="12" />
+                                <Button x:Name="NeteaseSubAlbumBtn" Content="新碟上架" Tag="Album" Click="OnNavButtonClick" Padding="12,4" CornerRadius="14" FontSize="12" />
+                                <Button x:Name="NeteaseSubPodcastBtn" Content="电台播客" Tag="Podcast" Click="OnNavButtonClick" Padding="12,4" CornerRadius="14" FontSize="12" />
+                                <Button x:Name="NeteaseSubMvBtn" Content="MV 视频" Tag="Mv" Click="OnNavButtonClick" Padding="12,4" CornerRadius="14" FontSize="12" />
+                            </StackPanel>
+                        </ScrollViewer>
+                    </Border>
 
                     <!-- 顶部悬浮自动消失气泡提示 (对应 Naive UI n-message，自动淡入停留后淡出消失) -->
                     <Border
@@ -469,8 +529,450 @@
                         </StackPanel>
                     </Border>
 
+                    <!-- ==================== 视图 0：综合首页（原方案 B：三联画报 + 碟片架 + 曲目预览歌单） ==================== -->
+                    <ScrollViewer x:Name="DiscoverHomeView" Visibility="Visible" Margin="0">
+                        <StackPanel Spacing="26" Padding="0,6,10,28">
+                            <!-- 分区 1：重磅新歌 · 焦点画报栏 -->
+                            <StackPanel Spacing="14">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                                        <TextBlock Text="重磅新歌 · 焦点画报栏" FontSize="20" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                        <ProgressRing
+                                            x:Name="DiscoverLoadingRing"
+                                            Width="16"
+                                            Height="16"
+                                            IsActive="{x:Bind ViewModel.IsDiscoverLoading, Mode=OneWay}"
+                                            Visibility="{x:Bind ViewModel.DiscoverLoadingVisibility, Mode=OneWay}"
+                                            VerticalAlignment="Center" />
+                                    </StackPanel>
+                                    <Button
+                                        Grid.Column="1"
+                                        Click="OnRefreshDiscoverHomeClick"
+                                        Style="{StaticResource SecondaryTabButtonStyle}"
+                                        Padding="11,5"
+                                        CornerRadius="15"
+                                        FontSize="12"
+                                        ToolTipService.ToolTip="刷新各平台首发内容">
+                                        <StackPanel Orientation="Horizontal" Spacing="6">
+                                            <FontIcon Glyph="&#xE72C;" FontSize="11" />
+                                            <TextBlock Text="刷新" />
+                                        </StackPanel>
+                                    </Button>
+                                </Grid>
+
+                                <Grid ColumnSpacing="14">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+
+                                    <!-- 画报 0：网易云首发 -->
+                                    <Border
+                                        x:Name="DiscoverBannerCard0"
+                                        Grid.Column="0"
+                                        Height="188"
+                                        CornerRadius="16"
+                                        Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                        BorderThickness="1"
+                                        Tag="0"
+                                        Tapped="OnDiscoverBannerTapped">
+                                        <Grid>
+                                            <Image x:Name="DiscoverBannerImg0" Stretch="UniformToFill" />
+                                            <Border>
+                                                <Border.Background>
+                                                    <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                                                        <GradientStop Color="#280B0F17" Offset="0" />
+                                                        <GradientStop Color="#880B0F17" Offset="0.52" />
+                                                        <GradientStop Color="#EE080B10" Offset="1" />
+                                                    </LinearGradientBrush>
+                                                </Border.Background>
+                                            </Border>
+                                            <Grid Padding="16">
+                                                <Grid.RowDefinitions>
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="*" />
+                                                    <RowDefinition Height="Auto" />
+                                                </Grid.RowDefinitions>
+                                                <Border
+                                                    x:Name="DiscoverBannerBadgeBg0"
+                                                    HorizontalAlignment="Left"
+                                                    CornerRadius="10"
+                                                    Padding="9,3"
+                                                    Background="{StaticResource BrandAccentBrush}">
+                                                    <TextBlock x:Name="DiscoverBannerBadge0" Text="网易云首发" FontSize="11" FontWeight="SemiBold" Foreground="White" />
+                                                </Border>
+                                                <Grid Grid.Row="2" ColumnSpacing="10">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <StackPanel Spacing="3" VerticalAlignment="Bottom">
+                                                        <TextBlock x:Name="DiscoverBannerHeadline0" Text="正在聚合每日新歌..." FontSize="15" FontWeight="Bold" Foreground="White" TextTrimming="CharacterEllipsis" MaxLines="1" />
+                                                        <TextBlock x:Name="DiscoverBannerSubtitle0" Text="华语与全球新曲每日首发" FontSize="12" Foreground="#D8FFFFFF" TextTrimming="CharacterEllipsis" MaxLines="1" />
+                                                    </StackPanel>
+                                                    <Button
+                                                        Grid.Column="1"
+                                                        Tag="0"
+                                                        Click="OnDiscoverBannerPlayClick"
+                                                        Style="{StaticResource AccentCirclePlayButtonStyle}"
+                                                        Width="40"
+                                                        Height="40"
+                                                        CornerRadius="20"
+                                                        VerticalAlignment="Bottom"
+                                                        ToolTipService.ToolTip="立即播放合集">
+                                                        <FontIcon Glyph="&#xE768;" FontSize="14" Foreground="White" Margin="2,0,0,0" />
+                                                    </Button>
+                                                </Grid>
+                                            </Grid>
+                                        </Grid>
+                                    </Border>
+
+                                    <!-- 画报 1：QQ音乐巅峰首发 -->
+                                    <Border
+                                        x:Name="DiscoverBannerCard1"
+                                        Grid.Column="1"
+                                        Height="188"
+                                        CornerRadius="16"
+                                        Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                        BorderThickness="1"
+                                        Tag="1"
+                                        Tapped="OnDiscoverBannerTapped">
+                                        <Grid>
+                                            <Image x:Name="DiscoverBannerImg1" Stretch="UniformToFill" />
+                                            <Border>
+                                                <Border.Background>
+                                                    <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                                                        <GradientStop Color="#280B0F17" Offset="0" />
+                                                        <GradientStop Color="#880B0F17" Offset="0.52" />
+                                                        <GradientStop Color="#EE080B10" Offset="1" />
+                                                    </LinearGradientBrush>
+                                                </Border.Background>
+                                            </Border>
+                                            <Grid Padding="16">
+                                                <Grid.RowDefinitions>
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="*" />
+                                                    <RowDefinition Height="Auto" />
+                                                </Grid.RowDefinitions>
+                                                <Border
+                                                    x:Name="DiscoverBannerBadgeBg1"
+                                                    HorizontalAlignment="Left"
+                                                    CornerRadius="10"
+                                                    Padding="9,3"
+                                                    Background="#12B76A">
+                                                    <TextBlock x:Name="DiscoverBannerBadge1" Text="QQ音乐巅峰首发" FontSize="11" FontWeight="SemiBold" Foreground="White" />
+                                                </Border>
+                                                <Grid Grid.Row="2" ColumnSpacing="10">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <StackPanel Spacing="3" VerticalAlignment="Bottom">
+                                                        <TextBlock x:Name="DiscoverBannerHeadline1" Text="QQ音乐新歌榜实时同步中..." FontSize="15" FontWeight="Bold" Foreground="White" TextTrimming="CharacterEllipsis" MaxLines="1" />
+                                                        <TextBlock x:Name="DiscoverBannerSubtitle1" Text="巅峰新歌榜与汽水飙升曲库" FontSize="12" Foreground="#D8FFFFFF" TextTrimming="CharacterEllipsis" MaxLines="1" />
+                                                    </StackPanel>
+                                                    <Button
+                                                        Grid.Column="1"
+                                                        Tag="1"
+                                                        Click="OnDiscoverBannerPlayClick"
+                                                        Style="{StaticResource AccentCirclePlayButtonStyle}"
+                                                        Width="40"
+                                                        Height="40"
+                                                        CornerRadius="20"
+                                                        VerticalAlignment="Bottom"
+                                                        ToolTipService.ToolTip="立即播放合集">
+                                                        <FontIcon Glyph="&#xE768;" FontSize="14" Foreground="White" Margin="2,0,0,0" />
+                                                    </Button>
+                                                </Grid>
+                                            </Grid>
+                                        </Grid>
+                                    </Border>
+
+                                    <!-- 画报 2：全球流行新声 -->
+                                    <Border
+                                        x:Name="DiscoverBannerCard2"
+                                        Grid.Column="2"
+                                        Height="188"
+                                        CornerRadius="16"
+                                        Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                        BorderThickness="1"
+                                        Tag="2"
+                                        Tapped="OnDiscoverBannerTapped">
+                                        <Grid>
+                                            <Image x:Name="DiscoverBannerImg2" Stretch="UniformToFill" />
+                                            <Border>
+                                                <Border.Background>
+                                                    <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                                                        <GradientStop Color="#280B0F17" Offset="0" />
+                                                        <GradientStop Color="#880B0F17" Offset="0.52" />
+                                                        <GradientStop Color="#EE080B10" Offset="1" />
+                                                    </LinearGradientBrush>
+                                                </Border.Background>
+                                            </Border>
+                                            <Grid Padding="16">
+                                                <Grid.RowDefinitions>
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="*" />
+                                                    <RowDefinition Height="Auto" />
+                                                </Grid.RowDefinitions>
+                                                <Border
+                                                    x:Name="DiscoverBannerBadgeBg2"
+                                                    HorizontalAlignment="Left"
+                                                    CornerRadius="10"
+                                                    Padding="9,3"
+                                                    Background="#1DB954">
+                                                    <TextBlock x:Name="DiscoverBannerBadge2" Text="全球流行新声" FontSize="11" FontWeight="SemiBold" Foreground="White" />
+                                                </Border>
+                                                <Grid Grid.Row="2" ColumnSpacing="10">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <StackPanel Spacing="3" VerticalAlignment="Bottom">
+                                                        <TextBlock x:Name="DiscoverBannerHeadline2" Text="Spotify &amp; Apple 全球风向..." FontSize="15" FontWeight="Bold" Foreground="White" TextTrimming="CharacterEllipsis" MaxLines="1" />
+                                                        <TextBlock x:Name="DiscoverBannerSubtitle2" Text="国际流行热榜同步直达" FontSize="12" Foreground="#D8FFFFFF" TextTrimming="CharacterEllipsis" MaxLines="1" />
+                                                    </StackPanel>
+                                                    <Button
+                                                        Grid.Column="1"
+                                                        Tag="2"
+                                                        Click="OnDiscoverBannerPlayClick"
+                                                        Style="{StaticResource AccentCirclePlayButtonStyle}"
+                                                        Width="40"
+                                                        Height="40"
+                                                        CornerRadius="20"
+                                                        VerticalAlignment="Bottom"
+                                                        ToolTipService.ToolTip="立即播放合集">
+                                                        <FontIcon Glyph="&#xE768;" FontSize="14" Foreground="White" Margin="2,0,0,0" />
+                                                    </Button>
+                                                </Grid>
+                                            </Grid>
+                                        </Grid>
+                                    </Border>
+                                </Grid>
+                            </StackPanel>
+
+                            <!-- 分区 2：各大平台 · 新歌首发碟片架 -->
+                            <StackPanel Spacing="12">
+                                <Grid ColumnSpacing="12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="各大平台 · 新歌首发" FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                    <ScrollViewer Grid.Column="1" HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Disabled" HorizontalScrollMode="Enabled" VerticalScrollMode="Disabled" VerticalAlignment="Center">
+                                        <StackPanel x:Name="DiscoverSongFilterPanel" Orientation="Horizontal" Spacing="6">
+                                            <Button Content="全部" Tag="all" Click="OnDiscoverSongFilterClick" Style="{StaticResource BrandPrimaryButtonStyle}" Padding="12,5" CornerRadius="15" FontSize="12" />
+                                            <Button Content="网易云" Tag="netease" Click="OnDiscoverSongFilterClick" Style="{StaticResource SecondaryTabButtonStyle}" Padding="12,5" CornerRadius="15" FontSize="12" />
+                                            <Button Content="QQ音乐" Tag="qq" Click="OnDiscoverSongFilterClick" Style="{StaticResource SecondaryTabButtonStyle}" Padding="12,5" CornerRadius="15" FontSize="12" />
+                                            <Button Content="汽水" Tag="qishui" Click="OnDiscoverSongFilterClick" Style="{StaticResource SecondaryTabButtonStyle}" Padding="12,5" CornerRadius="15" FontSize="12" />
+                                            <Button Content="酷狗" Tag="kugou" Click="OnDiscoverSongFilterClick" Style="{StaticResource SecondaryTabButtonStyle}" Padding="12,5" CornerRadius="15" FontSize="12" />
+                                            <Button Content="酷我" Tag="kuwo" Click="OnDiscoverSongFilterClick" Style="{StaticResource SecondaryTabButtonStyle}" Padding="12,5" CornerRadius="15" FontSize="12" />
+                                            <Button Content="Apple Music" Tag="apple" Click="OnDiscoverSongFilterClick" Style="{StaticResource SecondaryTabButtonStyle}" Padding="12,5" CornerRadius="15" FontSize="12" />
+                                            <Button Content="Spotify" Tag="spotify" Click="OnDiscoverSongFilterClick" Style="{StaticResource SecondaryTabButtonStyle}" Padding="12,5" CornerRadius="15" FontSize="12" />
+                                        </StackPanel>
+                                    </ScrollViewer>
+                                    <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                                        <Button Click="OnPlayAllDiscoverNewSongsClick" Style="{StaticResource BrandPrimaryButtonStyle}" Padding="12,5" CornerRadius="15" FontSize="12">
+                                            <StackPanel Orientation="Horizontal" Spacing="5">
+                                                <FontIcon Glyph="&#xE768;" FontSize="10" />
+                                                <TextBlock Text="播放全部" />
+                                            </StackPanel>
+                                        </Button>
+                                        <Button Click="OnDiscoverNewSongsPrevClick" Style="{StaticResource TransportIconButtonStyle}" Width="30" Height="30" ToolTipService.ToolTip="向左滑动">
+                                            <FontIcon Glyph="&#xE76B;" FontSize="11" />
+                                        </Button>
+                                        <Button Click="OnDiscoverNewSongsNextClick" Style="{StaticResource TransportIconButtonStyle}" Width="30" Height="30" ToolTipService.ToolTip="向右滑动">
+                                            <FontIcon Glyph="&#xE76C;" FontSize="11" />
+                                        </Button>
+                                    </StackPanel>
+                                </Grid>
+
+                                <ScrollViewer
+                                    x:Name="DiscoverNewSongsScrollViewer"
+                                    HorizontalScrollBarVisibility="Auto"
+                                    VerticalScrollBarVisibility="Disabled"
+                                    HorizontalScrollMode="Enabled"
+                                    VerticalScrollMode="Disabled"
+                                    Padding="0,2,0,6">
+                                    <ItemsControl
+                                        x:Name="DiscoverNewSongsItemsControl"
+                                        ItemsSource="{x:Bind ViewModel.FilteredDiscoverNewSongs, Mode=OneWay}">
+                                        <ItemsControl.ItemsPanel>
+                                            <ItemsPanelTemplate>
+                                                <StackPanel Orientation="Horizontal" Spacing="14" />
+                                            </ItemsPanelTemplate>
+                                        </ItemsControl.ItemsPanel>
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate x:DataType="models:SongItem">
+                                                <StackPanel
+                                                    Width="148"
+                                                    Spacing="8"
+                                                    Background="Transparent"
+                                                    Tag="{x:Bind}"
+                                                    Tapped="OnDiscoverSongCardTapped"
+                                                    RightTapped="OnSongItemRightTapped">
+                                                    <Grid Width="148" Height="148">
+                                                        <Border
+                                                            CornerRadius="12"
+                                                            Background="{ThemeResource ControlFillColorSecondaryBrush}"
+                                                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                                            BorderThickness="1">
+                                                            <Image Source="{x:Bind HighResCoverUrl}" Stretch="UniformToFill" />
+                                                        </Border>
+                                                        <Border
+                                                            Background="{x:Bind SourcePlatformBrush}"
+                                                            CornerRadius="7"
+                                                            Padding="7,2"
+                                                            Margin="8"
+                                                            HorizontalAlignment="Left"
+                                                            VerticalAlignment="Top">
+                                                            <TextBlock Text="{x:Bind ShortPlatformTag}" FontSize="10" FontWeight="SemiBold" Foreground="White" />
+                                                        </Border>
+                                                        <Border
+                                                            Visibility="{x:Bind DiscoverQualityBadgeVisibility, Mode=OneWay}"
+                                                            Background="#D9D97706"
+                                                            CornerRadius="6"
+                                                            Padding="6,2"
+                                                            Margin="8"
+                                                            HorizontalAlignment="Right"
+                                                            VerticalAlignment="Top">
+                                                            <TextBlock Text="{x:Bind DiscoverQualityTag, Mode=OneWay}" FontSize="9.5" FontWeight="Bold" Foreground="White" />
+                                                        </Border>
+                                                        <Border
+                                                            Visibility="{x:Bind PlayingIndicatorVisibility, Mode=OneWay}"
+                                                            Background="{StaticResource BrandAccentBrush}"
+                                                            CornerRadius="8"
+                                                            Padding="6,3"
+                                                            Margin="8"
+                                                            HorizontalAlignment="Left"
+                                                            VerticalAlignment="Bottom">
+                                                            <StackPanel Orientation="Horizontal" Spacing="4">
+                                                                <FontIcon Glyph="&#xE768;" FontSize="9" Foreground="White" />
+                                                                <TextBlock Text="正在播放" FontSize="9.5" FontWeight="SemiBold" Foreground="White" />
+                                                            </StackPanel>
+                                                        </Border>
+                                                    </Grid>
+                                                    <StackPanel Spacing="2" Padding="2,0">
+                                                        <TextBlock Text="{x:Bind Name}" FontSize="13" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" MaxLines="1" />
+                                                        <TextBlock Text="{x:Bind ArtistText}" FontSize="11.5" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" MaxLines="1" />
+                                                    </StackPanel>
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </ScrollViewer>
+                            </StackPanel>
+
+                            <!-- 分区 3：跨平台精选 · 推荐歌单 -->
+                            <StackPanel Spacing="12">
+                                <Grid ColumnSpacing="12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="跨平台精选 · 推荐歌单" FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                    <ScrollViewer Grid.Column="1" HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Disabled" HorizontalScrollMode="Enabled" VerticalScrollMode="Disabled" VerticalAlignment="Center">
+                                        <StackPanel x:Name="DiscoverPlaylistFilterPanel" Orientation="Horizontal" Spacing="6">
+                                            <Button Content="全部" Tag="all" Click="OnDiscoverPlaylistFilterClick" Style="{StaticResource BrandPrimaryButtonStyle}" Padding="12,5" CornerRadius="15" FontSize="12" />
+                                            <Button Content="网易云" Tag="netease" Click="OnDiscoverPlaylistFilterClick" Style="{StaticResource SecondaryTabButtonStyle}" Padding="12,5" CornerRadius="15" FontSize="12" />
+                                            <Button Content="QQ音乐" Tag="qq" Click="OnDiscoverPlaylistFilterClick" Style="{StaticResource SecondaryTabButtonStyle}" Padding="12,5" CornerRadius="15" FontSize="12" />
+                                            <Button Content="汽水" Tag="qishui" Click="OnDiscoverPlaylistFilterClick" Style="{StaticResource SecondaryTabButtonStyle}" Padding="12,5" CornerRadius="15" FontSize="12" />
+                                            <Button Content="酷狗" Tag="kugou" Click="OnDiscoverPlaylistFilterClick" Style="{StaticResource SecondaryTabButtonStyle}" Padding="12,5" CornerRadius="15" FontSize="12" />
+                                            <Button Content="Spotify" Tag="spotify" Click="OnDiscoverPlaylistFilterClick" Style="{StaticResource SecondaryTabButtonStyle}" Padding="12,5" CornerRadius="15" FontSize="12" />
+                                            <Button Content="Apple Music" Tag="apple" Click="OnDiscoverPlaylistFilterClick" Style="{StaticResource SecondaryTabButtonStyle}" Padding="12,5" CornerRadius="15" FontSize="12" />
+                                        </StackPanel>
+                                    </ScrollViewer>
+                                    <Button Grid.Column="2" Click="OnShuffleDiscoverPlaylistsClick" Style="{StaticResource SecondaryTabButtonStyle}" Padding="11,5" CornerRadius="15" FontSize="12" VerticalAlignment="Center">
+                                        <StackPanel Orientation="Horizontal" Spacing="6">
+                                            <FontIcon Glyph="&#xE72C;" FontSize="11" />
+                                            <TextBlock Text="换一批" />
+                                        </StackPanel>
+                                    </Button>
+                                </Grid>
+
+                                <ItemsRepeater
+                                    x:Name="DiscoverPlaylistsRepeater"
+                                    ItemsSource="{x:Bind ViewModel.FilteredDiscoverPlaylists, Mode=OneWay}">
+                                    <ItemsRepeater.Layout>
+                                        <UniformGridLayout
+                                            MinItemWidth="300"
+                                            MinRowSpacing="14"
+                                            MinColumnSpacing="14"
+                                            MaximumRowsOrColumns="3"
+                                            ItemsStretch="Fill" />
+                                    </ItemsRepeater.Layout>
+                                    <ItemsRepeater.ItemTemplate>
+                                        <DataTemplate x:DataType="models:DiscoverPlaylistCardItem">
+                                            <Border
+                                                Height="126"
+                                                CornerRadius="14"
+                                                Padding="12"
+                                                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                                BorderThickness="1"
+                                                Tag="{x:Bind}"
+                                                Tapped="OnDiscoverPlaylistCardTapped">
+                                                <Grid ColumnSpacing="12">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="102" />
+                                                        <ColumnDefinition Width="*" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <Grid Grid.Column="0" Width="102" Height="102">
+                                                        <Border CornerRadius="10" Background="{ThemeResource ControlFillColorSecondaryBrush}">
+                                                            <Image Source="{x:Bind CoverUrl}" Stretch="UniformToFill" />
+                                                        </Border>
+                                                        <Border
+                                                            Background="{x:Bind PlatformBrush}"
+                                                            CornerRadius="6"
+                                                            Padding="6,2"
+                                                            Margin="6"
+                                                            HorizontalAlignment="Left"
+                                                            VerticalAlignment="Top">
+                                                            <TextBlock Text="{x:Bind ShortPlatformTag}" FontSize="9.5" FontWeight="SemiBold" Foreground="White" />
+                                                        </Border>
+                                                        <Button
+                                                            Tag="{x:Bind}"
+                                                            Click="OnDiscoverPlaylistPlayClick"
+                                                            Style="{StaticResource AccentCirclePlayButtonStyle}"
+                                                            Width="30"
+                                                            Height="30"
+                                                            CornerRadius="15"
+                                                            Margin="6"
+                                                            HorizontalAlignment="Right"
+                                                            VerticalAlignment="Bottom"
+                                                            ToolTipService.ToolTip="立即播放歌单">
+                                                            <FontIcon Glyph="&#xE768;" FontSize="11" Foreground="White" Margin="1.5,0,0,0" />
+                                                        </Button>
+                                                    </Grid>
+                                                    <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="5">
+                                                        <TextBlock Text="{x:Bind Title}" FontSize="14" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" MaxLines="1" />
+                                                        <StackPanel Spacing="2.5">
+                                                            <TextBlock Text="{x:Bind PreviewLine1, Mode=OneWay}" FontSize="11.5" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" MaxLines="1" />
+                                                            <TextBlock Text="{x:Bind PreviewLine2, Mode=OneWay}" Visibility="{x:Bind PreviewLine2Visibility, Mode=OneWay}" FontSize="11.5" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" MaxLines="1" />
+                                                            <TextBlock Text="{x:Bind PreviewLine3, Mode=OneWay}" Visibility="{x:Bind PreviewLine3Visibility, Mode=OneWay}" FontSize="11.5" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" MaxLines="1" />
+                                                        </StackPanel>
+                                                    </StackPanel>
+                                                </Grid>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsRepeater.ItemTemplate>
+                                </ItemsRepeater>
+                            </StackPanel>
+                        </StackPanel>
+                    </ScrollViewer>
+
                     <!-- ==================== 视图 1：首页 (HomeView — Fluent v2 双大卡 + 四大推荐模块) ==================== -->
-                    <ScrollViewer x:Name="HomeView" Visibility="Visible">
+                    <ScrollViewer x:Name="HomeView" Visibility="Collapsed" Margin="0,50,0,0">
                         <StackPanel Spacing="26" Padding="0,0,10,28">
                             <!-- 顶部 HomeHero：左「每日推荐」大卡 + 右「私人 FM」大卡 -->
                             <Grid ColumnSpacing="18">
@@ -644,7 +1146,7 @@
                                                 <StackPanel Spacing="8">
                                                     <Border Width="144" Height="144" CornerRadius="8" Background="{ThemeResource ControlFillColorSecondaryBrush}">
                                                         <Grid>
-                                                            <Image Source="{x:Bind CoverImgUrl}" Stretch="UniformToFill" />
+                                                            <Image Source="{x:Bind SafeCoverImgUrl}" Stretch="UniformToFill" />
                                                             <Border HorizontalAlignment="Right" VerticalAlignment="Top" Margin="6" Background="#B3000000" CornerRadius="4" Padding="6,2">
                                                                 <TextBlock Text="{x:Bind PlayCountText}" FontSize="11" Foreground="White" />
                                                             </Border>
@@ -671,7 +1173,7 @@
                                             <Border Width="120" Margin="0,0,10,10" Padding="10" CornerRadius="10" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
                                                 <StackPanel Spacing="8" HorizontalAlignment="Center">
                                                     <Border Width="84" Height="84" CornerRadius="42" Background="{ThemeResource ControlFillColorSecondaryBrush}">
-                                                        <Image Source="{x:Bind PicUrl}" Stretch="UniformToFill" />
+                                                        <Image Source="{x:Bind SafePicUrl}" Stretch="UniformToFill" />
                                                     </Border>
                                                     <TextBlock Text="{x:Bind Name}" HorizontalAlignment="Center" FontSize="13" FontWeight="Medium" MaxLines="1" TextTrimming="CharacterEllipsis" />
                                                 </StackPanel>
@@ -701,7 +1203,7 @@
                                             <Border Width="162" Margin="0,0,12,12" Padding="8" CornerRadius="10" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
                                                 <StackPanel Spacing="6">
                                                     <Border Width="144" Height="144" CornerRadius="8" Background="{ThemeResource ControlFillColorSecondaryBrush}">
-                                                        <Image Source="{x:Bind PicUrl}" Stretch="UniformToFill" />
+                                                        <Image Source="{x:Bind SafePicUrl}" Stretch="UniformToFill" />
                                                     </Border>
                                                     <TextBlock Text="{x:Bind Name}" MaxLines="1" TextTrimming="CharacterEllipsis" FontWeight="SemiBold" FontSize="13" />
                                                     <TextBlock Text="{x:Bind ArtistName}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" MaxLines="1" TextTrimming="CharacterEllipsis" />
@@ -760,7 +1262,7 @@
                     </ScrollViewer>
 
                     <!-- ==================== 视图 2：新碟上架页 (AlbumView) ==================== -->
-                    <ScrollViewer x:Name="AlbumView" Visibility="Collapsed">
+                    <ScrollViewer x:Name="AlbumView" Visibility="Collapsed" Margin="0,50,0,0">
                         <StackPanel Spacing="18" Padding="0,0,10,24">
                             <Grid>
                                 <Grid.ColumnDefinitions>
@@ -787,7 +1289,7 @@
                                         <Border Width="172" Margin="0,0,12,14" Padding="8" CornerRadius="10" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
                                             <StackPanel Spacing="6">
                                                 <Border Width="154" Height="154" CornerRadius="8" Background="{ThemeResource ControlFillColorSecondaryBrush}">
-                                                    <Image Source="{x:Bind PicUrl}" Stretch="UniformToFill" />
+                                                    <Image Source="{x:Bind SafePicUrl}" Stretch="UniformToFill" />
                                                 </Border>
                                                 <TextBlock Text="{x:Bind Name}" MaxLines="1" TextTrimming="CharacterEllipsis" FontWeight="SemiBold" />
                                                 <TextBlock Text="{x:Bind ArtistName}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" MaxLines="1" TextTrimming="CharacterEllipsis" />
@@ -801,7 +1303,7 @@
                     </ScrollViewer>
 
                     <!-- ==================== 视图 3：电台播客页 (PodcastView) ==================== -->
-                    <ScrollViewer x:Name="PodcastView" Visibility="Collapsed">
+                    <ScrollViewer x:Name="PodcastView" Visibility="Collapsed" Margin="0,50,0,0">
                         <StackPanel Spacing="20" Padding="0,0,10,24">
                             <Grid>
                                 <Grid.ColumnDefinitions>
@@ -847,7 +1349,7 @@
                                                         <ColumnDefinition Width="*" />
                                                     </Grid.ColumnDefinitions>
                                                     <Border Grid.Column="0" Width="52" Height="52" CornerRadius="6" Background="{ThemeResource ControlFillColorSecondaryBrush}">
-                                                        <Image Source="{x:Bind CoverUrl}" Stretch="UniformToFill" />
+                                                        <Image Source="{x:Bind SafeCoverUrl}" Stretch="UniformToFill" />
                                                     </Border>
                                                     <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
                                                         <TextBlock Text="{x:Bind Name}" FontWeight="SemiBold" MaxLines="1" TextTrimming="CharacterEllipsis" />
@@ -874,7 +1376,7 @@
                                                 <StackPanel Spacing="6">
                                                     <Border Width="150" Height="150" CornerRadius="8" Background="{ThemeResource ControlFillColorSecondaryBrush}">
                                                         <Grid>
-                                                            <Image Source="{x:Bind PicUrl}" Stretch="UniformToFill" />
+                                                            <Image Source="{x:Bind SafePicUrl}" Stretch="UniformToFill" />
                                                             <Border HorizontalAlignment="Left" VerticalAlignment="Top" Margin="6" Background="#B3000000" CornerRadius="4" Padding="6,2">
                                                                 <TextBlock Text="{x:Bind Category}" FontSize="10" Foreground="{StaticResource BrandAccentLightTextBrush}" />
                                                             </Border>
@@ -892,7 +1394,7 @@
                     </ScrollViewer>
 
                     <!-- ==================== 视图 4：排行榜 (ToplistView) ==================== -->
-                    <ScrollViewer x:Name="ToplistView" Visibility="Collapsed">
+                    <ScrollViewer x:Name="ToplistView" Visibility="Collapsed" Margin="0,50,0,0">
                         <StackPanel Spacing="16" Padding="0,0,10,24">
                             <TextBlock Text="云音乐官方榜 &amp; 全球榜" FontSize="24" FontWeight="SemiBold" />
                             <GridView
@@ -906,7 +1408,7 @@
                                             <StackPanel Spacing="6">
                                                 <Border Width="154" Height="154" CornerRadius="8" Background="{ThemeResource ControlFillColorSecondaryBrush}">
                                                     <Grid>
-                                                        <Image Source="{x:Bind CoverImgUrl}" Stretch="UniformToFill" />
+                                                        <Image Source="{x:Bind SafeCoverImgUrl}" Stretch="UniformToFill" />
                                                         <Border HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="6" Background="#B3000000" CornerRadius="4" Padding="6,2">
                                                             <TextBlock Text="{x:Bind UpdateFrequency}" FontSize="11" Foreground="{StaticResource BrandAccentLightTextBrush}" />
                                                         </Border>
@@ -922,7 +1424,7 @@
                     </ScrollViewer>
 
                     <!-- ==================== 视图 5：歌单广场 (PlaylistsView) ==================== -->
-                    <ScrollViewer x:Name="PlaylistsView" Visibility="Collapsed">
+                    <ScrollViewer x:Name="PlaylistsView" Visibility="Collapsed" Margin="0,50,0,0">
                         <StackPanel Spacing="16" Padding="0,0,10,24">
                             <TextBlock Text="歌单广场" FontSize="24" FontWeight="SemiBold" />
                             <StackPanel Orientation="Horizontal" Spacing="8">
@@ -946,7 +1448,7 @@
                                         <Border Width="168" Margin="0,0,12,14" Padding="8" CornerRadius="10" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
                                             <StackPanel Spacing="6">
                                                 <Border Width="150" Height="150" CornerRadius="8" Background="{ThemeResource ControlFillColorSecondaryBrush}">
-                                                    <Image Source="{x:Bind CoverImgUrl}" Stretch="UniformToFill" />
+                                                    <Image Source="{x:Bind SafeCoverImgUrl}" Stretch="UniformToFill" />
                                                 </Border>
                                                 <TextBlock Text="{x:Bind Name}" MaxLines="2" Height="36" TextWrapping="Wrap" FontSize="13" TextTrimming="CharacterEllipsis" />
                                             </StackPanel>
@@ -1636,8 +2138,39 @@
                             <RowDefinition Height="*" />
                         </Grid.RowDefinitions>
 
-                        <StackPanel Grid.Row="0" Spacing="6">
-                            <TextBlock Text="综合搜索结果" FontSize="24" FontWeight="SemiBold" />
+                        <StackPanel Grid.Row="0" Spacing="8">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="综合搜索结果" FontSize="24" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                <TextBlock
+                                    x:Name="SearchPlatformStatusText"
+                                    Grid.Column="1"
+                                    Text="支持 11 大国内与国际音乐平台一键切换检索"
+                                    FontSize="12"
+                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                    VerticalAlignment="Center" />
+                            </Grid>
+
+                            <!-- 跨平台搜索切换胶囊栏 -->
+                            <ScrollViewer HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Disabled" HorizontalScrollMode="Enabled" VerticalScrollMode="Disabled">
+                                <StackPanel x:Name="SearchPlatformPillsPanel" Orientation="Horizontal" Spacing="6">
+                                    <Button Content="网易云音乐" Tag="netease" Click="OnSearchPlatformPillClick" Padding="12,4" CornerRadius="15" FontSize="12" />
+                                    <Button Content="QQ 音乐" Tag="tx" Click="OnSearchPlatformPillClick" Padding="12,4" CornerRadius="15" FontSize="12" />
+                                    <Button Content="汽水音乐" Tag="qishui" Click="OnSearchPlatformPillClick" Padding="12,4" CornerRadius="15" FontSize="12" />
+                                    <Button Content="酷狗音乐" Tag="kg" Click="OnSearchPlatformPillClick" Padding="12,4" CornerRadius="15" FontSize="12" />
+                                    <Button Content="酷我音乐" Tag="kw" Click="OnSearchPlatformPillClick" Padding="12,4" CornerRadius="15" FontSize="12" />
+                                    <Button Content="咪咕音乐" Tag="mg" Click="OnSearchPlatformPillClick" Padding="12,4" CornerRadius="15" FontSize="12" />
+                                    <Button Content="Spotify" Tag="spotify" Click="OnSearchPlatformPillClick" Padding="12,4" CornerRadius="15" FontSize="12" />
+                                    <Button Content="Apple Music" Tag="apple" Click="OnSearchPlatformPillClick" Padding="12,4" CornerRadius="15" FontSize="12" />
+                                    <Button Content="Deezer" Tag="deezer" Click="OnSearchPlatformPillClick" Padding="12,4" CornerRadius="15" FontSize="12" />
+                                    <Button Content="Tidal / YT Music" Tag="tidal" Click="OnSearchPlatformPillClick" Padding="12,4" CornerRadius="15" FontSize="12" />
+                                    <Button Content="B站音乐" Tag="bilibili" Click="OnSearchPlatformPillClick" Padding="12,4" CornerRadius="15" FontSize="12" />
+                                </StackPanel>
+                            </ScrollViewer>
+
                             <NavigationView
                                 x:Name="SearchNavView"
                                 PaneDisplayMode="Top"
@@ -1685,28 +2218,73 @@
                                 Visibility="Visible"
                                 SelectionMode="Single"
                                 IsItemClickEnabled="False">
+                                <ListView.ItemContainerStyle>
+                                    <Style TargetType="ListViewItem">
+                                        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                        <Setter Property="Padding" Value="4,2" />
+                                        <Setter Property="Margin" Value="0,0,0,4" />
+                                    </Style>
+                                </ListView.ItemContainerStyle>
                                 <ListView.ItemTemplate>
                                     <DataTemplate x:DataType="models:SongItem">
-                                        <Grid Padding="10,8" ColumnSpacing="12" Background="Transparent" Tag="{x:Bind}" DoubleTapped="OnSearchSongRowDoubleTapped" RightTapped="OnSongItemRightTapped">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="2*" />
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="80" />
-                                                <ColumnDefinition Width="Auto" />
-                                            </Grid.ColumnDefinitions>
-                                            <TextBlock Grid.Column="0" Text="{x:Bind Name}" FontWeight="SemiBold" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-                                            <TextBlock Grid.Column="1" Text="{x:Bind ArtistText}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-                                            <TextBlock Grid.Column="2" Text="{x:Bind AlbumText}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-                                            <TextBlock Grid.Column="3" Text="{x:Bind DurationText}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
-                                            <StackPanel Grid.Column="4" Orientation="Horizontal" Spacing="4">
-                                                <Button Style="{StaticResource TransportIconButtonStyle}" Tag="{x:Bind}" Click="OnSongLikeButtonClick">
-                                                    <FontIcon Glyph="&#xEB51;" FontSize="13" />
-                                                </Button>
-                                                <Button Style="{StaticResource TransportIconButtonStyle}" Tag="{x:Bind}" Click="OnSongDownloadButtonClick">
-                                                    <FontIcon Glyph="&#xE896;" FontSize="13" />
-                                                </Button>
-                                            </StackPanel>
+                                        <Grid Tag="{x:Bind}" DoubleTapped="OnSearchSongRowDoubleTapped" RightTapped="OnSongItemRightTapped">
+                                            <Border
+                                                CornerRadius="12"
+                                                Background="#1422C55E"
+                                                BorderBrush="#4522C55E"
+                                                BorderThickness="1"
+                                                Visibility="{x:Bind PlayingIndicatorVisibility, Mode=OneWay}" />
+                                            <Grid Padding="10,8" ColumnSpacing="12" Background="Transparent">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="44" />
+                                                    <ColumnDefinition Width="2.2*" />
+                                                    <ColumnDefinition Width="1.2*" />
+                                                    <ColumnDefinition Width="1.1*" />
+                                                    <ColumnDefinition Width="58" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <Border Grid.Column="0" Width="42" Height="42" CornerRadius="8" Background="{ThemeResource ControlFillColorSecondaryBrush}">
+                                                    <Grid>
+                                                        <Image Source="{x:Bind CoverThumbnailUrl}" Stretch="UniformToFill" />
+                                                        <Border Background="#66000000" CornerRadius="8" Visibility="{x:Bind PlayingIndicatorVisibility, Mode=OneWay}">
+                                                            <FontIcon Glyph="{x:Bind ActivePlayGlyph, Mode=OneWay}" FontSize="14" Foreground="#22C55E" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                                        </Border>
+                                                    </Grid>
+                                                </Border>
+                                                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                                                    <TextBlock Text="{x:Bind Name}" FontWeight="Bold" Foreground="#22C55E" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="290" Visibility="{x:Bind PlayingIndicatorVisibility, Mode=OneWay}" />
+                                                    <TextBlock Text="{x:Bind Name}" FontWeight="SemiBold" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="290" Visibility="{x:Bind NotPlayingVisibility, Mode=OneWay}" />
+                                                    <Border Background="#2222C55E" BorderBrush="#6622C55E" BorderThickness="1" CornerRadius="4" Padding="6,1" VerticalAlignment="Center" Visibility="{x:Bind PlayingIndicatorVisibility, Mode=OneWay}">
+                                                        <TextBlock Text="正在播放" FontSize="10" Foreground="#22C55E" FontWeight="SemiBold" />
+                                                    </Border>
+                                                </StackPanel>
+                                                <TextBlock Grid.Column="2" Text="{x:Bind ArtistText}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Grid.Column="3" Text="{x:Bind AlbumText}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Grid.Column="4" Text="{x:Bind DurationText}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
+                                                <Border Grid.Column="5" Height="36" Padding="8,0,0,0" CornerRadius="18" VerticalAlignment="Center" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+                                                    <StackPanel Orientation="Horizontal" Spacing="2" VerticalAlignment="Center">
+                                                        <Button Tag="{x:Bind}" Click="OnSongLikeButtonClick" Width="30" Height="30" Padding="0" CornerRadius="15" Background="Transparent" BorderThickness="0" ToolTipService.ToolTip="收藏">
+                                                            <Grid>
+                                                                <FontIcon Glyph="&#xEB51;" FontSize="13" Visibility="{x:Bind NotLikedVisibility, Mode=OneWay}" />
+                                                                <FontIcon Glyph="&#xEB52;" FontSize="13" Foreground="#F43F5E" Visibility="{x:Bind LikedVisibility, Mode=OneWay}" />
+                                                            </Grid>
+                                                        </Button>
+                                                        <Button Tag="{x:Bind}" Click="OnSongDownloadButtonClick" Width="30" Height="30" Padding="0" CornerRadius="15" Background="Transparent" BorderThickness="0" ToolTipService.ToolTip="选择音质下载">
+                                                            <FontIcon Glyph="&#xE896;" FontSize="13" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                                        </Button>
+                                                        <Button Tag="{x:Bind}" Click="OnSearchRowPlayButtonClick" Width="34" Height="34" Padding="0" CornerRadius="17" Background="Transparent" BorderThickness="0" ToolTipService.ToolTip="播放/暂停">
+                                                            <Grid Width="34" Height="34">
+                                                                <Border Width="34" Height="34" CornerRadius="17" Background="#22C55E" Visibility="{x:Bind PlayingIndicatorVisibility, Mode=OneWay}">
+                                                                    <FontIcon Glyph="{x:Bind ActivePlayGlyph, Mode=OneWay}" FontSize="12" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                                                </Border>
+                                                                <Border Width="34" Height="34" CornerRadius="17" Background="#2464748B" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" Visibility="{x:Bind NotPlayingVisibility, Mode=OneWay}">
+                                                                    <FontIcon Glyph="&#xE768;" FontSize="12" Foreground="{ThemeResource TextFillColorPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                                                </Border>
+                                                            </Grid>
+                                                        </Button>
+                                                    </StackPanel>
+                                                </Border>
+                                            </Grid>
                                         </Grid>
                                     </DataTemplate>
                                 </ListView.ItemTemplate>
@@ -1723,7 +2301,7 @@
                                         <Border Width="166" Margin="0,0,12,12" Padding="8" CornerRadius="10" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
                                             <StackPanel Spacing="6">
                                                 <Border Width="148" Height="148" CornerRadius="8" Background="{ThemeResource ControlFillColorSecondaryBrush}">
-                                                    <Image Source="{x:Bind CoverImgUrl}" Stretch="UniformToFill" />
+                                                    <Image Source="{x:Bind SafeCoverImgUrl}" Stretch="UniformToFill" />
                                                 </Border>
                                                 <TextBlock Text="{x:Bind Name}" MaxLines="2" TextWrapping="Wrap" FontSize="13" />
                                             </StackPanel>
@@ -1743,7 +2321,7 @@
                                         <Border Width="166" Margin="0,0,12,12" Padding="8" CornerRadius="10" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
                                             <StackPanel Spacing="6">
                                                 <Border Width="148" Height="148" CornerRadius="8" Background="{ThemeResource ControlFillColorSecondaryBrush}">
-                                                    <Image Source="{x:Bind PicUrl}" Stretch="UniformToFill" />
+                                                    <Image Source="{x:Bind SafePicUrl}" Stretch="UniformToFill" />
                                                 </Border>
                                                 <TextBlock Text="{x:Bind Name}" MaxLines="1" TextTrimming="CharacterEllipsis" FontWeight="SemiBold" />
                                                 <TextBlock Text="{x:Bind ArtistName}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
@@ -1764,7 +2342,7 @@
                                         <Border Width="124" Margin="0,0,12,12" Padding="10" CornerRadius="10" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
                                             <StackPanel Spacing="6">
                                                 <Border Width="88" Height="88" CornerRadius="44" Background="{ThemeResource ControlFillColorSecondaryBrush}" HorizontalAlignment="Center">
-                                                    <Image Source="{x:Bind PicUrl}" Stretch="UniformToFill" />
+                                                    <Image Source="{x:Bind SafePicUrl}" Stretch="UniformToFill" />
                                                 </Border>
                                                 <TextBlock Text="{x:Bind Name}" HorizontalAlignment="Center" MaxLines="1" TextTrimming="CharacterEllipsis" />
                                             </StackPanel>
@@ -1820,7 +2398,7 @@
                                                 <ColumnDefinition Width="*" />
                                             </Grid.ColumnDefinitions>
                                             <Border Grid.Column="0" Width="120" Height="72" CornerRadius="6" Background="{ThemeResource ControlFillColorSecondaryBrush}">
-                                                <Image Source="{x:Bind Pic}" Stretch="UniformToFill" />
+                                                <Image Source="{x:Bind SafePic}" Stretch="UniformToFill" />
                                             </Border>
                                             <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="4">
                                                 <TextBlock Text="{x:Bind Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
@@ -1831,11 +2409,102 @@
                                     </DataTemplate>
                                 </ListView.ItemTemplate>
                             </ListView>
+
+                            <!-- 跨平台原生曲库搜索结果列表（QQ/汽水/酷狗/酷我/咪咕/Spotify/Apple/Deezer/Tidal） -->
+                            <ListView
+                                x:Name="PlatformSearchSongsListView"
+                                Visibility="Collapsed"
+                                SelectionMode="Single"
+                                IsItemClickEnabled="False">
+                                <ListView.ItemContainerStyle>
+                                    <Style TargetType="ListViewItem">
+                                        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                        <Setter Property="Padding" Value="4,2" />
+                                        <Setter Property="Margin" Value="0,0,0,4" />
+                                    </Style>
+                                </ListView.ItemContainerStyle>
+                                <ListView.ItemTemplate>
+                                    <DataTemplate x:DataType="models:SongItem">
+                                        <Grid Tag="{x:Bind}" DoubleTapped="OnPlatformSearchSongRowDoubleTapped" RightTapped="OnSongItemRightTapped">
+                                            <Border
+                                                CornerRadius="12"
+                                                Background="#1422C55E"
+                                                BorderBrush="#4522C55E"
+                                                BorderThickness="1"
+                                                Visibility="{x:Bind PlayingIndicatorVisibility, Mode=OneWay}" />
+                                            <Grid Padding="10,8" ColumnSpacing="12" Background="Transparent">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="34" />
+                                                    <ColumnDefinition Width="44" />
+                                                    <ColumnDefinition Width="2.3*" />
+                                                    <ColumnDefinition Width="1.2*" />
+                                                    <ColumnDefinition Width="1.1*" />
+                                                    <ColumnDefinition Width="58" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+
+                                                <Grid Grid.Column="0" VerticalAlignment="Center" HorizontalAlignment="Center">
+                                                    <TextBlock Text="{x:Bind DisplayIndex}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Visibility="{x:Bind NotPlayingVisibility, Mode=OneWay}" />
+                                                    <FontIcon Glyph="&#xE8D6;" FontSize="14" Foreground="#22C55E" Visibility="{x:Bind PlayingIndicatorVisibility, Mode=OneWay}" />
+                                                </Grid>
+
+                                                <Border Grid.Column="1" Width="42" Height="42" CornerRadius="8" Background="{ThemeResource ControlFillColorSecondaryBrush}">
+                                                    <Grid>
+                                                        <Image Source="{x:Bind CoverThumbnailUrl}" Stretch="UniformToFill" />
+                                                        <Border Background="#66000000" CornerRadius="8" Visibility="{x:Bind PlayingIndicatorVisibility, Mode=OneWay}">
+                                                            <FontIcon Glyph="{x:Bind ActivePlayGlyph, Mode=OneWay}" FontSize="14" Foreground="#22C55E" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                                        </Border>
+                                                    </Grid>
+                                                </Border>
+
+                                                <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                                                    <TextBlock Text="{x:Bind Name}" FontWeight="Bold" Foreground="#22C55E" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="290" Visibility="{x:Bind PlayingIndicatorVisibility, Mode=OneWay}" />
+                                                    <TextBlock Text="{x:Bind Name}" FontWeight="SemiBold" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="290" Visibility="{x:Bind NotPlayingVisibility, Mode=OneWay}" />
+                                                    <Border Background="#2222C55E" BorderBrush="#6622C55E" BorderThickness="1" CornerRadius="4" Padding="6,1" VerticalAlignment="Center" Visibility="{x:Bind PlayingIndicatorVisibility, Mode=OneWay}">
+                                                        <TextBlock Text="正在播放" FontSize="10" Foreground="#22C55E" FontWeight="SemiBold" />
+                                                    </Border>
+                                                    <Border Background="{StaticResource BrandAccentSubtleBrush}" CornerRadius="4" Padding="6,1" VerticalAlignment="Center" Visibility="{x:Bind NativeQualityBadgeVisibility}">
+                                                        <TextBlock Text="{x:Bind NativeQualityHint}" FontSize="10" Foreground="{StaticResource BrandAccentBrush}" FontWeight="SemiBold" />
+                                                    </Border>
+                                                </StackPanel>
+
+                                                <TextBlock Grid.Column="3" Text="{x:Bind ArtistText}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Grid.Column="4" Text="{x:Bind AlbumText}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Grid.Column="5" Text="{x:Bind DurationText}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
+
+                                                <Border Grid.Column="6" Height="36" Padding="8,0,0,0" CornerRadius="18" VerticalAlignment="Center" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+                                                    <StackPanel Orientation="Horizontal" Spacing="2" VerticalAlignment="Center">
+                                                        <Button Tag="{x:Bind}" Click="OnSongLikeButtonClick" Width="30" Height="30" Padding="0" CornerRadius="15" Background="Transparent" BorderThickness="0" ToolTipService.ToolTip="收藏">
+                                                            <Grid>
+                                                                <FontIcon Glyph="&#xEB51;" FontSize="13" Visibility="{x:Bind NotLikedVisibility, Mode=OneWay}" />
+                                                                <FontIcon Glyph="&#xEB52;" FontSize="13" Foreground="#F43F5E" Visibility="{x:Bind LikedVisibility, Mode=OneWay}" />
+                                                            </Grid>
+                                                        </Button>
+                                                        <Button Tag="{x:Bind}" Click="OnSongDownloadButtonClick" Width="30" Height="30" Padding="0" CornerRadius="15" Background="Transparent" BorderThickness="0" ToolTipService.ToolTip="选择音质下载">
+                                                            <FontIcon Glyph="&#xE896;" FontSize="13" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                                        </Button>
+                                                        <Button Tag="{x:Bind}" Click="OnPlatformSearchRowPlayButtonClick" Width="34" Height="34" Padding="0" CornerRadius="17" Background="Transparent" BorderThickness="0" ToolTipService.ToolTip="播放/暂停">
+                                                            <Grid Width="34" Height="34">
+                                                                <Border Width="34" Height="34" CornerRadius="17" Background="#22C55E" Visibility="{x:Bind PlayingIndicatorVisibility, Mode=OneWay}">
+                                                                    <FontIcon Glyph="{x:Bind ActivePlayGlyph, Mode=OneWay}" FontSize="12" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                                                </Border>
+                                                                <Border Width="34" Height="34" CornerRadius="17" Background="#2464748B" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" Visibility="{x:Bind NotPlayingVisibility, Mode=OneWay}">
+                                                                    <FontIcon Glyph="&#xE768;" FontSize="12" Foreground="{ThemeResource TextFillColorPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                                                </Border>
+                                                            </Grid>
+                                                        </Button>
+                                                    </StackPanel>
+                                                </Border>
+                                            </Grid>
+                                        </Grid>
+                                    </DataTemplate>
+                                </ListView.ItemTemplate>
+                            </ListView>
                         </Grid>
                     </Grid>
 
                     <!-- ==================== 视图 8：MV 视频页 (MvView — 1:1 还原 src/renderer/views/mv/index.vue) ==================== -->
-                    <Grid x:Name="MvView" Visibility="Collapsed" RowSpacing="14">
+                    <Grid x:Name="MvView" Visibility="Collapsed" RowSpacing="14" Margin="0,50,0,0">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="*" />
@@ -1946,7 +2615,7 @@
                                             <ColumnDefinition Width="*" />
                                         </Grid.ColumnDefinitions>
                                         <Border Grid.Column="0" Width="128" Height="76" CornerRadius="8" Background="{ThemeResource ControlFillColorSecondaryBrush}">
-                                            <Image Source="{x:Bind Pic}" Stretch="UniformToFill" />
+                                            <Image Source="{x:Bind SafePic}" Stretch="UniformToFill" />
                                         </Border>
                                         <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="4">
                                             <TextBlock Text="{x:Bind Title}" FontSize="15" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
@@ -1959,7 +2628,7 @@
                         </ListView>
                     </Grid>
 
-                    <!-- ==================== 视图 9.5：第三方音源独立专区 (ThirdPartyView) ==================== -->
+                    <!-- ==================== 视图 9.5：全平台独立音乐专区宿主 (ThirdPartyView) ==================== -->
                     <Grid x:Name="ThirdPartyView" Visibility="Collapsed" RowSpacing="12">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" />
@@ -1967,7 +2636,7 @@
                             <RowDefinition Height="*" />
                         </Grid.RowDefinitions>
 
-                        <!-- 顶部专区说明与洛雪多脚本状态栏 -->
+                        <!-- 顶部专区说明与脚本/音源状态栏 -->
                         <Border Grid.Row="0" Style="{StaticResource FluentSurfaceCardStyle}" Padding="18,12">
                             <Grid ColumnSpacing="12">
                                 <Grid.ColumnDefinitions>
@@ -1976,60 +2645,61 @@
                                 </Grid.ColumnDefinitions>
                                 <StackPanel Grid.Column="0" Spacing="4" VerticalAlignment="Center">
                                     <StackPanel Orientation="Horizontal" Spacing="8">
-                                        <TextBlock Text="第三方音源专区" FontSize="20" FontWeight="Bold" VerticalAlignment="Center" />
+                                        <TextBlock x:Name="ThirdPartyZoneTitleText" Text="第三方音源专区" FontSize="20" FontWeight="Bold" VerticalAlignment="Center" />
                                         <Border Background="{StaticResource BrandAccentSubtleBrush}" CornerRadius="6" Padding="8,2" VerticalAlignment="Center">
-                                            <TextBlock Text="原生曲库直通" FontSize="11" Foreground="{StaticResource BrandAccentBrush}" FontWeight="SemiBold" />
+                                            <TextBlock x:Name="ThirdPartyZoneBadgeText" Text="原生曲库直通" FontSize="11" Foreground="{StaticResource BrandAccentBrush}" FontWeight="SemiBold" />
                                         </Border>
                                     </StackPanel>
                                     <TextBlock
                                         x:Name="ThirdPartyLxStatusText"
-                                        Text="直接浏览四大平台推荐歌单与榜单，携带原生 ID/Hash 交由洛雪多脚本直取无损音频，免去跨源模糊匹配与试听限制"
+                                        Text="直接浏览全平台精选推荐歌单与榜单，支持原生 ID / 无损直连解析"
                                         FontSize="12"
                                         Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                         TextTrimming="CharacterEllipsis" />
                                 </StackPanel>
-                                <Button Grid.Column="1" Click="OnOpenLxScriptsManagerClick" VerticalAlignment="Center">
+                                <Button x:Name="ThirdPartyManageLxBtn" Grid.Column="1" Click="OnOpenLxScriptsManagerClick" VerticalAlignment="Center">
                                     <StackPanel Orientation="Horizontal" Spacing="6">
                                         <FontIcon Glyph="&#xE713;" FontSize="12" />
-                                        <TextBlock Text="管理洛雪脚本" FontSize="12" />
+                                        <TextBlock x:Name="ThirdPartyManageLxBtnText" Text="管理洛雪脚本" FontSize="12" />
                                     </StackPanel>
                                 </Button>
                             </Grid>
                         </Border>
 
-                        <!-- 平台切换 + 推荐歌单/排行榜单切换 + 搜索框 + 分类/榜单胶囊标签 -->
+                        <!-- 音源专区标签栏 + Tidal/Qobuz/YTMusic 子引擎切换 + 模式切换 + 搜索框 + 分类/榜单胶囊标签 -->
                         <StackPanel Grid.Row="1" Spacing="8">
-                            <NavigationView
-                                x:Name="ThirdPartyPlatformNavView"
-                                PaneDisplayMode="Top"
-                                IsBackButtonVisible="Collapsed"
-                                IsSettingsVisible="False"
-                                ItemInvoked="OnThirdPartyPlatformNavItemInvoked">
-                                <NavigationView.MenuItems>
-                                    <NavigationViewItem Content="QQ 音乐" Tag="tx" IsSelected="True">
-                                        <NavigationViewItem.Icon>
-                                            <FontIcon Glyph="&#xE8D6;" />
-                                        </NavigationViewItem.Icon>
-                                    </NavigationViewItem>
-                                    <NavigationViewItem Content="酷狗音乐" Tag="kg">
-                                        <NavigationViewItem.Icon>
-                                            <FontIcon Glyph="&#xEC4F;" />
-                                        </NavigationViewItem.Icon>
-                                    </NavigationViewItem>
-                                    <NavigationViewItem Content="酷我音乐" Tag="kw">
-                                        <NavigationViewItem.Icon>
-                                            <FontIcon Glyph="&#xE93C;" />
-                                        </NavigationViewItem.Icon>
-                                    </NavigationViewItem>
-                                    <NavigationViewItem Content="咪咕音乐" Tag="mg">
-                                        <NavigationViewItem.Icon>
-                                            <FontIcon Glyph="&#xE95A;" />
-                                        </NavigationViewItem.Icon>
-                                    </NavigationViewItem>
-                                </NavigationView.MenuItems>
-                            </NavigationView>
+                            <!-- 导入源 / 自带源全量专区标签栏与子曲库切换（仅在第三方音源/自带音源专区显示） -->
+                            <StackPanel x:Name="SourceHubPanel" Spacing="6" Visibility="Collapsed">
+                                <Grid ColumnSpacing="8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock x:Name="SourceHubGroupLabel" Grid.Column="0" Text="导入音源专区：" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
+                                    <ScrollViewer Grid.Column="1" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled" HorizontalScrollMode="Enabled" VerticalScrollMode="Disabled" VerticalAlignment="Center">
+                                        <StackPanel x:Name="SourceHubTabsPanel" Orientation="Horizontal" Spacing="6" Padding="0,0,4,2" />
+                                    </ScrollViewer>
+                                </Grid>
+                                <Grid ColumnSpacing="8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="浏览曲库：" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
+                                    <ScrollViewer Grid.Column="1" HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Disabled" HorizontalScrollMode="Enabled" VerticalScrollMode="Disabled" VerticalAlignment="Center">
+                                        <StackPanel x:Name="SourceHubCatalogPanel" Orientation="Horizontal" Spacing="6" />
+                                    </ScrollViewer>
+                                </Grid>
+                            </StackPanel>
 
-                            <!-- 模式切换 + 搜索框 + 右侧动作按钮 -->
+                            <StackPanel x:Name="TidalSubEnginePanel" Orientation="Horizontal" Spacing="8" Visibility="Collapsed">
+                                <TextBlock Text="Hi-Res / 检索子引擎：" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
+                                <Button Content="Tidal Hi-Res" Tag="tidal" Click="OnTidalSubEngineClick" CornerRadius="14" Padding="12,4" FontSize="12" />
+                                <Button Content="Qobuz Hi-Res" Tag="qobuz" Click="OnTidalSubEngineClick" Visibility="Collapsed" CornerRadius="14" Padding="12,4" FontSize="12" />
+                                <Button Content="YouTube Music" Tag="ytmusic" Click="OnTidalSubEngineClick" CornerRadius="14" Padding="12,4" FontSize="12" />
+                            </StackPanel>
+
+                            <!-- 模式切换 + 搜索框 + 二级分类胶囊 + 右侧动作按钮 -->
                             <Grid ColumnSpacing="10">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="Auto" />
@@ -2051,6 +2721,15 @@
                                         x:Name="ThirdPartyModeSongsBtn"
                                         Content="排行榜单"
                                         Tag="songs"
+                                        Click="OnThirdPartyModeSwitchClick"
+                                        CornerRadius="16"
+                                        Padding="14,5"
+                                        FontSize="13" />
+                                    <Button
+                                        x:Name="ThirdPartyModeQqMineBtn"
+                                        Content="我的 QQ 歌单"
+                                        Tag="qq_mine"
+                                        Visibility="Collapsed"
                                         Click="OnThirdPartyModeSwitchClick"
                                         CornerRadius="16"
                                         Padding="14,5"
@@ -2114,7 +2793,7 @@
                                                 <StackPanel Spacing="8">
                                                     <Border Width="144" Height="144" CornerRadius="8" Background="{ThemeResource ControlFillColorSecondaryBrush}">
                                                         <Grid>
-                                                            <Image Source="{x:Bind CoverImgUrl}" Stretch="UniformToFill" />
+                                                            <Image Source="{x:Bind SafeCoverImgUrl}" Stretch="UniformToFill" />
                                                             <Border HorizontalAlignment="Right" VerticalAlignment="Top" Margin="6" Background="#B3000000" CornerRadius="4" Padding="6,2">
                                                                 <TextBlock Text="{x:Bind PlayCountText}" FontSize="11" Foreground="White" />
                                                             </Border>
@@ -2743,8 +3422,15 @@
                             <RowDefinition Height="*" />
                         </Grid.RowDefinitions>
 
-                        <!-- 顶部 QQ 音乐账号信息卡片 -->
-                        <Border Grid.Row="0" Style="{StaticResource FluentSurfaceCardStyle}" Padding="18,14">
+                        <!-- QQ 音乐专区三态模式栏 + 顶部账号信息卡片 -->
+                        <StackPanel Grid.Row="0" Spacing="10">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <Button Content="推荐歌单" Tag="qq_rec" Click="OnQqZoneModeSwitchClick" CornerRadius="16" Padding="14,5" FontSize="13" />
+                                <Button Content="排行榜单" Tag="qq_rank" Click="OnQqZoneModeSwitchClick" CornerRadius="16" Padding="14,5" FontSize="13" />
+                                <Button x:Name="QqZoneMineModeBtn" Content="我的 QQ 歌单" CornerRadius="16" Padding="14,5" FontSize="13" />
+                            </StackPanel>
+
+                            <Border Style="{StaticResource FluentSurfaceCardStyle}" Padding="18,14">
                             <Grid ColumnSpacing="16">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="Auto" />
@@ -2774,6 +3460,7 @@
                                 </StackPanel>
                             </Grid>
                         </Border>
+                        </StackPanel>
 
                         <!-- 创建的歌单 / 收藏的歌单 分段导航 -->
                         <NavigationView
@@ -2810,7 +3497,7 @@
                                         <Border Width="168" Margin="0,0,12,12" Padding="8" CornerRadius="10" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
                                             <StackPanel Spacing="6">
                                                 <Border Width="150" Height="150" CornerRadius="8" Background="{ThemeResource ControlFillColorSecondaryBrush}">
-                                                    <Image Source="{x:Bind CoverImgUrl}" Stretch="UniformToFill" />
+                                                    <Image Source="{x:Bind SafeCoverImgUrl}" Stretch="UniformToFill" />
                                                 </Border>
                                                 <TextBlock Text="{x:Bind Name}" MaxLines="1" TextTrimming="CharacterEllipsis" FontWeight="SemiBold" FontSize="13" />
                                                 <TextBlock FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}">
@@ -2834,7 +3521,7 @@
                                         <Border Width="168" Margin="0,0,12,12" Padding="8" CornerRadius="10" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
                                             <StackPanel Spacing="6">
                                                 <Border Width="150" Height="150" CornerRadius="8" Background="{ThemeResource ControlFillColorSecondaryBrush}">
-                                                    <Image Source="{x:Bind CoverImgUrl}" Stretch="UniformToFill" />
+                                                    <Image Source="{x:Bind SafeCoverImgUrl}" Stretch="UniformToFill" />
                                                 </Border>
                                                 <TextBlock Text="{x:Bind Name}" MaxLines="1" TextTrimming="CharacterEllipsis" FontWeight="SemiBold" FontSize="13" />
                                                 <TextBlock FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}">
@@ -3836,7 +4523,7 @@
                                                 <DataTemplate x:DataType="models:PlaylistItem">
                                                     <StackPanel Width="136" Margin="0,0,10,10" Spacing="5">
                                                         <Border Width="136" Height="136" CornerRadius="8" Background="{ThemeResource ControlFillColorSecondaryBrush}">
-                                                            <Image Source="{x:Bind CoverImgUrl}" Stretch="UniformToFill" />
+                                                            <Image Source="{x:Bind SafeCoverImgUrl}" Stretch="UniformToFill" />
                                                         </Border>
                                                         <TextBlock Text="{x:Bind Name}" MaxLines="1" TextTrimming="CharacterEllipsis" FontSize="12" />
                                                     </StackPanel>
@@ -3854,7 +4541,7 @@
                                                 <DataTemplate x:DataType="models:PlaylistItem">
                                                     <StackPanel Width="136" Margin="0,0,10,10" Spacing="5">
                                                         <Border Width="136" Height="136" CornerRadius="8" Background="{ThemeResource ControlFillColorSecondaryBrush}">
-                                                            <Image Source="{x:Bind CoverImgUrl}" Stretch="UniformToFill" />
+                                                            <Image Source="{x:Bind SafeCoverImgUrl}" Stretch="UniformToFill" />
                                                         </Border>
                                                         <TextBlock Text="{x:Bind Name}" MaxLines="1" TextTrimming="CharacterEllipsis" FontSize="12" />
                                                     </StackPanel>
@@ -3872,7 +4559,7 @@
                                                 <DataTemplate x:DataType="models:AlbumItem">
                                                     <StackPanel Width="136" Margin="0,0,10,10" Spacing="5">
                                                         <Border Width="136" Height="136" CornerRadius="8" Background="{ThemeResource ControlFillColorSecondaryBrush}">
-                                                            <Image Source="{x:Bind PicUrl}" Stretch="UniformToFill" />
+                                                            <Image Source="{x:Bind SafePicUrl}" Stretch="UniformToFill" />
                                                         </Border>
                                                         <TextBlock Text="{x:Bind Name}" MaxLines="1" TextTrimming="CharacterEllipsis" FontSize="12" />
                                                     </StackPanel>
@@ -7303,7 +7990,7 @@
                                         <ColumnDefinition Width="Auto" />
                                     </Grid.ColumnDefinitions>
                                     <Border Grid.Column="0" Width="48" Height="48" CornerRadius="10" Background="{ThemeResource ControlFillColorSecondaryBrush}">
-                                        <Image Source="{x:Bind CoverImgUrl}" Stretch="UniformToFill" />
+                                        <Image Source="{x:Bind SafeCoverImgUrl}" Stretch="UniformToFill" />
                                     </Border>
                                     <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
                                         <TextBlock Text="{x:Bind Name}" FontSize="14" FontWeight="SemiBold" MaxLines="1" TextTrimming="CharacterEllipsis" />
@@ -7875,15 +8562,7 @@
                                 <FontIcon Glyph="&#xE70D;" FontSize="9" Foreground="{StaticResource BrandAccentLightTextBrush}" VerticalAlignment="Center" />
                             </StackPanel>
                             <Button.Flyout>
-                                <MenuFlyout Placement="Bottom">
-                                    <MenuFlyoutItem Text="标准 (128k)" Tag="standard" Click="OnPlayBarQualityMenuClick" />
-                                    <MenuFlyoutItem Text="较高 (192k)" Tag="higher" Click="OnPlayBarQualityMenuClick" />
-                                    <MenuFlyoutItem Text="极高 (320k)" Tag="exhigh" Click="OnPlayBarQualityMenuClick" />
-                                    <MenuFlyoutItem Text="无损 (FLAC)" Tag="lossless" Click="OnPlayBarQualityMenuClick" />
-                                    <MenuFlyoutItem Text="Hi-Res" Tag="hires" Click="OnPlayBarQualityMenuClick" />
-                                    <MenuFlyoutItem Text="高清臻音" Tag="jyeffect" Click="OnPlayBarQualityMenuClick" />
-                                    <MenuFlyoutItem Text="沉浸环绕声" Tag="sky" Click="OnPlayBarQualityMenuClick" />
-                                    <MenuFlyoutItem Text="超清母带" Tag="jymaster" Click="OnPlayBarQualityMenuClick" />
+                                <MenuFlyout x:Name="ImmersiveQualityMenuFlyout" Placement="Bottom" Opening="OnQualityMenuFlyoutOpening">
                                     <MenuFlyoutSeparator />
                                     <MenuFlyoutItem Text="多声道环绕声空间配置 (5.1 / 7.1)..." Click="OnOpenMultichannelModalFromBadgeClick">
                                         <MenuFlyoutItem.Icon>
@@ -8307,9 +8986,31 @@
                             </StackPanel>
                             <StackPanel Orientation="Horizontal" Spacing="5">
                                 <TextBlock x:Name="BottomArtistText" Text="选择一首歌曲开始聆听" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" MaxWidth="105" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
-                                <Border Background="{StaticResource BrandAccentSubtleBrush}" CornerRadius="4" Padding="5,1" VerticalAlignment="Center">
-                                    <TextBlock x:Name="BottomPlatformBadgeText" Text="NETEASE" FontSize="9" Foreground="{StaticResource BrandAccentBrush}" FontWeight="Bold" />
-                                </Border>
+                                <Button
+                                    x:Name="BottomPlatformBadgeBtn"
+                                    Padding="6,1"
+                                    MinHeight="0"
+                                    MinWidth="0"
+                                    CornerRadius="4"
+                                    VerticalAlignment="Center"
+                                    Background="{StaticResource BrandAccentSubtleBrush}"
+                                    BorderBrush="{StaticResource BrandAccentBorderSubtleBrush}"
+                                    BorderThickness="1"
+                                    ToolTipService.ToolTip="当前播放音源（点击实时切换指定导入源 / 自带源）">
+                                    <StackPanel Orientation="Horizontal" Spacing="3">
+                                        <TextBlock
+                                            x:Name="BottomPlatformBadgeText"
+                                            Text="网易云"
+                                            FontSize="9"
+                                            Foreground="{StaticResource BrandAccentBrush}"
+                                            FontWeight="Bold"
+                                            VerticalAlignment="Center" />
+                                        <FontIcon Glyph="&#xE70D;" FontSize="7" Foreground="{StaticResource BrandAccentBrush}" VerticalAlignment="Center" />
+                                    </StackPanel>
+                                    <Button.Flyout>
+                                        <MenuFlyout x:Name="BottomSourceMenuFlyout" Placement="Top" Opening="OnSourceMenuFlyoutOpening" />
+                                    </Button.Flyout>
+                                </Button>
                                 <Button
                                     x:Name="BottomQualityBadgeBtn"
                                     Padding="6,1"
@@ -8332,15 +9033,7 @@
                                         <FontIcon Glyph="&#xE70D;" FontSize="7" Foreground="{StaticResource BrandAccentBrush}" VerticalAlignment="Center" />
                                     </StackPanel>
                                     <Button.Flyout>
-                                        <MenuFlyout Placement="Top">
-                                            <MenuFlyoutItem Text="标准 (128k)" Tag="standard" Click="OnPlayBarQualityMenuClick" />
-                                            <MenuFlyoutItem Text="较高 (192k)" Tag="higher" Click="OnPlayBarQualityMenuClick" />
-                                            <MenuFlyoutItem Text="极高 (320k)" Tag="exhigh" Click="OnPlayBarQualityMenuClick" />
-                                            <MenuFlyoutItem Text="无损 (FLAC)" Tag="lossless" Click="OnPlayBarQualityMenuClick" />
-                                            <MenuFlyoutItem Text="Hi-Res" Tag="hires" Click="OnPlayBarQualityMenuClick" />
-                                            <MenuFlyoutItem Text="高清臻音" Tag="jyeffect" Click="OnPlayBarQualityMenuClick" />
-                                            <MenuFlyoutItem Text="沉浸环绕声" Tag="sky" Click="OnPlayBarQualityMenuClick" />
-                                            <MenuFlyoutItem Text="超清母带" Tag="jymaster" Click="OnPlayBarQualityMenuClick" />
+                                        <MenuFlyout x:Name="BottomQualityMenuFlyout" Placement="Top" Opening="OnQualityMenuFlyoutOpening">
                                             <MenuFlyoutSeparator />
                                             <MenuFlyoutItem Text="多声道环绕声空间配置 (5.1 / 7.1)..." Click="OnOpenMultichannelModalFromBadgeClick">
                                                 <MenuFlyoutItem.Icon>

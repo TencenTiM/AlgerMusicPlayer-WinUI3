@@ -36,7 +36,7 @@ public partial class MainViewModel : ObservableObject
 
     // ==================== 导航与全局状态 ====================
 
-    private string _currentSection = "Home";
+    private string _currentSection = "DiscoverHome";
     public string CurrentSection
     {
         get => _currentSection;
@@ -342,6 +342,16 @@ public partial class MainViewModel : ObservableObject
 
     public int DetailQqDirId { get; set; }
 
+    /// <summary>
+    /// 当前在「第三方音源 / 自带音源」专区选中的定向音源 key（例如 lx_all / lx:<id> / gdmusic；在独立平台专区为 null）
+    /// </summary>
+    public string? ActiveZoneForceSource { get; set; }
+
+    /// <summary>
+    /// 打开歌单详情页时从专区继承的定向音源 key（确保详情页双击或播放全部仍优先使用该源）
+    /// </summary>
+    public string? DetailForceSource { get; set; }
+
     private bool _canCollectDetail;
     public bool CanCollectDetail
     {
@@ -559,6 +569,7 @@ public partial class MainViewModel : ObservableObject
     public ObservableCollection<MvItem> SearchMvs { get; } = [];
     public ObservableCollection<BilibiliVideoItem> BilibiliVideos { get; } = [];
     public ObservableCollection<SongItem> ThirdPartySongs { get; } = [];
+    public ObservableCollection<SongItem> PlatformSearchSongs { get; } = [];
     public ObservableCollection<PlaylistItem> ThirdPartyPlaylists { get; } = [];
     public ObservableCollection<MvItem> MvList { get; } = [];
 
@@ -581,6 +592,36 @@ public partial class MainViewModel : ObservableObject
     public ObservableCollection<AlbumItem> UserSubscribedAlbums { get; } = [];
     public ObservableCollection<PlayRecordItem> UserPlayRecords { get; } = [];
     public ObservableCollection<ShortcutItem> ShortcutsList { get; } = [];
+
+    // 综合首页（原方案 B）数据集合与状态
+    public ObservableCollection<DiscoverBannerItem> DiscoverBanners { get; } = [];
+    public ObservableCollection<SongItem> FilteredDiscoverNewSongs { get; } = [];
+    public ObservableCollection<DiscoverPlaylistCardItem> FilteredDiscoverPlaylists { get; } = [];
+
+    private readonly List<SongItem> _allDiscoverNewSongs = [];
+    private readonly List<DiscoverPlaylistCardItem> _allDiscoverPlaylists = [];
+    private string _discoverSongPlatformFilter = "all";
+    private string _discoverPlaylistPlatformFilter = "all";
+    private int _discoverPlaylistShufflePage = 1;
+    private bool _isDiscoverHomeLoaded;
+    private CancellationTokenSource? _discoverHomeCts;
+    private CancellationTokenSource? _discoverHydrateCts;
+
+    private bool _isDiscoverLoading;
+    public bool IsDiscoverLoading
+    {
+        get => _isDiscoverLoading;
+        set
+        {
+            if (SetProperty(ref _isDiscoverLoading, value))
+                OnPropertyChanged(nameof(DiscoverLoadingVisibility));
+        }
+    }
+
+    public Microsoft.UI.Xaml.Visibility DiscoverLoadingVisibility => _isDiscoverLoading
+        ? Microsoft.UI.Xaml.Visibility.Visible
+        : Microsoft.UI.Xaml.Visibility.Collapsed;
+    public event Action? DiscoverBannersUpdated;
     public ObservableCollection<LxScriptItem> LxScriptsList { get; } = [];
     public ObservableCollection<DonorItem> DonorsList { get; } = [];
     public ObservableCollection<string> SearchSuggestions { get; } = [];
@@ -595,6 +636,25 @@ public partial class MainViewModel : ObservableObject
     public string ThirdPartyCategoryKey { get; private set; } = "10000000";
     public int ThirdPartyPlaylistPage { get; private set; } = 1;
     public string ThirdPartyKeyword { get; set; } = string.Empty;
+    public string ActiveSearchPlatform { get; set; } = "netease";
+    public string LastSearchKeyword { get; private set; } = string.Empty;
+
+    private CancellationTokenSource? _crossSearchCts;
+
+    /// <summary>
+    /// 切换第三方或国际平台专区时重置当前专区上下文与列表数据
+    /// </summary>
+    public void ResetThirdPartyZoneState(string sourceKey, string defaultCatKey, string defaultBoardKey)
+    {
+        _thirdPartyCts?.Cancel();
+        ThirdPartySource = sourceKey;
+        ThirdPartyCategoryKey = defaultCatKey;
+        ThirdPartyBoardKey = defaultBoardKey;
+        ThirdPartyPlaylistPage = 1;
+        ThirdPartyKeyword = string.Empty;
+        ThirdPartyPlaylists.Clear();
+        ThirdPartySongs.Clear();
+    }
 
     public bool IsDraggingSeek { get; set; }
 
@@ -638,6 +698,11 @@ public partial class MainViewModel : ObservableObject
         Player.LyricLoaded += OnPlayerLyricLoaded;
         Player.LyricLineChanged += OnPlayerLyricLineChanged;
         Player.QualityBadgeChanged += badge => RunOnUi(() => CurrentQualityBadge = badge);
+        Player.PlaybackBadgesChanged += (platformBadge, qualityBadge) => RunOnUi(() =>
+        {
+            CurrentPlatformBadge = platformBadge;
+            CurrentQualityBadge = qualityBadge;
+        });
         Player.SongEndedNaturally += OnPlayerSongEndedNaturally;
         Player.StatusMessage += msg => RunOnUi(() => StatusToast = msg);
     }
@@ -683,7 +748,8 @@ public partial class MainViewModel : ObservableObject
         }
 
         _ = Downloader.RefreshCompletedDownloadsAsync();
-        await LoadHomeDataAsync();
+        await LoadDiscoverHomeAsync();
+        _ = LoadHomeDataAsync();
 
         if (!string.IsNullOrWhiteSpace(Config.Settings.NeteaseCookie))
         {
@@ -892,8 +958,610 @@ public partial class MainViewModel : ObservableObject
         await NextFmAsync();
     }
 
+    // ==================== 综合首页（原方案 B：三联画报 + 碟片架 + 曲目预览歌单） ====================
+
+    /// <summary>
+    /// 并发加载综合首页（国内平台首屏快显 + 国际平台无阻塞合流）
+    /// </summary>
+    public async Task LoadDiscoverHomeAsync(bool forceRefresh = false)
+    {
+        if (_isDiscoverHomeLoaded && !forceRefresh && _allDiscoverNewSongs.Count > 0 && _allDiscoverPlaylists.Count > 0)
+        {
+            return;
+        }
+
+        _discoverHomeCts?.Cancel();
+        _discoverHydrateCts?.Cancel();
+        var cts = new CancellationTokenSource();
+        _discoverHomeCts = cts;
+        var ct = cts.Token;
+
+        IsDiscoverLoading = true;
+        try
+        {
+            var neteaseSongTask = FetchPlatformNewSongsSafeAsync("netease", ct);
+            var qqSongTask = FetchPlatformNewSongsSafeAsync("tx", ct);
+            var qishuiSongTask = FetchPlatformNewSongsSafeAsync("qishui", ct);
+            var kugouSongTask = FetchPlatformNewSongsSafeAsync("kg", ct);
+            var kuwoSongTask = FetchPlatformNewSongsSafeAsync("kw", ct);
+
+            var neteasePlTask = FetchPlatformPlaylistsSafeAsync("netease", 1, ct);
+            var qqPlTask = FetchPlatformPlaylistsSafeAsync("tx", 1, ct);
+            var qishuiPlTask = FetchPlatformPlaylistsSafeAsync("qishui", 1, ct);
+            var kugouPlTask = FetchPlatformPlaylistsSafeAsync("kg", 1, ct);
+
+            var appleSongTask = FetchPlatformNewSongsSafeAsync("apple", ct);
+            var spotifySongTask = FetchPlatformNewSongsSafeAsync("spotify", ct);
+            var spotifyPlTask = FetchPlatformPlaylistsSafeAsync("spotify", 1, ct);
+            var applePlTask = FetchPlatformPlaylistsSafeAsync("apple", 1, ct);
+
+            await Task.WhenAll(
+                neteaseSongTask, qqSongTask, qishuiSongTask, kugouSongTask, kuwoSongTask,
+                neteasePlTask, qqPlTask, qishuiPlTask, kugouPlTask);
+            if (ct.IsCancellationRequested) return;
+
+            var neteaseSongs = await neteaseSongTask;
+            var qqSongs = await qqSongTask;
+            var qishuiSongs = await qishuiSongTask;
+            var kugouSongs = await kugouSongTask;
+            var kuwoSongs = await kuwoSongTask;
+
+            var neteasePls = await neteasePlTask;
+            var qqPls = await qqPlTask;
+            var qishuiPls = await qishuiPlTask;
+            var kugouPls = await kugouPlTask;
+
+            ApplyDiscoverSnapshot(
+                neteaseSongs, qqSongs, qishuiSongs, kugouSongs, kuwoSongs, [], [],
+                neteasePls, qqPls, qishuiPls, kugouPls, [], []);
+            _isDiscoverHomeLoaded = true;
+            IsDiscoverLoading = false;
+
+            await Task.WhenAll(appleSongTask, spotifySongTask, spotifyPlTask, applePlTask);
+            if (ct.IsCancellationRequested) return;
+
+            var appleSongs = await appleSongTask;
+            var spotifySongs = await spotifySongTask;
+            var spotifyPls = await spotifyPlTask;
+            var applePls = await applePlTask;
+
+            if (appleSongs.Count > 0 || spotifySongs.Count > 0 || spotifyPls.Count > 0 || applePls.Count > 0)
+            {
+                ApplyDiscoverSnapshot(
+                    neteaseSongs, qqSongs, qishuiSongs, kugouSongs, kuwoSongs, appleSongs, spotifySongs,
+                    neteasePls, qqPls, qishuiPls, kugouPls, spotifyPls, applePls);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            StatusToast = $"加载综合首页数据失败: {ex.Message}";
+        }
+        finally
+        {
+            if (ReferenceEquals(_discoverHomeCts, cts))
+            {
+                IsDiscoverLoading = false;
+            }
+        }
+    }
+
+    private void ApplyDiscoverSnapshot(
+        List<SongItem> neteaseSongs,
+        List<SongItem> qqSongs,
+        List<SongItem> qishuiSongs,
+        List<SongItem> kugouSongs,
+        List<SongItem> kuwoSongs,
+        List<SongItem> appleSongs,
+        List<SongItem> spotifySongs,
+        List<PlaylistItem> neteasePls,
+        List<PlaylistItem> qqPls,
+        List<PlaylistItem> qishuiPls,
+        List<PlaylistItem> kugouPls,
+        List<PlaylistItem> spotifyPls,
+        List<PlaylistItem> applePls)
+    {
+        var interleavedSongs = InterleaveRoundRobin(
+            [neteaseSongs, qqSongs, qishuiSongs, kugouSongs, kuwoSongs, appleSongs, spotifySongs],
+            s => $"{PlatformVisualHelper.NormalizeKey(s.Source)}:{s.Name?.Trim().ToLowerInvariant()}:{s.ArtistText?.Trim().ToLowerInvariant()}");
+
+        foreach (var s in interleavedSongs)
+        {
+            s.IsLiked = Config.IsFavorite(s.Id);
+        }
+
+        // 保留已水合过的卡片实例，避免合流时丢弃已取回的三首曲目预览
+        var existingCards = _allDiscoverPlaylists.ToDictionary(
+            c => $"{c.PlatformKey}:{c.Playlist.Id}:{c.Playlist.ThirdPartyId}:{c.Playlist.QqDissId}:{c.Title}",
+            c => c,
+            StringComparer.OrdinalIgnoreCase);
+
+        var interleavedPls = InterleaveRoundRobin(
+            [neteasePls, qqPls, qishuiPls, kugouPls, spotifyPls, applePls],
+            p => $"{PlatformVisualHelper.NormalizeKey(p.Source)}:{p.Id}:{p.ThirdPartyId}:{p.QqDissId}:{p.Name?.Trim().ToLowerInvariant()}");
+
+        var nextCards = new List<DiscoverPlaylistCardItem>(interleavedPls.Count);
+        foreach (var p in interleavedPls)
+        {
+            var cardKey = $"{PlatformVisualHelper.NormalizeKey(p.Source)}:{p.Id}:{p.ThirdPartyId}:{p.QqDissId}:{p.Name?.Trim()}";
+            if (existingCards.TryGetValue(cardKey, out var cached))
+            {
+                nextCards.Add(cached);
+            }
+            else
+            {
+                nextCards.Add(new DiscoverPlaylistCardItem { Playlist = p });
+            }
+        }
+
+        var nextBanners = BuildDiscoverBanners(neteaseSongs, qqSongs, qishuiSongs, kugouSongs, spotifySongs, appleSongs);
+
+        RunOnUi(() =>
+        {
+            DiscoverBanners.Clear();
+            foreach (var b in nextBanners) DiscoverBanners.Add(b);
+            DiscoverBannersUpdated?.Invoke();
+
+            _allDiscoverNewSongs.Clear();
+            _allDiscoverNewSongs.AddRange(interleavedSongs);
+            ApplyDiscoverNewSongsFilterUi(_discoverSongPlatformFilter);
+
+            _allDiscoverPlaylists.Clear();
+            _allDiscoverPlaylists.AddRange(nextCards);
+            ApplyDiscoverPlaylistsFilterUi(_discoverPlaylistPlatformFilter);
+
+            SyncSongPlayingStates(Player.CurrentSong?.Id, Player.IsPlaying);
+        });
+
+        StartHydrateVisiblePlaylists();
+    }
+
+    private List<DiscoverBannerItem> BuildDiscoverBanners(
+        List<SongItem> neteaseSongs,
+        List<SongItem> qqSongs,
+        List<SongItem> qishuiSongs,
+        List<SongItem> kugouSongs,
+        List<SongItem> spotifySongs,
+        List<SongItem> appleSongs)
+    {
+        var banners = new List<DiscoverBannerItem>(3);
+
+        // 画报 1：网易云首发
+        var b0Songs = neteaseSongs.Count > 0 ? neteaseSongs : qishuiSongs.Concat(kugouSongs).ToList();
+        var lead0 = b0Songs.FirstOrDefault(s => !string.IsNullOrWhiteSpace(s.PicUrl)) ?? b0Songs.FirstOrDefault();
+        var b0 = new DiscoverBannerItem
+        {
+            Id = "banner_netease",
+            BadgeText = "网易云首发",
+            PlatformKey = "netease",
+            Headline = lead0 != null ? $"{lead0.Name} — {lead0.ArtistText}" : "网易云每日新歌首发",
+            Subtitle = b0Songs.Count > 0 ? $"今日华语与全球新曲精选 · 收录 {b0Songs.Count} 首" : "华语流行与独立原创每日速递",
+            CoverUrl = lead0?.HighResCoverUrl ?? ImageUriHelper.DefaultCoverUri
+        };
+        b0.Songs.AddRange(b0Songs.Take(20));
+        banners.Add(b0);
+
+        // 画报 2：QQ音乐巅峰首发
+        var b1Songs = qqSongs.Count > 0 ? qqSongs : qishuiSongs.Concat(kugouSongs).ToList();
+        var lead1 = b1Songs.FirstOrDefault(s => !string.IsNullOrWhiteSpace(s.PicUrl)) ?? b1Songs.FirstOrDefault();
+        var b1 = new DiscoverBannerItem
+        {
+            Id = "banner_qq",
+            BadgeText = "QQ音乐巅峰首发",
+            PlatformKey = qqSongs.Count > 0 ? "qq" : (qishuiSongs.Count > 0 ? "qishui" : "kugou"),
+            Headline = lead1 != null ? $"{lead1.Name} — {lead1.ArtistText}" : "QQ音乐巅峰新歌榜",
+            Subtitle = b1Songs.Count > 0 ? $"实时飙升首发新声 · 收录 {b1Songs.Count} 首热单" : "巅峰新歌热榜同步直达",
+            CoverUrl = lead1?.HighResCoverUrl ?? ImageUriHelper.DefaultCoverUri
+        };
+        b1.Songs.AddRange(b1Songs.Take(20));
+        banners.Add(b1);
+
+        // 画报 3：全球流行新声 (Spotify + Apple Music，若受网络限制暂未返回则平滑兜底)
+        var globalPool = InterleaveRoundRobin(
+            [spotifySongs, appleSongs],
+            s => $"{s.Name?.Trim().ToLowerInvariant()}:{s.ArtistText?.Trim().ToLowerInvariant()}");
+        bool hasNativeGlobal = globalPool.Count > 0;
+        var b2Songs = hasNativeGlobal ? globalPool : kugouSongs.Concat(neteaseSongs).Take(16).ToList();
+        var lead2 = b2Songs.FirstOrDefault(s => !string.IsNullOrWhiteSpace(s.PicUrl)) ?? b2Songs.FirstOrDefault();
+        var b2 = new DiscoverBannerItem
+        {
+            Id = "banner_global",
+            BadgeText = "全球流行新声",
+            PlatformKey = spotifySongs.Count > 0 ? "spotify" : (appleSongs.Count > 0 ? "apple" : "kugou"),
+            Headline = lead2 != null ? $"{lead2.Name} — {lead2.ArtistText}" : "Spotify & Apple 全球流行前沿",
+            Subtitle = hasNativeGlobal
+                ? $"Spotify & Apple Music 全球风向 · 收录 {globalPool.Count} 首"
+                : "全球跨平台精选热门单曲 · 点击一键畅听",
+            CoverUrl = lead2?.HighResCoverUrl ?? ImageUriHelper.DefaultCoverUri
+        };
+        b2.Songs.AddRange(b2Songs.Take(20));
+        banners.Add(b2);
+
+        return banners;
+    }
+
+    private async Task<List<SongItem>> FetchPlatformNewSongsSafeAsync(string sourceKey, CancellationToken ct)
+    {
+        try
+        {
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(TimeSpan.FromSeconds(5.5));
+            List<SongItem> songs = sourceKey switch
+            {
+                "netease" => await Api.GetRecommendNewSongsAsync(12),
+                "tx" or "qq" => await ThirdParty.GetBoardSongsAsync("tx", "new", timeoutCts.Token),
+                "qishui" => await ThirdParty.GetBoardSongsAsync("qishui", "new", timeoutCts.Token),
+                "kg" or "kugou" => await ThirdParty.GetBoardSongsAsync("kg", "new", timeoutCts.Token),
+                "kw" or "kuwo" => await ThirdParty.GetBoardSongsAsync("kw", "new", timeoutCts.Token),
+                "apple" => await ThirdParty.GetBoardSongsAsync("apple", "hot", timeoutCts.Token),
+                "spotify" => await ThirdParty.GetBoardSongsAsync("spotify", "hot", timeoutCts.Token),
+                _ => []
+            };
+
+            var normalizedSource = PlatformVisualHelper.NormalizeKey(sourceKey);
+            foreach (var s in songs)
+            {
+                if (string.IsNullOrWhiteSpace(s.Source)) s.Source = normalizedSource;
+                s.IsLiked = Config.IsFavorite(s.Id);
+            }
+            return songs.Take(10).ToList();
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
+    private async Task<List<PlaylistItem>> FetchPlatformPlaylistsSafeAsync(string sourceKey, int page, CancellationToken ct)
+    {
+        try
+        {
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(TimeSpan.FromSeconds(5.5));
+            List<PlaylistItem> list;
+            if (string.Equals(sourceKey, "netease", StringComparison.OrdinalIgnoreCase))
+            {
+                if (page <= 1)
+                {
+                    list = await Api.GetRecommendPlaylistsAsync(6);
+                }
+                else
+                {
+                    var top = await Api.GetTopPlaylistsAsync("全部", 30);
+                    int skip = ((page - 1) * 6) % Math.Max(1, top.Count);
+                    list = top.Skip(skip).Take(6).ToList();
+                    if (list.Count == 0) list = top.Take(6).ToList();
+                }
+            }
+            else
+            {
+                var cat = PlatformVisualHelper.NormalizeKey(sourceKey) == "qq" ? "10000000" : "";
+                list = await ThirdParty.GetRecommendPlaylistsAsync(sourceKey, cat, page, 6, timeoutCts.Token);
+            }
+
+            var normalizedSource = PlatformVisualHelper.NormalizeKey(sourceKey);
+            foreach (var p in list)
+            {
+                if (string.IsNullOrWhiteSpace(p.Source)) p.Source = normalizedSource;
+            }
+            return list.Take(6).ToList();
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
+    private static List<T> InterleaveRoundRobin<T>(IReadOnlyList<IReadOnlyList<T>> buckets, Func<T, string> keySelector)
+    {
+        var result = new List<T>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        int maxCount = buckets.Count == 0 ? 0 : buckets.Max(b => b.Count);
+        for (int idx = 0; idx < maxCount; idx++)
+        {
+            foreach (var bucket in buckets)
+            {
+                if (idx >= bucket.Count) continue;
+                var item = bucket[idx];
+                var key = keySelector(item);
+                if (seen.Add(key))
+                {
+                    result.Add(item);
+                }
+            }
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// 按平台筛选「各大平台 · 新歌首发」碟片架
+    /// </summary>
+    public void FilterDiscoverNewSongs(string filterTag)
+    {
+        _discoverSongPlatformFilter = string.IsNullOrWhiteSpace(filterTag) ? "all" : filterTag;
+        ApplyDiscoverNewSongsFilterUi(_discoverSongPlatformFilter);
+        SyncSongPlayingStates(Player.CurrentSong?.Id, Player.IsPlaying);
+
+        if (!string.Equals(_discoverSongPlatformFilter, "all", StringComparison.OrdinalIgnoreCase) &&
+            FilteredDiscoverNewSongs.Count == 0)
+        {
+            var requestedTag = _discoverSongPlatformFilter;
+            _ = Task.Run(async () =>
+            {
+                var fetched = await FetchPlatformNewSongsSafeAsync(requestedTag, CancellationToken.None);
+                if (fetched.Count > 0)
+                {
+                    RunOnUi(() =>
+                    {
+                        _allDiscoverNewSongs.AddRange(fetched);
+                        ApplyDiscoverNewSongsFilterUi(_discoverSongPlatformFilter);
+                        SyncSongPlayingStates(Player.CurrentSong?.Id, Player.IsPlaying);
+                    });
+                }
+            });
+        }
+    }
+
+    private void ApplyDiscoverNewSongsFilterUi(string filterTag)
+    {
+        FilteredDiscoverNewSongs.Clear();
+        foreach (var song in _allDiscoverNewSongs.Where(s => PlatformVisualHelper.MatchesFilter(s.Source, filterTag)).Take(24))
+        {
+            FilteredDiscoverNewSongs.Add(song);
+        }
+    }
+
+    /// <summary>
+    /// 按平台筛选「跨平台精选 · 推荐歌单」并自动水合可见卡片的 3 首曲目预览
+    /// </summary>
+    public void FilterDiscoverPlaylists(string filterTag)
+    {
+        _discoverPlaylistPlatformFilter = string.IsNullOrWhiteSpace(filterTag) ? "all" : filterTag;
+        ApplyDiscoverPlaylistsFilterUi(_discoverPlaylistPlatformFilter);
+        StartHydrateVisiblePlaylists();
+
+        if (!string.Equals(_discoverPlaylistPlatformFilter, "all", StringComparison.OrdinalIgnoreCase) &&
+            FilteredDiscoverPlaylists.Count == 0)
+        {
+            var requestedTag = _discoverPlaylistPlatformFilter;
+            _ = Task.Run(async () =>
+            {
+                var fetched = await FetchPlatformPlaylistsSafeAsync(requestedTag, _discoverPlaylistShufflePage, CancellationToken.None);
+                if (fetched.Count > 0)
+                {
+                    RunOnUi(() =>
+                    {
+                        foreach (var p in fetched)
+                        {
+                            _allDiscoverPlaylists.Add(new DiscoverPlaylistCardItem { Playlist = p });
+                        }
+                        ApplyDiscoverPlaylistsFilterUi(_discoverPlaylistPlatformFilter);
+                        StartHydrateVisiblePlaylists();
+                    });
+                }
+            });
+        }
+    }
+
+    private void ApplyDiscoverPlaylistsFilterUi(string filterTag)
+    {
+        FilteredDiscoverPlaylists.Clear();
+        foreach (var card in _allDiscoverPlaylists.Where(c => PlatformVisualHelper.MatchesFilter(c.PlatformKey, filterTag)).Take(12))
+        {
+            FilteredDiscoverPlaylists.Add(card);
+        }
+    }
+
+    /// <summary>
+    /// 「换一批」跨平台精选推荐歌单
+    /// </summary>
+    public async Task ShuffleDiscoverPlaylistsAsync()
+    {
+        _discoverPlaylistShufflePage = _discoverPlaylistShufflePage >= 5 ? 2 : _discoverPlaylistShufflePage + 1;
+        int page = _discoverPlaylistShufflePage;
+        var cts = CancellationToken.None;
+
+        var neteaseTask = FetchPlatformPlaylistsSafeAsync("netease", page, cts);
+        var qqTask = FetchPlatformPlaylistsSafeAsync("tx", page, cts);
+        var qishuiTask = FetchPlatformPlaylistsSafeAsync("qishui", page, cts);
+        var kugouTask = FetchPlatformPlaylistsSafeAsync("kg", page, cts);
+        var spotifyTask = FetchPlatformPlaylistsSafeAsync("spotify", page, cts);
+        var appleTask = FetchPlatformPlaylistsSafeAsync("apple", page, cts);
+
+        await Task.WhenAll(neteaseTask, qqTask, qishuiTask, kugouTask, spotifyTask, appleTask);
+        var interleaved = InterleaveRoundRobin(
+            [await neteaseTask, await qqTask, await qishuiTask, await kugouTask, await spotifyTask, await appleTask],
+            p => $"{PlatformVisualHelper.NormalizeKey(p.Source)}:{p.Id}:{p.ThirdPartyId}:{p.QqDissId}:{p.Name?.Trim().ToLowerInvariant()}");
+
+        if (interleaved.Count == 0) return;
+
+        var nextCards = interleaved.Select(p => new DiscoverPlaylistCardItem { Playlist = p }).ToList();
+        RunOnUi(() =>
+        {
+            _allDiscoverPlaylists.Clear();
+            _allDiscoverPlaylists.AddRange(nextCards);
+            ApplyDiscoverPlaylistsFilterUi(_discoverPlaylistPlatformFilter);
+            StartHydrateVisiblePlaylists();
+        });
+    }
+
+    private void StartHydrateVisiblePlaylists()
+    {
+        var visibleSnapshot = FilteredDiscoverPlaylists.Take(9).ToList();
+        if (visibleSnapshot.Count == 0) return;
+
+        _discoverHydrateCts?.Cancel();
+        var cts = new CancellationTokenSource();
+        _discoverHydrateCts = cts;
+        _ = HydrateDiscoverPlaylistPreviewsAsync(visibleSnapshot, cts.Token);
+    }
+
+    private async Task HydrateDiscoverPlaylistPreviewsAsync(IReadOnlyList<DiscoverPlaylistCardItem> cards, CancellationToken ct)
+    {
+        using var sem = new SemaphoreSlim(3, 3);
+        var tasks = cards.Select(async card =>
+        {
+            if (ct.IsCancellationRequested || card.Playlist.Tracks.Count > 0) return;
+            await sem.WaitAsync(ct);
+            try
+            {
+                if (ct.IsCancellationRequested) return;
+                var tracks = await ResolvePlaylistTracksAsync(card.Playlist, ct);
+                if (ct.IsCancellationRequested) return;
+
+                if (tracks.Count > 0)
+                {
+                    card.Playlist.Tracks = tracks;
+                }
+
+                RunOnUi(() =>
+                {
+                    if (tracks.Count > 0)
+                    {
+                        card.PreviewLine1 = $"1. {tracks[0].Name} - {tracks[0].ArtistText}";
+                        card.PreviewLine2 = tracks.Count >= 2 ? $"2. {tracks[1].Name} - {tracks[1].ArtistText}" : string.Empty;
+                        card.PreviewLine3 = tracks.Count >= 3 ? $"3. {tracks[2].Name} - {tracks[2].ArtistText}" : string.Empty;
+                    }
+                    else
+                    {
+                        card.PreviewLine1 = $"1. {card.ShortPlatformTag} 精选歌单 · 点击查看曲目";
+                        card.PreviewLine2 = card.MetaText;
+                        card.PreviewLine3 = string.Empty;
+                    }
+                });
+            }
+            catch
+            {
+                RunOnUi(() =>
+                {
+                    card.PreviewLine1 = $"1. {card.ShortPlatformTag} 精选歌单 · 点击查看曲目";
+                    card.PreviewLine2 = card.MetaText;
+                    card.PreviewLine3 = string.Empty;
+                });
+            }
+            finally
+            {
+                sem.Release();
+            }
+        });
+
+        try
+        {
+            await Task.WhenAll(tasks);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private async Task<List<SongItem>> ResolvePlaylistTracksAsync(PlaylistItem playlist, CancellationToken ct)
+    {
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(TimeSpan.FromSeconds(5.5));
+
+        bool isQq = playlist.Source is "qq" or "tx" || !string.IsNullOrWhiteSpace(playlist.QqDissId);
+        if (isQq)
+        {
+            var dissId = !string.IsNullOrWhiteSpace(playlist.QqDissId)
+                ? playlist.QqDissId
+                : (!string.IsNullOrWhiteSpace(playlist.ThirdPartyId) ? playlist.ThirdPartyId : playlist.Id.ToString());
+            var qqFull = await QqMusic.GetPlaylistDetailAsync(dissId);
+            return qqFull?.Tracks ?? [];
+        }
+
+        bool isOtherThirdParty = playlist.Source is
+            "kugou" or "kuwo" or "migu" or "kg" or "kw" or "mg" or
+            "qishui" or "spotify" or "apple" or "deezer" or "tidal" or "qobuz" or "ytmusic";
+        if (isOtherThirdParty)
+        {
+            var tpFull = await ThirdParty.GetPlaylistDetailAsync(playlist, timeoutCts.Token);
+            return tpFull?.Tracks ?? [];
+        }
+
+        var neteaseFull = playlist.Id > 0 ? await Api.GetPlaylistDetailAsync(playlist.Id) : null;
+        return neteaseFull?.Tracks ?? [];
+    }
+
+    /// <summary>
+    /// 打开三联画报对应的专辑/歌单详情曲目列表
+    /// </summary>
+    public void OpenDiscoverBannerDetail(DiscoverBannerItem? banner)
+    {
+        if (banner == null) return;
+        DetailForceSource = null;
+        CurrentSection = "Detail";
+        DetailType = "discoverBanner";
+        DetailPlaylistId = 0;
+        DetailBadgeText = banner.BadgeText;
+        DetailTitle = banner.Headline;
+        DetailCreatorName = PlatformVisualHelper.GetShortLabel(banner.PlatformKey);
+        DetailCreatorAvatarUrl = string.Empty;
+        DetailSongCountText = $"{banner.Songs.Count} 首音乐";
+        DetailSubtitle = banner.Subtitle;
+        DetailDescription = $"{banner.BadgeText} · {banner.Subtitle}";
+        DetailCoverUrl = banner.CoverUrl;
+        CanCollectDetail = false;
+        IsDetailCollected = false;
+        CanRemoveFromCurrentDetail = false;
+        IsDetailSelecting = false;
+        _detailSearchKeyword = string.Empty;
+        OnPropertyChanged(nameof(DetailSearchKeyword));
+        DetailSongs.Clear();
+        foreach (var s in banner.Songs) DetailSongs.Add(s);
+        RebuildFilteredDetailSongs();
+    }
+
+    /// <summary>
+    /// 一键播放三联画报首发焦点合集
+    /// </summary>
+    public async Task PlayDiscoverBannerAsync(DiscoverBannerItem? banner)
+    {
+        if (banner == null || banner.Songs.Count == 0)
+        {
+            StatusToast = "该画报合集暂未加载到可播曲目";
+            return;
+        }
+        await Player.PlaySongAsync(banner.Songs[0], banner.Songs);
+    }
+
+    /// <summary>
+    /// 在综合首页歌单卡上直接点击悬浮绿按钮即刻整单起播
+    /// </summary>
+    public async Task PlayDiscoverPlaylistImmediateAsync(DiscoverPlaylistCardItem? card)
+    {
+        if (card == null) return;
+        if (card.Playlist.Tracks.Count == 0)
+        {
+            StatusToast = $"正在获取《{card.Title}》曲目...";
+            try
+            {
+                var tracks = await ResolvePlaylistTracksAsync(card.Playlist, CancellationToken.None);
+                if (tracks.Count > 0)
+                {
+                    card.Playlist.Tracks = tracks;
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        if (card.Playlist.Tracks.Count > 0)
+        {
+            foreach (var s in card.Playlist.Tracks) s.IsLiked = Config.IsFavorite(s.Id);
+            await Player.PlaySongAsync(card.Playlist.Tracks[0], card.Playlist.Tracks);
+        }
+        else
+        {
+            await OpenPlaylistDetailAsync(card.Playlist);
+        }
+    }
+
     public void OpenDailyRecommendDetail()
     {
+        DetailForceSource = null;
         CurrentSection = "Detail";
         DetailType = "dailyRecommend";
         DetailPlaylistId = 0;
@@ -986,6 +1654,7 @@ public partial class MainViewModel : ObservableObject
     public async Task OpenRadioStationDetailAsync(RadioStationItem radio)
     {
         if (radio == null) return;
+        DetailForceSource = null;
         CurrentSection = "Detail";
         DetailType = "podcast";
         DetailPlaylistId = radio.Id;
@@ -1063,8 +1732,11 @@ public partial class MainViewModel : ObservableObject
     public async Task OpenPlaylistDetailAsync(PlaylistItem playlist)
     {
         if (playlist == null) return;
-        bool isQq = playlist.Source == "qq" || !string.IsNullOrWhiteSpace(playlist.QqDissId);
-        bool isOtherThirdParty = playlist.Source is "kugou" or "kuwo" or "migu" or "kg" or "kw" or "mg";
+        DetailForceSource = CurrentSection is "ThirdParty" or "BuiltInSources" ? ActiveZoneForceSource : null;
+        bool isQq = playlist.Source is "qq" or "tx" || !string.IsNullOrWhiteSpace(playlist.QqDissId);
+        bool isOtherThirdParty = !isQq && playlist.Source is
+            "kugou" or "kuwo" or "migu" or "kg" or "kw" or "mg" or
+            "qishui" or "spotify" or "apple" or "deezer" or "tidal" or "qobuz" or "ytmusic";
 
         CurrentSection = "Detail";
         DetailType = isQq ? "qqPlaylist" : (isOtherThirdParty ? "thirdPartyPlaylist" : "playlist");
@@ -1094,7 +1766,9 @@ public partial class MainViewModel : ObservableObject
         {
             if (isQq)
             {
-                var dissId = !string.IsNullOrWhiteSpace(playlist.QqDissId) ? playlist.QqDissId : playlist.Id.ToString();
+                var dissId = !string.IsNullOrWhiteSpace(playlist.QqDissId)
+                    ? playlist.QqDissId
+                    : (!string.IsNullOrWhiteSpace(playlist.ThirdPartyId) ? playlist.ThirdPartyId : playlist.Id.ToString());
                 var qqFull = await QqMusic.GetPlaylistDetailAsync(dissId);
                 if (qqFull != null)
                 {
@@ -1110,7 +1784,7 @@ public partial class MainViewModel : ObservableObject
                     DetailCreatorAvatarUrl = qqFull.CreatorAvatarUrl;
                     DetailSongCountText = $"{qqFull.Tracks.Count} 首音乐";
                     DetailSubtitle = $"[QQ音乐歌单] 创建者: {qqFull.CreatorName} · 播放 {qqFull.PlayCountText} · 共 {qqFull.Tracks.Count} 首";
-                    if (!string.IsNullOrWhiteSpace(qqFull.CoverImgUrl))
+                    if (ImageUriHelper.HasRealImageUrl(qqFull.CoverImgUrl))
                     {
                         DetailCoverUrl = qqFull.CoverImgUrl;
                     }
@@ -1122,6 +1796,13 @@ public partial class MainViewModel : ObservableObject
                     RebuildFilteredDetailSongs();
                     SyncSongPlayingStates(Player.CurrentSong?.Id, Player.IsPlaying);
                 }
+                else
+                {
+                    DetailSongCountText = "0 首音乐";
+                    DetailSubtitle = "[QQ音乐歌单] 暂未获取到曲目列表";
+                    RebuildFilteredDetailSongs();
+                    StatusToast = $"未能加载歌单《{playlist.Name}》的曲目列表";
+                }
                 return;
             }
 
@@ -1130,11 +1811,18 @@ public partial class MainViewModel : ObservableObject
                 var tpFull = await ThirdParty.GetPlaylistDetailAsync(playlist);
                 if (tpFull != null)
                 {
-                    string platformLabel = playlist.Source switch
+                    string platformLabel = playlist.Source.ToLowerInvariant() switch
                     {
                         "kugou" or "kg" => "酷狗歌单",
                         "kuwo" or "kw" => "酷我歌单",
                         "migu" or "mg" => "咪咕歌单",
+                        "qishui" => "汽水音乐歌单",
+                        "spotify" => "Spotify 歌单",
+                        "apple" => "Apple Music 专辑",
+                        "deezer" => "Deezer 歌单",
+                        "tidal" => "Tidal Hi-Res",
+                        "qobuz" => "Qobuz Hi-Res",
+                        "ytmusic" => "YT Music 歌单",
                         _ => "第三方歌单"
                     };
                     DetailTitle = tpFull.Name;
@@ -1142,7 +1830,7 @@ public partial class MainViewModel : ObservableObject
                     DetailCreatorName = tpFull.CreatorName;
                     DetailSongCountText = $"{tpFull.Tracks.Count} 首音乐";
                     DetailSubtitle = $"[{platformLabel}] 创建者: {tpFull.CreatorName} · 播放 {tpFull.PlayCountText} · 共 {tpFull.Tracks.Count} 首";
-                    if (!string.IsNullOrWhiteSpace(tpFull.CoverImgUrl))
+                    if (ImageUriHelper.HasRealImageUrl(tpFull.CoverImgUrl))
                     {
                         DetailCoverUrl = tpFull.CoverImgUrl;
                     }
@@ -1153,6 +1841,13 @@ public partial class MainViewModel : ObservableObject
                     }
                     RebuildFilteredDetailSongs();
                     SyncSongPlayingStates(Player.CurrentSong?.Id, Player.IsPlaying);
+                }
+                else
+                {
+                    DetailSongCountText = "0 首音乐";
+                    DetailSubtitle = "暂未获取到该歌单的曲目列表";
+                    RebuildFilteredDetailSongs();
+                    StatusToast = $"未能加载歌单《{playlist.Name}》的曲目列表";
                 }
                 return;
             }
@@ -1192,6 +1887,7 @@ public partial class MainViewModel : ObservableObject
     public async Task OpenAlbumDetailAsync(AlbumItem album)
     {
         if (album == null) return;
+        DetailForceSource = null;
         CurrentSection = "Detail";
         DetailType = "album";
         DetailPlaylistId = album.Id;
@@ -1241,6 +1937,7 @@ public partial class MainViewModel : ObservableObject
     public async Task OpenArtistDetailAsync(ArtistItem artist)
     {
         if (artist == null) return;
+        DetailForceSource = null;
         CurrentSection = "Detail";
         DetailType = "artist";
         DetailPlaylistId = artist.Id;
@@ -1286,25 +1983,32 @@ public partial class MainViewModel : ObservableObject
     public async Task ExecuteSearchAsync(string keyword)
     {
         if (string.IsNullOrWhiteSpace(keyword)) return;
+        LastSearchKeyword = keyword.Trim();
         CurrentSection = "Search";
         IsLoading = true;
-        StatusToast = $"正在搜索 \"{keyword}\"...";
+        StatusToast = $"正在搜索 \"{LastSearchKeyword}\"...";
 
         try
         {
-            var songsTask = Api.SearchSongsAsync(keyword, 40);
-            var playlistsTask = Api.SearchPlaylistsAsync(keyword, 20);
-            var albumsTask = Api.SearchAlbumsAsync(keyword, 20);
-            var artistsTask = Api.SearchArtistsAsync(keyword, 20);
-            var mvsTask = Api.SearchMvsAsync(keyword, 16);
-            var biliTask = Bilibili.SearchVideosAsync(keyword, 1, 20);
+            var songsTask = Api.SearchSongsAsync(LastSearchKeyword, 40);
+            var playlistsTask = Api.SearchPlaylistsAsync(LastSearchKeyword, 20);
+            var albumsTask = Api.SearchAlbumsAsync(LastSearchKeyword, 20);
+            var artistsTask = Api.SearchArtistsAsync(LastSearchKeyword, 20);
+            var mvsTask = Api.SearchMvsAsync(LastSearchKeyword, 16);
+            var biliTask = Bilibili.SearchVideosAsync(LastSearchKeyword, 1, 20);
+            var crossTask = (ActiveSearchPlatform is not "netease" and not "bilibili")
+                ? SearchCrossPlatformCoreAsync(ActiveSearchPlatform, LastSearchKeyword, updateLoadingState: false)
+                : Task.CompletedTask;
 
-            await Task.WhenAll(songsTask, playlistsTask, albumsTask, artistsTask, mvsTask, biliTask);
+            await Task.WhenAll(songsTask, playlistsTask, albumsTask, artistsTask, mvsTask, biliTask, crossTask);
 
+            var curId = Player.CurrentSong?.Id;
             SearchSongs.Clear();
             foreach (var s in songsTask.Result)
             {
                 s.IsLiked = Config.IsFavorite(s.Id);
+                s.IsPlaying = curId != null && s.Id == curId;
+                s.IsAudioActivelyPlaying = s.IsPlaying && Player.IsPlaying;
                 SearchSongs.Add(s);
             }
 
@@ -1323,11 +2027,70 @@ public partial class MainViewModel : ObservableObject
             BilibiliVideos.Clear();
             foreach (var bv in biliTask.Result) BilibiliVideos.Add(bv);
 
-            StatusToast = $"搜索完成：{SearchSongs.Count} 首单曲，{SearchPlaylists.Count} 个歌单，{BilibiliVideos.Count} 个 B站视频";
+            StatusToast = ActiveSearchPlatform is "netease" or "bilibili"
+                ? $"搜索完成：{SearchSongs.Count} 首单曲，{SearchPlaylists.Count} 个歌单，{BilibiliVideos.Count} 个 B站视频"
+                : $"搜索完成：当前平台命中 {PlatformSearchSongs.Count} 首曲目";
         }
         finally
         {
             IsLoading = false;
+        }
+    }
+
+    /// <summary>
+    /// 在综合搜索页内按指定平台执行跨平台单曲检索
+    /// </summary>
+    public Task SearchCrossPlatformInGlobalViewAsync(string platformKey, string keyword) =>
+        SearchCrossPlatformCoreAsync(platformKey, keyword, updateLoadingState: true);
+
+    private async Task SearchCrossPlatformCoreAsync(string platformKey, string keyword, bool updateLoadingState)
+    {
+        var trimmed = keyword?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(trimmed)) return;
+
+        _crossSearchCts?.Cancel();
+        var cts = new CancellationTokenSource();
+        _crossSearchCts = cts;
+
+        if (updateLoadingState) IsLoading = true;
+        try
+        {
+            var src = platformKey.ToLowerInvariant();
+            List<SongItem> songs;
+            if (src is "tidal" or "qobuz" or "ytmusic")
+            {
+                songs = await Unblock.SearchGdStudioCatalogAsync(src, trimmed, 1, 35, cts.Token);
+                if (songs.Count == 0 && !cts.IsCancellationRequested)
+                {
+                    songs = await ThirdParty.SearchSongsAsync(src, trimmed, 1, 35, cts.Token);
+                }
+            }
+            else
+            {
+                songs = await ThirdParty.SearchSongsAsync(src, trimmed, 1, 40, cts.Token);
+            }
+
+            if (cts.IsCancellationRequested) return;
+
+            var curId = Player.CurrentSong?.Id;
+            PlatformSearchSongs.Clear();
+            foreach (var s in songs)
+            {
+                s.IsLiked = Config.IsFavorite(s.Id);
+                s.IsPlaying = curId != null && s.Id == curId;
+                s.IsAudioActivelyPlaying = s.IsPlaying && Player.IsPlaying;
+                PlatformSearchSongs.Add(s);
+            }
+
+            if (updateLoadingState)
+            {
+                var meta = Services.Api.ThirdPartyMusicService.GetPlatformZoneMeta(src);
+                StatusToast = $"{meta.ZoneTitle}命中 {songs.Count} 首曲目";
+            }
+        }
+        finally
+        {
+            if (updateLoadingState && _crossSearchCts == cts) IsLoading = false;
         }
     }
 
@@ -1532,13 +2295,24 @@ public partial class MainViewModel : ObservableObject
 
         try
         {
-            var playlists = await ThirdParty.GetRecommendPlaylistsAsync(sourceKey, targetCat, ThirdPartyPlaylistPage, 30, cts.Token);
+            List<PlaylistItem> playlists;
+            if (sourceKey is "wy" or "netease")
+            {
+                int offset = (ThirdPartyPlaylistPage - 1) * 30;
+                playlists = await Api.GetTopPlaylistsAsync(string.IsNullOrWhiteSpace(targetCat) ? "全部" : targetCat, 30, offset);
+            }
+            else
+            {
+                playlists = await ThirdParty.GetRecommendPlaylistsAsync(sourceKey, targetCat, ThirdPartyPlaylistPage, 30, cts.Token);
+            }
             if (cts.IsCancellationRequested) return;
 
             if (playlists.Count == 0 && ThirdPartyPlaylistPage > 1)
             {
                 ThirdPartyPlaylistPage = 1;
-                playlists = await ThirdParty.GetRecommendPlaylistsAsync(sourceKey, targetCat, 1, 30, cts.Token);
+                playlists = sourceKey is "wy" or "netease"
+                    ? await Api.GetTopPlaylistsAsync(string.IsNullOrWhiteSpace(targetCat) ? "全部" : targetCat, 30, 0)
+                    : await ThirdParty.GetRecommendPlaylistsAsync(sourceKey, targetCat, 1, 30, cts.Token);
                 if (cts.IsCancellationRequested) return;
             }
 
@@ -1567,7 +2341,17 @@ public partial class MainViewModel : ObservableObject
 
         try
         {
-            var songs = await ThirdParty.GetBoardSongsAsync(sourceKey, boardKey, cts.Token);
+            List<SongItem> songs;
+            if (sourceKey is "wy" or "netease")
+            {
+                var boardId = long.TryParse(boardKey, out var parsedId) && parsedId > 0 ? parsedId : 3778678L;
+                var detail = await Api.GetPlaylistDetailAsync(boardId);
+                songs = detail?.Tracks ?? [];
+            }
+            else
+            {
+                songs = await ThirdParty.GetBoardSongsAsync(sourceKey, boardKey, cts.Token);
+            }
             if (cts.IsCancellationRequested) return;
 
             var curId = Player.CurrentSong?.Id;
@@ -1605,7 +2389,10 @@ public partial class MainViewModel : ObservableObject
 
         try
         {
-            var songs = await ThirdParty.SearchSongsAsync(sourceKey, trimmed, 1, 40, cts.Token);
+            var normalizedSource = sourceKey.ToLowerInvariant();
+            List<SongItem> songs = normalizedSource is "wy" or "netease"
+                ? await Api.SearchSongsAsync(trimmed, 40)
+                : await ThirdParty.SearchSongsAsync(normalizedSource, trimmed, 1, 40, cts.Token);
             if (cts.IsCancellationRequested) return;
 
             var curId = Player.CurrentSong?.Id;
@@ -1617,7 +2404,7 @@ public partial class MainViewModel : ObservableObject
                 s.IsAudioActivelyPlaying = s.IsPlaying && Player.IsPlaying;
                 ThirdPartySongs.Add(s);
             }
-            StatusToast = $"找到 {songs.Count} 首原生曲目";
+            StatusToast = $"找到 {songs.Count} 首曲目";
         }
         finally
         {
@@ -2175,12 +2962,15 @@ public partial class MainViewModel : ObservableObject
             DailyPreviewSongs,
             HomeNewSongs,
             SearchSongs,
+            PlatformSearchSongs,
             ThirdPartySongs,
             HistorySongs,
             FavoriteSongs,
             LocalSongs,
             FilteredLocalSongs,
-            CurrentFolderSongs
+            CurrentFolderSongs,
+            FilteredDiscoverNewSongs,
+            _allDiscoverNewSongs
         ];
 
         foreach (var list in lists)
@@ -2216,7 +3006,7 @@ public partial class MainViewModel : ObservableObject
             ? song.PlayingQualityBadge
             : (song.IsLocalSong
                 ? $"本地 {Path.GetExtension(song.LocalFilePath ?? string.Empty).TrimStart('.').ToUpperInvariant()}".Trim()
-                : MusicQualityLevel.GetShortBadgeName(Config.Settings.MusicQuality));
+                : (Player.IsBuffering ? "解析中..." : MusicQualityLevel.GetShortBadgeName(Config.Settings.MusicQuality)));
         DurationSeconds = Math.Max(1, song.DurationMs / 1000.0);
         DurationText = song.DurationText;
         LyricOffsetText = "0.0s";

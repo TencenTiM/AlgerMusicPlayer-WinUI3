@@ -26,6 +26,7 @@ public sealed class MpvAudioParams
 public sealed class MpvLoadRequest
 {
     public string FilePath { get; set; } = string.Empty;
+    public string? HttpReferrer { get; set; }
     public bool ShouldPlay { get; set; } = true;
     public double SeekTimeSeconds { get; set; }
     public float Volume { get; set; } = 1.0f;
@@ -126,6 +127,30 @@ public sealed class MpvPlaybackService : IDisposable
         return candidate1;
     }
 
+    private static bool IsHttpUrl(string? path) =>
+        !string.IsNullOrWhiteSpace(path) &&
+        (path.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+         path.StartsWith("https://", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// 后台静默预热内置 mpv 进程与 IPC 管道，消除首次点播冷启动耗时
+    /// </summary>
+    public void PreWarm()
+    {
+        if (!IsAvailable(out _)) return;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await EnsureStartedAsync();
+            }
+            catch
+            {
+                // 预热失败不阻断启动流程，实际播放时会重试
+            }
+        });
+    }
+
     public async Task LoadAsync(MpvLoadRequest request, CancellationToken ct = default)
     {
         if (!IsAvailable(out var reason))
@@ -135,7 +160,8 @@ public sealed class MpvPlaybackService : IDisposable
 
         var normalized = new MpvLoadRequest
         {
-            FilePath = Path.GetFullPath(request.FilePath),
+            FilePath = IsHttpUrl(request.FilePath) ? request.FilePath.Trim() : Path.GetFullPath(request.FilePath),
+            HttpReferrer = request.HttpReferrer,
             ShouldPlay = request.ShouldPlay,
             SeekTimeSeconds = Math.Max(0, request.SeekTimeSeconds),
             Volume = Math.Clamp(request.Volume, 0f, 1f),
@@ -244,6 +270,7 @@ public sealed class MpvPlaybackService : IDisposable
         await EnsureStartedAsync(ct);
         await SetPropertyAsync("volume", Math.Round(request.Volume * 100.0, 2));
         await SetPropertyAsync("speed", Math.Round(request.PlaybackRate, 2));
+        await SetPropertyAsync("referrer", request.HttpReferrer ?? string.Empty);
         await ApplyEqAsync(request.EqEnabled, request.EqBandGains);
 
         var fileLoadedTask = WaitForEventAsync("file-loaded", LoadTimeoutMs, sequence, ct);
@@ -339,6 +366,9 @@ public sealed class MpvPlaybackService : IDisposable
         psi.ArgumentList.Add("--audio-channels=5.1,stereo");
         psi.ArgumentList.Add("--ad-lavc-downmix=no");
         psi.ArgumentList.Add("--audio-fallback-to-null=no");
+        psi.ArgumentList.Add("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36");
+        psi.ArgumentList.Add("--cache=yes");
+        psi.ArgumentList.Add("--demuxer-max-bytes=32MiB");
         psi.ArgumentList.Add($"--input-ipc-server={pipePath}");
 
         _shuttingDown = false;
@@ -496,7 +526,11 @@ public sealed class MpvPlaybackService : IDisposable
             }
             else if (reason == "error")
             {
-                ErrorReceived?.Invoke("mpv 无法继续播放当前文件");
+                CancelEventWaiters("file-loaded", new InvalidOperationException("mpv 无法加载当前音频流"));
+                if (!_loading)
+                {
+                    ErrorReceived?.Invoke("mpv 无法继续播放当前文件");
+                }
             }
         }
 

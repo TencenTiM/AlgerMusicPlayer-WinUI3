@@ -140,7 +140,7 @@ public sealed class LxScriptHostService : IDisposable
     }
 
     /// <summary>
-    /// 按“首选脚本优先 + 其余已启用脚本自动轮询”解析歌曲直链
+    /// 分批并发竞速（每批最多 3 个脚本）+ 首选脚本优先解析歌曲直链，尊重单脚本请求频控
     /// </summary>
     public async Task<(string? Url, string Quality, string ScriptName)> GetMusicUrlFromScriptsAsync(
         IReadOnlyList<LxScriptItem> allScripts,
@@ -161,30 +161,201 @@ public sealed class LxScriptHostService : IDisposable
 
         bool wantsLossless = preferQuality.StartsWith("flac", StringComparison.OrdinalIgnoreCase);
         (string? Url, string Quality, string ScriptName)? fallback = null;
+        const int WaveConcurrency = 3;
 
-        foreach (var script in ordered)
+        for (int i = 0; i < ordered.Count; i += WaveConcurrency)
         {
             if (ct.IsCancellationRequested) break;
 
-            var (url, quality) = await GetMusicUrlAsync(script, song, preferQuality, ct);
-            if (string.IsNullOrWhiteSpace(url)) continue;
+            var waveScripts = ordered.Skip(i).Take(WaveConcurrency).ToList();
+            using var waveCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            var tasks = waveScripts
+                .Select(s => EvaluateSingleScriptAsync(s, song, preferQuality, urlValidator, waveCts.Token))
+                .ToList();
 
-            if (urlValidator != null && !await urlValidator(url))
+            bool startedLosslessGraceWindow = false;
+            while (tasks.Count > 0)
             {
-                continue;
-            }
+                var finished = await Task.WhenAny(tasks);
+                tasks.Remove(finished);
 
-            bool isLossless = quality.StartsWith("flac", StringComparison.OrdinalIgnoreCase) ||
-                              url.Contains(".flac", StringComparison.OrdinalIgnoreCase);
-            if (!wantsLossless || isLossless)
-            {
-                return (url, quality, script.Name);
-            }
+                (string? Url, string Quality, string ScriptName) res;
+                try
+                {
+                    res = await finished;
+                }
+                catch
+                {
+                    continue;
+                }
 
-            fallback ??= (url, quality, script.Name);
+                if (string.IsNullOrWhiteSpace(res.Url)) continue;
+
+                bool isLossless = res.Quality.StartsWith("flac", StringComparison.OrdinalIgnoreCase) ||
+                                  res.Url.Contains(".flac", StringComparison.OrdinalIgnoreCase);
+                if (!wantsLossless || isLossless)
+                {
+                    waveCts.Cancel();
+                    return res;
+                }
+
+                fallback ??= res;
+                if (!startedLosslessGraceWindow && tasks.Count > 0)
+                {
+                    startedLosslessGraceWindow = true;
+                    waveCts.CancelAfter(TimeSpan.FromMilliseconds(1800));
+                }
+            }
         }
 
         return fallback ?? (null, "", "");
+    }
+
+    /// <summary>
+    /// 单独调用指定脚本解析歌曲直链（在其独立专区标签或底栏指定源时，未勾选全局自动轮询也允许直连测试）
+    /// </summary>
+    public async Task<(string? Url, string Quality, string ScriptName)> GetMusicUrlFromSingleScriptAsync(
+        LxScriptItem script,
+        SongItem song,
+        string preferQuality,
+        Func<string, Task<bool>>? urlValidator,
+        CancellationToken ct)
+    {
+        if (script == null || string.IsNullOrWhiteSpace(script.ScriptContent))
+        {
+            return (null, "", "");
+        }
+
+        return await EvaluateSingleScriptAsync(script, song, preferQuality, urlValidator, ct);
+    }
+
+    private async Task<(string? Url, string Quality, string ScriptName)> EvaluateSingleScriptAsync(
+        LxScriptItem script,
+        SongItem song,
+        string preferQuality,
+        Func<string, Task<bool>>? urlValidator,
+        CancellationToken ct)
+    {
+        if (ct.IsCancellationRequested) return (null, "", "");
+
+        var (url, quality) = await GetMusicUrlAsync(script, song, preferQuality, ct);
+        if (string.IsNullOrWhiteSpace(url)) return (null, "", "");
+
+        if (urlValidator != null && !await urlValidator(url))
+        {
+            return (null, "", "");
+        }
+
+        return (url, quality, script.Name);
+    }
+
+    /// <summary>
+    /// 读取指定洛雪脚本支持的子平台与最高音质摘要（已初始化优先读真实 Sources，未初始化先静态识别）
+    /// </summary>
+    public (IReadOnlyList<string> SupportedPlatforms, string QualitySummary) GetScriptCapabilitiesSummary(LxScriptItem script)
+    {
+        string[] knownPlatforms = ["tx", "kg", "kw", "mg", "wy"];
+        string[] knownQualities = ["flac24bit", "flac", "320k", "128k"];
+        var platforms = new List<string>();
+        var qualities = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        if (script != null &&
+            _runners.TryGetValue(script.Id, out var state) &&
+            state.Initialized &&
+            state.Sources.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var key in knownPlatforms)
+            {
+                if (!state.Sources.TryGetProperty(key, out var cfg) || !HasArrayValue(cfg, "actions", "musicUrl"))
+                {
+                    continue;
+                }
+
+                platforms.Add(key);
+                foreach (var q in knownQualities)
+                {
+                    if (HasArrayValue(cfg, "qualitys", q))
+                    {
+                        qualities.Add(q);
+                    }
+                }
+            }
+        }
+        else if (script != null && !string.IsNullOrWhiteSpace(script.ScriptContent))
+        {
+            var content = script.ScriptContent;
+            foreach (var key in knownPlatforms)
+            {
+                if (content.Contains($"\"{key}\"", StringComparison.OrdinalIgnoreCase) ||
+                    content.Contains($"'{key}'", StringComparison.OrdinalIgnoreCase) ||
+                    content.Contains($"{key}:", StringComparison.OrdinalIgnoreCase))
+                {
+                    platforms.Add(key);
+                }
+            }
+
+            foreach (var q in knownQualities)
+            {
+                if (content.Contains($"\"{q}\"", StringComparison.OrdinalIgnoreCase) ||
+                    content.Contains($"'{q}'", StringComparison.OrdinalIgnoreCase))
+                {
+                    qualities.Add(q);
+                }
+            }
+        }
+
+        // 若脚本文本经混淆导致静态扫描未提取到标签，提供通用默认全平台能力并触发后台预热
+        if (platforms.Count == 0)
+        {
+            platforms.AddRange(["tx", "wy", "kg", "kw", "mg"]);
+        }
+
+        string qualitySummary = qualities.Contains("flac24bit")
+            ? "最高 24bit Hi-Res / FLAC"
+            : (qualities.Contains("flac")
+                ? "最高无损 FLAC / 320k"
+                : (qualities.Contains("320k")
+                    ? "最高极高 320k"
+                    : "Hi-Res / FLAC / 320k"));
+
+        return (platforms, qualitySummary);
+    }
+
+    /// <summary>
+    /// 后台静默预热已导入脚本，消除切换专区标签与首次点播时的 Worker 冷启动延迟
+    /// </summary>
+    public void PreWarmScripts(IEnumerable<LxScriptItem> scripts)
+    {
+        var list = scripts?
+            .Where(s => s != null && !string.IsNullOrWhiteSpace(s.ScriptContent))
+            .ToList();
+        if (list == null || list.Count == 0) return;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await _hostReady.Task.WaitAsync(TimeSpan.FromSeconds(20));
+            }
+            catch
+            {
+                return;
+            }
+
+            foreach (var script in list)
+            {
+                try
+                {
+                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(12));
+                    await EnsureInitializedAsync(script, cts.Token);
+                    await Task.Delay(120);
+                }
+                catch
+                {
+                    // 单脚本预热失败不影响后续脚本与主流程
+                }
+            }
+        });
     }
 
     /// <summary>
@@ -342,6 +513,76 @@ public sealed class LxScriptHostService : IDisposable
             _ => "wy"
         };
 
+    /// <summary>
+    /// 同步无阻塞查询当前已启用落雪脚本对指定歌曲支持的音质标识集合（128k / 320k / flac / flac24bit）
+    /// </summary>
+    public HashSet<string> GetSupportedQualitiesForSong(IReadOnlyList<LxScriptItem>? allScripts, SongItem song)
+    {
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (allScripts == null || allScripts.Count == 0 || song == null) return result;
+
+        var nativeKey = MapSongSourceToLxKey(song.Source);
+        bool restrictToNative = nativeKey != "wy";
+        string[] knownQualities = ["128k", "320k", "flac", "flac24bit"];
+
+        foreach (var script in allScripts)
+        {
+            if (!script.Enabled || string.IsNullOrWhiteSpace(script.ScriptContent)) continue;
+
+            if (_runners.TryGetValue(script.Id, out var state) &&
+                state.Initialized &&
+                state.Sources.ValueKind == JsonValueKind.Object)
+            {
+                if (restrictToNative)
+                {
+                    if (state.Sources.TryGetProperty(nativeKey, out var cfg) &&
+                        HasArrayValue(cfg, "actions", "musicUrl"))
+                    {
+                        foreach (var q in knownQualities)
+                        {
+                            if (HasArrayValue(cfg, "qualitys", q))
+                            {
+                                result.Add(q);
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    foreach (var key in new[] { "tx", "kg", "kw", "mg", "wy" })
+                    {
+                        if (!state.Sources.TryGetProperty(key, out var cfg) ||
+                            !HasArrayValue(cfg, "actions", "musicUrl"))
+                        {
+                            continue;
+                        }
+
+                        foreach (var q in knownQualities)
+                        {
+                            if (HasArrayValue(cfg, "qualitys", q))
+                            {
+                                result.Add(q);
+                            }
+                        }
+                    }
+                }
+            }
+            else
+            {
+                foreach (var q in knownQualities)
+                {
+                    if (script.ScriptContent.Contains($"\"{q}\"", StringComparison.OrdinalIgnoreCase) ||
+                        script.ScriptContent.Contains($"'{q}'", StringComparison.OrdinalIgnoreCase))
+                    {
+                        result.Add(q);
+                    }
+                }
+            }
+        }
+
+        return result;
+    }
+
     private async Task<RunnerState?> EnsureInitializedAsync(LxScriptItem script, CancellationToken ct)
     {
         try
@@ -421,6 +662,50 @@ public sealed class LxScriptHostService : IDisposable
                 ["payload"] = payload
             });
             return await tcs.Task.WaitAsync(TimeSpan.FromSeconds(20), ct);
+        }
+        finally
+        {
+            _pendingCalls.TryRemove(callId, out _);
+        }
+    }
+
+    /// <summary>
+    /// 在离屏 WebView2 宿主中动态执行 GD 音乐台 crc32.min.js 的 md5 签名函数（401 自愈兜底）
+    /// </summary>
+    public async Task<string?> EvaluateGdStudioMd5Async(string crcJsCode, string crcTag, string rawInput, CancellationToken ct)
+    {
+        if (_core == null || string.IsNullOrWhiteSpace(crcJsCode)) return null;
+
+        try
+        {
+            await _hostReady.Task.WaitAsync(TimeSpan.FromSeconds(5), ct);
+        }
+        catch
+        {
+            return null;
+        }
+
+        var callId = $"gd_{Interlocked.Increment(ref _callSeq)}";
+        var tcs = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _pendingCalls[callId] = tcs;
+        try
+        {
+            PostToHost(new JsonObject
+            {
+                ["cmd"] = "gd-md5",
+                ["scriptId"] = "__gd__",
+                ["callId"] = callId,
+                ["crcJs"] = crcJsCode,
+                ["crcTag"] = crcTag,
+                ["raw"] = rawInput
+            });
+
+            var res = await tcs.Task.WaitAsync(TimeSpan.FromSeconds(5), ct);
+            return res.ValueKind == JsonValueKind.String ? res.GetString() : null;
+        }
+        catch
+        {
+            return null;
         }
         finally
         {

@@ -955,14 +955,125 @@ public partial class QqMusicService
     public async Task<PlaylistItem?> GetPlaylistDetailAsync(string dissId, string? cookieInput = null)
     {
         if (string.IsNullOrWhiteSpace(dissId)) return null;
+
+        var cleanDissId = dissId.Trim();
         var cookie = cookieInput ?? _configService.Settings.QqMusicCookie;
         var uin = ExtractUinFromCookieOrInput(_configService.Settings.QqMusicUin);
         if (string.IsNullOrWhiteSpace(uin)) uin = "0";
         int gtk = ComputeGtk(cookie);
 
+        // 优先走新版 musicu uniform_get_Dissinfo（匿名与登录均稳定返回歌单信息与完整曲目列表）
+        if (long.TryParse(cleanDissId, out var disstidNum) && disstidNum > 0)
+        {
+            try
+            {
+                const int pageSize = 200;
+                int songBegin = 0;
+                int expectedTotal = 0;
+                string title = string.Empty;
+                string picUrl = string.Empty;
+                string desc = string.Empty;
+                string creatorNick = string.Empty;
+                var allTracks = new List<SongItem>();
+
+                for (int page = 0; page < 4; page++)
+                {
+                    var payload = new
+                    {
+                        comm = new { ct = 24, cv = 0, uin = string.IsNullOrWhiteSpace(uin) ? "0" : uin },
+                        req = new
+                        {
+                            module = "music.srfDissInfo.aiDissInfo",
+                            method = "uniform_get_Dissinfo",
+                            param = new
+                            {
+                                disstid = disstidNum,
+                                enc_host_uin = "",
+                                tag = 1,
+                                userinfo = page == 0 ? 1 : 0,
+                                song_begin = songBegin,
+                                song_num = pageSize,
+                                onlysonglist = page == 0 ? 0 : 1
+                            }
+                        }
+                    };
+
+                    using var musicuReq = new HttpRequestMessage(HttpMethod.Post, "https://u.y.qq.com/cgi-bin/musicu.fcg")
+                    {
+                        Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
+                    };
+                    musicuReq.Headers.Referrer = new Uri("https://y.qq.com/");
+                    if (!string.IsNullOrWhiteSpace(cookie)) musicuReq.Headers.Add("Cookie", cookie);
+
+                    using var musicuResp = await _httpClient.SendAsync(musicuReq);
+                    if (!musicuResp.IsSuccessStatusCode) break;
+
+                    var musicuJson = await musicuResp.Content.ReadAsStringAsync();
+                    using var doc = JsonDocument.Parse(musicuJson);
+                    if (!doc.RootElement.TryGetProperty("req", out var reqEl) ||
+                        !reqEl.TryGetProperty("data", out var dataEl))
+                    {
+                        break;
+                    }
+
+                    if (page == 0 && dataEl.TryGetProperty("dirinfo", out var dirinfo))
+                    {
+                        title = dirinfo.GetStringProp("title");
+                        picUrl = dirinfo.GetStringProp("picurl");
+                        if (string.IsNullOrWhiteSpace(picUrl)) picUrl = dirinfo.GetStringProp("picurl2");
+                        desc = dirinfo.GetStringProp("desc");
+                        creatorNick = dirinfo.GetStringProp("host_nick");
+                        if (string.IsNullOrWhiteSpace(creatorNick) &&
+                            dirinfo.TryGetProperty("creator", out var creatorEl) &&
+                            creatorEl.ValueKind == JsonValueKind.Object)
+                        {
+                            creatorNick = creatorEl.GetStringProp("nick");
+                        }
+                        expectedTotal = dirinfo.GetIntProp("songnum");
+                    }
+
+                    int pageFetched = 0;
+                    if (dataEl.TryGetProperty("songlist", out var songListEl) &&
+                        songListEl.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var s in songListEl.EnumerateArray())
+                        {
+                            pageFetched++;
+                            var song = NormalizeQqSong(s);
+                            if (song != null) allTracks.Add(song);
+                        }
+                    }
+
+                    if (pageFetched == 0 || allTracks.Count >= expectedTotal || pageFetched < pageSize)
+                        break;
+
+                    songBegin += pageFetched;
+                }
+
+                if (allTracks.Count > 0 || !string.IsNullOrWhiteSpace(title))
+                {
+                    return new PlaylistItem
+                    {
+                        Id = disstidNum,
+                        QqDissId = cleanDissId,
+                        Name = string.IsNullOrWhiteSpace(title) ? "QQ 音乐歌单" : title,
+                        CoverImgUrl = NormalizeCoverUrl(picUrl, ImageUriHelper.DefaultCoverUri),
+                        Description = desc,
+                        CreatorName = creatorNick,
+                        TrackCount = expectedTotal > 0 ? expectedTotal : allTracks.Count,
+                        Tracks = allTracks,
+                        Source = "qq"
+                    };
+                }
+            }
+            catch
+            {
+                // 回退到旧版 c.y.qq.com 接口
+            }
+        }
         try
         {
-            var url = $"https://c.y.qq.com/qzone/fcg-bin/fcg_ucc_getcdinfo_byids_cp.fcg?type=1&json=1&utf8=1&onlysong=0&new_format=1&disstid={Uri.EscapeDataString(dissId)}&g_tk={gtk}&loginUin={uin}&hostUin=0&format=json&inCharset=utf8&outCharset=utf-8&notice=0&platform=yqq.json&needNewCode=0";
+            var url = $"https://c.y.qq.com/qzone/fcg-bin/fcg_ucc_getcdinfo_byids_cp.fcg?type=1&json=1&utf8=1&onlysong=0&new_format=1&disstid={Uri.EscapeDataString(cleanDissId)}&g_tk={gtk}&loginUin={uin}&hostUin=0&format=json&inCharset=utf8&outCharset=utf-8&notice=0&platform=yqq.json&needNewCode=0";
             using var req = new HttpRequestMessage(HttpMethod.Get, url);
             req.Headers.Referrer = new Uri("https://y.qq.com/n/ryqq/playlist");
             if (!string.IsNullOrWhiteSpace(cookie))
@@ -989,7 +1100,7 @@ public partial class QqMusicService
                 QqDissId = dissId,
                 QqDirId = cd.GetIntProp("dirid"),
                 Name = WebUtility.HtmlDecode(cd.GetStringProp("dissname", "QQ 音乐歌单")),
-                CoverImgUrl = NormalizeCoverUrl(cd.GetStringProp("logo"), "ms-appx:///Assets/DefaultCover.png"),
+                CoverImgUrl = NormalizeCoverUrl(cd.GetStringProp("logo"), ImageUriHelper.DefaultCoverUri),
                 Description = WebUtility.HtmlDecode(cd.GetStringProp("desc")),
                 CreatorName = WebUtility.HtmlDecode(cd.GetStringProp("nickname", "QQ音乐")),
                 PlayCount = cd.GetLongProp("visitnum"),
@@ -1068,7 +1179,7 @@ public partial class QqMusicService
 
         string coverUrl = !string.IsNullOrWhiteSpace(albumMid)
             ? $"https://y.gtimg.cn/music/photo_new/T002R300x300M000{albumMid}.jpg"
-            : "ms-appx:///Assets/DefaultCover.png";
+            : ImageUriHelper.DefaultCoverUri;
 
         int intervalSeconds = item.GetIntProp("interval");
         string qualityHint = string.Empty;
@@ -1519,7 +1630,7 @@ public partial class QqMusicService
                     QqDissId = dissId,
                     QqDirId = dirId,
                     Name = dirName,
-                    CoverImgUrl = "ms-appx:///Assets/DefaultCover.png",
+                    CoverImgUrl = ImageUriHelper.DefaultCoverUri,
                     TrackCount = 0
                 };
             }
@@ -1532,22 +1643,30 @@ public partial class QqMusicService
     }
 
     /// <summary>
-    /// 解析 QQ 音乐单曲播放/下载流地址（优先请求 RS01 母带 / F000 无损 FLAC，非绿钻无损时自动结合 GD 音乐台 br=999 无损源）
+    /// 解析 QQ 音乐单曲播放/下载流地址（优先请求 RS01 母带 / F000 无损 FLAC，支持按目标音质档位请求，非绿钻无损时支持先播快开并回退落月 API）
     /// </summary>
-    public async Task<string?> GetSongPlayUrlAsync(string songMid, CancellationToken ct = default, bool preferLossless = true)
+    public async Task<string?> GetSongPlayUrlAsync(
+        string songMid, CancellationToken ct = default, bool preferLossless = true, string? targetQualityLevel = null, bool allowFastStart = false)
     {
         if (string.IsNullOrWhiteSpace(songMid)) return null;
         var cookie = _configService.Settings.QqMusicCookie;
         var uin = ExtractUinFromCookieOrInput(_configService.Settings.QqMusicUin);
         if (string.IsNullOrWhiteSpace(uin)) uin = "0";
 
+        var target = (targetQualityLevel ?? string.Empty).Trim().ToLowerInvariant();
         string? officialFallbackUrl = null;
 
         try
         {
-            string[] filenames = preferLossless
-                ? [$"RS01{songMid}.flac", $"Q000{songMid}.flac", $"F000{songMid}.flac", $"M800{songMid}.mp3", $"C400{songMid}.m4a"]
-                : [$"M800{songMid}.mp3", $"C400{songMid}.m4a"];
+            string[] filenames = target switch
+            {
+                MusicQualityLevel.Standard or MusicQualityLevel.Higher => [$"C400{songMid}.m4a", $"M800{songMid}.mp3"],
+                MusicQualityLevel.Exhigh => [$"M800{songMid}.mp3", $"C400{songMid}.m4a"],
+                MusicQualityLevel.Lossless => [$"F000{songMid}.flac", $"M800{songMid}.mp3", $"C400{songMid}.m4a"],
+                _ => preferLossless
+                    ? [$"RS01{songMid}.flac", $"Q000{songMid}.flac", $"F000{songMid}.flac", $"M800{songMid}.mp3", $"C400{songMid}.m4a"]
+                    : [$"M800{songMid}.mp3", $"C400{songMid}.m4a"]
+            };
             string[] mids = Enumerable.Repeat(songMid, filenames.Length).ToArray();
             int[] types = new int[filenames.Length];
 
@@ -1627,8 +1746,21 @@ public partial class QqMusicService
             // 继续尝试 GD 音乐台 tencent 源解析
         }
 
+        // 若官方已返回完整非 FLAC（如 M800 320k / C400 AAC），且当前不强求阻塞等待无损或允许先播后升级，立即返回秒开
+        if (!string.IsNullOrWhiteSpace(officialFallbackUrl) && (!preferLossless || allowFastStart))
+        {
+            return officialFallbackUrl;
+        }
+
         // 若优先无损且官方未返回 FLAC（如账号无绿钻），尝试落月 API (api.vkeys.cn) tencent 源解析
-        int[] qualities = preferLossless ? [10, 8] : [8];
+        int[] qualities = target switch
+        {
+            MusicQualityLevel.Standard => [6, 8],
+            MusicQualityLevel.Higher => [6, 8],
+            MusicQualityLevel.Exhigh => [8, 6],
+            MusicQualityLevel.Lossless => !string.IsNullOrWhiteSpace(officialFallbackUrl) ? [10] : [10, 8],
+            _ => preferLossless ? (!string.IsNullOrWhiteSpace(officialFallbackUrl) ? [10] : [10, 8]) : [8]
+        };
         foreach (var q in qualities)
         {
             try

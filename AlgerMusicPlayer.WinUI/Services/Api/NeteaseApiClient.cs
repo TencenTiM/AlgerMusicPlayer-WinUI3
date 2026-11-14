@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Text.Json;
 using AlgerMusicPlayer.WinUI.Models;
@@ -17,6 +18,7 @@ public class NeteaseApiClient
     private readonly string _wnmcid = GenerateWnmcid();
     private string _anonymousMusicA = string.Empty;
     private bool _isRegisteringAnonymous;
+    private readonly ConcurrentDictionary<long, List<(string Level, int BitrateBps, long SizeBytes, int SampleRate)>> _songQualityDetailCache = new();
 
     public NeteaseApiClient(ConfigService configService)
     {
@@ -836,6 +838,101 @@ public class NeteaseApiClient
         }
 
         return (null, string.Empty, string.Empty, 0, 0, false);
+    }
+
+    /// <summary>
+    /// 同步读取单曲音质详情缓存（未命中时返回 false，避免阻塞 UI 线程）
+    /// </summary>
+    public bool TryGetCachedSongQualityDetail(
+        long songId,
+        out List<(string Level, int BitrateBps, long SizeBytes, int SampleRate)> tiers)
+    {
+        if (songId > 0 && _songQualityDetailCache.TryGetValue(songId, out var cached))
+        {
+            tiers = cached;
+            return true;
+        }
+        tiers = [];
+        return false;
+    }
+
+    /// <summary>
+    /// 获取网易云单曲实际拥有的音质档位列表（调用 /api/song/music/detail/get，含码率/文件大小/采样率）
+    /// </summary>
+    public async Task<List<(string Level, int BitrateBps, long SizeBytes, int SampleRate)>> GetSongQualityDetailAsync(long songId)
+    {
+        if (songId <= 0) return [];
+        if (_songQualityDetailCache.TryGetValue(songId, out var cached))
+        {
+            return cached;
+        }
+
+        JsonDocument? doc = null;
+        try
+        {
+            doc = await PostEApiAsync("/api/song/music/detail/get", new Dictionary<string, object?>
+            {
+                ["songId"] = songId
+            });
+
+            if (doc == null ||
+                !doc.RootElement.TryGetProperty("data", out var checkData) ||
+                checkData.ValueKind != JsonValueKind.Object)
+            {
+                doc?.Dispose();
+                doc = await PostWeApiAsync("song/music/detail/get", new { songId }, "/song/music/detail/get");
+            }
+
+            if (doc == null ||
+                !doc.RootElement.TryGetProperty("data", out var data) ||
+                data.ValueKind != JsonValueKind.Object)
+            {
+                return [];
+            }
+
+            (string Key, string Level)[] fields =
+            [
+                ("l", MusicQualityLevel.Standard),
+                ("m", MusicQualityLevel.Higher),
+                ("h", MusicQualityLevel.Exhigh),
+                ("sq", MusicQualityLevel.Lossless),
+                ("hr", MusicQualityLevel.Hires),
+                ("je", MusicQualityLevel.Jyeffect),
+                ("sk", MusicQualityLevel.Sky),
+                ("jm", MusicQualityLevel.Jymaster)
+            ];
+
+            var list = new List<(string Level, int BitrateBps, long SizeBytes, int SampleRate)>();
+            foreach (var (key, level) in fields)
+            {
+                if (!data.TryGetProperty(key, out var tierEl) || tierEl.ValueKind != JsonValueKind.Object)
+                {
+                    continue;
+                }
+
+                int br = tierEl.GetIntProp("br");
+                long size = tierEl.GetLongProp("size");
+                int sr = tierEl.GetIntProp("sr");
+                if (br > 0 || size > 0)
+                {
+                    list.Add((level, br, size, sr));
+                }
+            }
+
+            if (list.Count > 0)
+            {
+                _songQualityDetailCache[songId] = list;
+            }
+            return list;
+        }
+        catch
+        {
+            return [];
+        }
+        finally
+        {
+            doc?.Dispose();
+        }
     }
 
     /// <summary>

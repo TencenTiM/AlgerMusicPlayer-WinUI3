@@ -19,15 +19,42 @@ public class UnblockMusicService
     public static readonly string[] AllPlatforms = ["kuwo", "kugou", "migu", "pyncmd", "qq", "joox", "gdmusic"];
 
     private const string GdStudioHost = "music.gdstudio.org";
+    private const string GdStudioHomeUrl = "https://music.gdstudio.org/";
     private const string GdStudioBaseUrl = "https://music.gdstudio.org/api.php";
     private const string GdStudioTimeUrl = "https://music.gdstudio.org/time";
-    private const string GdStudioVersion = "20261106";
+    private const string GdStudioPlayerJsUrl = "https://music.gdstudio.org/js/player.js";
 
+    private string _gdStudioVersion = "20261111";
+    private DateTimeOffset _gdVersionLastSync = DateTimeOffset.MinValue;
     private long _gdServerTimeOffsetSec;
     private DateTimeOffset _gdServerTimeLastSync = DateTimeOffset.MinValue;
+    private bool _useDynamicGdMd5;
+    private string _gdCrcJsCode = string.Empty;
+    private string _gdCrcTag = string.Empty;
+    private readonly SemaphoreSlim _gdSyncLock = new(1, 1);
 
     public int LastResolvedBitrateKbps { get; private set; }
     public long LastResolvedSizeBytes { get; private set; }
+    public string LastResolvedSourceName { get; private set; } = string.Empty;
+
+    public (IReadOnlyList<string> SupportedPlatforms, string QualitySummary) GetScriptCapabilitiesSummary(LxScriptItem script)
+        => _lxHost.GetScriptCapabilitiesSummary(script);
+
+    public void PreWarmLxScripts(IEnumerable<LxScriptItem> scripts)
+        => _lxHost.PreWarmScripts(scripts);
+
+    public static string MapUserQualityToLxQuality(string? userQuality) =>
+        (userQuality ?? string.Empty).Trim().ToLowerInvariant() switch
+        {
+            MusicQualityLevel.Standard or MusicQualityLevel.Higher => "128k",
+            MusicQualityLevel.Exhigh => "320k",
+            MusicQualityLevel.Lossless or MusicQualityLevel.Jyeffect or MusicQualityLevel.Sky => "flac",
+            MusicQualityLevel.Hires or MusicQualityLevel.Jymaster => "flac24bit",
+            _ => "flac24bit"
+        };
+
+    public HashSet<string> GetSupportedLxQualities(SongItem song)
+        => _lxHost.GetSupportedQualitiesForSong(_configService.Settings.LxMusicScripts, song);
 
     public string FormatResolvedQualityBadge(string url, SongItem song, string requestedQuality)
     {
@@ -59,17 +86,26 @@ public class UnblockMusicService
             return kbps > 0 && kbps != 999 ? $"无损 {kbps}k" : "无损 FLAC";
         }
 
+        if (kbps is > 0 and < 160)
+        {
+            return $"标准 {kbps}k";
+        }
+        if (kbps is >= 160 and < 240)
+        {
+            return $"较高 {kbps}k";
+        }
+
         return kbps is > 0 and <= 320 ? $"极高 {kbps}k" : "极高 320k";
     }
 
-    // GD 音乐台 crc32.min.js 自定义 MD5 常量表（T[32] 由标准 0xfffa3942 修改为 0x59951e3e）
+    // GD 音乐台 crc32.min.js?v=20261112 自定义 MD5 常量表（T[1] 由标准 0xe8c7b756 修改为 0x21c10959；遇 401 时将通过离屏宿主自动同步最新脚本）
     private static readonly uint[] GdMd5T =
     [
-        0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
+        0xd76aa478, 0x21c10959, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
         0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821,
         0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa, 0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8,
         0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed, 0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a,
-        0x59951e3e, 0x8771f681, 0x6d9d6122, 0xfde5380c, 0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70,
+        0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c, 0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70,
         0x289b7ec6, 0xeaa127fa, 0xd4ef3085, 0x04881d05, 0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665,
         0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
         0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391
@@ -84,6 +120,7 @@ public class UnblockMusicService
     ];
 
     private readonly LxScriptHostService _lxHost;
+    private readonly HttpClient _downloadHttpClient;
 
     public UnblockMusicService(ConfigService configService, LxScriptHostService lxHost)
     {
@@ -95,100 +132,184 @@ public class UnblockMusicService
         };
         _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36");
+        _downloadHttpClient = new HttpClient
+        {
+            Timeout = TimeSpan.FromSeconds(60)
+        };
+        _downloadHttpClient.DefaultRequestHeaders.UserAgent.ParseAdd(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36");
+
+        // 启动时后台静默预热 GDStudio 服务器时间与版本号，消除首次切歌 2 秒冷启动同步耗时
+        _ = Task.Run(() => EnsureGdStudioReadyAsync(CancellationToken.None));
     }
 
     /// <summary>
-    /// 按启用平台顺序（或指定单一平台）解析无版权/试听/无损歌曲的可播放或可下载 URL
+    /// 按启用平台顺序（或指定单一平台）解析无版权/试听/无损歌曲的可播放或可下载 URL（真并发竞速）
     /// </summary>
     public async Task<(string? Url, string Platform)> MatchAudioUrlAsync(
         SongItem song,
         IEnumerable<string>? preferredPlatforms = null,
         CancellationToken cancellationToken = default,
-        bool preferLossless = true)
+        bool preferLossless = true,
+        string? targetQualityLevel = null,
+        bool allowFastStart = false)
     {
         LastResolvedBitrateKbps = 0;
         LastResolvedSizeBytes = 0;
+        LastResolvedSourceName = string.Empty;
 
         var platforms = preferredPlatforms?.ToList()
             ?? (_configService.Settings.EnabledMusicSources.Count > 0
                 ? _configService.Settings.EnabledMusicSources.ToList()
                 : AllPlatforms.ToList());
 
-        // 若请求无损且未强制指定单一音源，优先使用已启用的落雪脚本音源，其次 gdmusic 与 pyncmd
+        bool hasEnabledLx = _configService.Settings.LxMusicScripts.Any(x => x.Enabled);
+
+        // 仅当显式多源自由调度时剔除注定空跑的通道，提升竞速有效率
+        if (preferredPlatforms == null)
+        {
+            if (song.NumericId <= 0)
+            {
+                platforms.RemoveAll(p => p.Equals("pyncmd", StringComparison.OrdinalIgnoreCase));
+            }
+            if (!hasEnabledLx)
+            {
+                platforms.RemoveAll(p => p.Equals("lxmusic", StringComparison.OrdinalIgnoreCase));
+            }
+        }
+
+        // 若请求无损且未强制指定单一音源，保持落雪与 GD 多源在清单中并参与并发竞速
         if (preferLossless && preferredPlatforms == null)
         {
-            bool hasEnabledLx = platforms.Any(p => p.Equals("lxmusic", StringComparison.OrdinalIgnoreCase)) &&
-                                _configService.Settings.LxMusicScripts.Any(x => x.Enabled);
             platforms.RemoveAll(p => p.Equals("gdmusic", StringComparison.OrdinalIgnoreCase) ||
                                      p.Equals("pyncmd", StringComparison.OrdinalIgnoreCase) ||
                                      (hasEnabledLx && p.Equals("lxmusic", StringComparison.OrdinalIgnoreCase)));
-            platforms.Insert(0, "pyncmd");
+            if (song.NumericId > 0) platforms.Insert(0, "pyncmd");
             platforms.Insert(0, "gdmusic");
             if (hasEnabledLx) platforms.Insert(0, "lxMusic");
         }
 
-        // 若配置了自定义 Unblock HTTP 服务地址，优先尝试
-        if (!string.IsNullOrWhiteSpace(_configService.Settings.CustomUnblockApiUrl))
+        // 去重（不区分大小写）
+        platforms = platforms
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        // 若配置了自定义 Unblock HTTP 服务地址（且未限定于特定非 custom 平台），优先尝试或参与竞速
+        bool allowCustomFastCheck = !string.IsNullOrWhiteSpace(_configService.Settings.CustomUnblockApiUrl) &&
+                                    (preferredPlatforms == null || platforms.Any(p => p.Equals("custom", StringComparison.OrdinalIgnoreCase)));
+        if (allowCustomFastCheck)
         {
             var customUrl = await TryCustomEndpointAsync(song, cancellationToken);
             if (!string.IsNullOrWhiteSpace(customUrl))
             {
+                LastResolvedSourceName = "custom";
                 return (customUrl, "custom");
             }
+            platforms.RemoveAll(p => p.Equals("custom", StringComparison.OrdinalIgnoreCase));
         }
 
-        // 各平台并发解析（总超时 12 秒，兼顾落雪 WebView2 首次冷启动），按平台优先级顺序取第一个合格结果
+        if (platforms.Count == 0)
+        {
+            return (null, string.Empty);
+        }
+
+        // 真正 Task.WhenAny 并发竞速：谁先返回合格音频流立刻采用并取消其余慢请求，消除队头阻塞
         using var overallCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        overallCts.CancelAfter(TimeSpan.FromSeconds(12));
-        var tasks = platforms
-            .Select(p => ResolveSinglePlatformAsync(song, p, preferLossless, overallCts.Token))
+        overallCts.CancelAfter(TimeSpan.FromSeconds(10));
+        var pending = platforms
+            .Select(p => ResolveSinglePlatformAsync(song, p, preferLossless, targetQualityLevel, overallCts.Token))
             .ToList();
 
         (string Url, string Platform, ResolveInfo Info)? fallback = null;
-        foreach (var task in tasks)
+        while (pending.Count > 0)
         {
-            var result = await task;
+            var finished = await Task.WhenAny(pending);
+            pending.Remove(finished);
+
+            (string Url, string Platform, ResolveInfo Info)? result = null;
+            try
+            {
+                result = await finished;
+            }
+            catch
+            {
+                continue;
+            }
+
             if (result == null) continue;
 
             bool isLosslessResult = result.Value.Url.Contains(".flac", StringComparison.OrdinalIgnoreCase) ||
                                     result.Value.Info.Kbps > 400;
-            if (!preferLossless || isLosslessResult)
+            if (!preferLossless || isLosslessResult || allowFastStart)
             {
                 overallCts.Cancel();
                 LastResolvedBitrateKbps = result.Value.Info.Kbps;
                 LastResolvedSizeBytes = result.Value.Info.Size;
-                return (result.Value.Url, result.Value.Platform);
+                var resolvedPlat = !string.IsNullOrWhiteSpace(result.Value.Info.SourceDetailName)
+                    ? result.Value.Info.SourceDetailName
+                    : result.Value.Platform;
+                LastResolvedSourceName = resolvedPlat;
+                return (result.Value.Url, resolvedPlat);
             }
 
-            fallback ??= result;
+            if (fallback == null || result.Value.Info.Kbps > fallback.Value.Info.Kbps)
+            {
+                bool firstLossyHit = fallback == null;
+                fallback = result;
+                // 无损优先但不想先播有损时，拿到首个可播有损后最多再等 2.2 秒让无损超车
+                if (firstLossyHit)
+                {
+                    overallCts.CancelAfter(TimeSpan.FromMilliseconds(2200));
+                }
+            }
         }
 
         if (fallback != null)
         {
             LastResolvedBitrateKbps = fallback.Value.Info.Kbps;
             LastResolvedSizeBytes = fallback.Value.Info.Size;
-            return (fallback.Value.Url, fallback.Value.Platform);
+            var fallbackPlat = !string.IsNullOrWhiteSpace(fallback.Value.Info.SourceDetailName)
+                ? fallback.Value.Info.SourceDetailName
+                : fallback.Value.Platform;
+            LastResolvedSourceName = fallbackPlat;
+            return (fallback.Value.Url, fallbackPlat);
         }
 
         return (null, string.Empty);
     }
 
-    // 并发解析时每个平台独立记录码率/体积，避免互相覆盖 LastResolved* 字段
+    // 并发解析时每个平台独立记录码率/体积与具体脚本名称，避免互相覆盖 LastResolved* 字段
     private sealed class ResolveInfo
     {
         public int Kbps;
         public long Size;
+        public string SourceDetailName = string.Empty;
     }
 
     private readonly AsyncLocal<ResolveInfo?> _resolveInfo = new();
 
-    private void SetResolvedInfo(int kbps, long size)
+    private (int Kbps, long Size) GetCurrentResolvedInfo()
     {
+        var info = _resolveInfo.Value;
+        return info != null ? (info.Kbps, info.Size) : (LastResolvedBitrateKbps, LastResolvedSizeBytes);
+    }
+
+    private void SetResolvedInfo(int kbps, long size, string? detailName = null)
+    {
+        if (!string.IsNullOrWhiteSpace(detailName))
+        {
+            LastResolvedSourceName = detailName;
+        }
         var info = _resolveInfo.Value;
         if (info != null)
         {
             info.Kbps = kbps;
             info.Size = size;
+            if (!string.IsNullOrWhiteSpace(detailName))
+            {
+                info.SourceDetailName = detailName;
+            }
         }
         else
         {
@@ -201,7 +322,7 @@ public class UnblockMusicService
     /// 解析单个平台并校验结果是否为完整歌曲（异常或不合格返回 null）
     /// </summary>
     private async Task<(string Url, string Platform, ResolveInfo Info)?> ResolveSinglePlatformAsync(
-        SongItem song, string platform, bool preferLossless, CancellationToken ct)
+        SongItem song, string platform, bool preferLossless, string? targetQualityLevel, CancellationToken ct)
     {
         var info = new ResolveInfo();
         _resolveInfo.Value = info;
@@ -209,19 +330,20 @@ public class UnblockMusicService
         {
             string? url = platform.ToLowerInvariant() switch
             {
-                "pyncmd" => await TryPyncmdAsync(song, preferLossless, ct),
-                "kuwo" => await TryKuwoAsync(song, preferLossless, ct),
-                "kugou" => await TryKugouAsync(song, preferLossless, ct),
-                "migu" => await TryGdStudioSourceAsync(song, "migu", preferLossless, ct),
-                "qq" => await TryGdStudioSourceAsync(song, "tencent", preferLossless, ct),
-                "joox" => await TryGdStudioSourceAsync(song, "joox", preferLossless, ct),
-                "gdmusic" => await TryGdMusicMultiSourceAsync(song, preferLossless, ct),
-                "lxmusic" => await TryLxMusicAsync(song, preferLossless, ct),
+                "pyncmd" => await TryPyncmdAsync(song, preferLossless, ct, targetQualityLevel),
+                "kuwo" => await TryKuwoAsync(song, preferLossless, ct, targetQualityLevel),
+                "kugou" => await TryKugouAsync(song, preferLossless, ct, targetQualityLevel),
+                "migu" => await TryGdStudioSourceAsync(song, "migu", preferLossless, ct, targetQualityLevel),
+                "qq" => await TryGdStudioSourceAsync(song, "tencent", preferLossless, ct, targetQualityLevel),
+                "joox" => await TryGdStudioSourceAsync(song, "joox", preferLossless, ct, targetQualityLevel),
+                "gdmusic" => await TryGdMusicMultiSourceAsync(song, preferLossless, ct, targetQualityLevel),
+                "lxmusic" => await TryLxMusicAsync(song, preferLossless, ct, targetQualityLevel),
+                "custom" => await TryCustomEndpointAsync(song, ct),
                 _ => null
             };
 
             if (string.IsNullOrWhiteSpace(url)) return null;
-            if (!await IsLikelyFullTrackAsync(url, song, ct)) return null;
+            if (!await IsLikelyFullTrackAsync(url, song, ct, info.Size, info.Kbps)) return null;
             return (url, platform, info);
         }
         catch
@@ -235,24 +357,41 @@ public class UnblockMusicService
     /// 通过文件体积粗略校验是否为完整歌曲：
     /// 酷我/酷狗等对受限歌曲会返回几秒钟的“请使用客户端收听”提示音，部分音源会返回 30 秒试听片段，二者体积远小于完整歌曲
     /// </summary>
-    private async Task<bool> IsLikelyFullTrackAsync(string url, SongItem song, CancellationToken ct)
+    private async Task<bool> IsLikelyFullTrackAsync(
+        string url, SongItem song, CancellationToken ct, long knownSizeBytes = 0, int knownKbps = 0)
     {
         // 无可靠时长（或本身就是短音频）时不做校验
         if (song.DurationMs < 60_000) return true;
+
+        var currentInfo = GetCurrentResolvedInfo();
+        if (knownSizeBytes <= 0) knownSizeBytes = currentInfo.Size;
+        if (knownKbps <= 0) knownKbps = currentInfo.Kbps;
+
+        bool isFlac = url.Contains(".flac", StringComparison.OrdinalIgnoreCase) || knownKbps > 400;
+        int assumedKbps = isFlac ? 600 : 128;
+        long minBytes = (long)(song.DurationMs / 1000.0 * assumedKbps * 125 * 0.4);
+
+        // 若上游接口已明确返回真实完整文件字节数且不是需二次跳转校错的 GD 代理路径，直接凭已知体积秒判（省去 1 次 HTTP 往返）
+        if (knownSizeBytes > 0 && !url.Contains("music-proxy.gdstudio.org", StringComparison.OrdinalIgnoreCase))
+        {
+            return knownSizeBytes >= minBytes;
+        }
 
         long size;
         try
         {
             using var probeCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            probeCts.CancelAfter(TimeSpan.FromSeconds(3));
+            probeCts.CancelAfter(TimeSpan.FromSeconds(2));
             using var req = new HttpRequestMessage(HttpMethod.Get, url);
             req.Headers.Range = new global::System.Net.Http.Headers.RangeHeaderValue(0, 0);
+            if (url.Contains(GdStudioHost, StringComparison.OrdinalIgnoreCase))
+            {
+                req.Headers.Referrer = new Uri(GdStudioHomeUrl);
+            }
             using var resp = await _httpClient.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, probeCts.Token);
 
-            if (resp.StatusCode is global::System.Net.HttpStatusCode.Unauthorized
-                or global::System.Net.HttpStatusCode.Forbidden
-                or global::System.Net.HttpStatusCode.NotFound
-                or global::System.Net.HttpStatusCode.Gone)
+            // 拦截 400 / 401 / 403 / 404 / 5xx 等所有无效状态（如 music-proxy 返回 400 Invalid target URL 或 CDN 403）
+            if ((int)resp.StatusCode >= 400)
             {
                 return false;
             }
@@ -267,11 +406,6 @@ public class UnblockMusicService
         }
 
         if (size <= 0) return true;
-
-        // 按 FLAC 600kbps / 有损 128kbps 估算完整歌曲体积，低于其 40% 判定为试听片段或提示音
-        bool isFlac = url.Contains(".flac", StringComparison.OrdinalIgnoreCase);
-        int assumedKbps = isFlac ? 600 : 128;
-        long minBytes = (long)(song.DurationMs / 1000.0 * assumedKbps * 125 * 0.4);
         return size >= minBytes;
     }
 
@@ -305,21 +439,21 @@ public class UnblockMusicService
     }
 
     /// <summary>
-    /// PyNCMD / GDStudio 新版直连与 Meting 镜像源解析（通过网易云歌曲 ID 直接获取 24bit Hi-Res / 16bit FLAC br=999 或高音质音频流）
+    /// PyNCMD / GDStudio 新版直连与 Meting 镜像源解析（通过网易云歌曲 ID 直接获取 24bit Hi-Res / 16bit FLAC br=999 或指定音质音频流）
     /// </summary>
-    private async Task<string?> TryPyncmdAsync(SongItem song, bool preferLossless, CancellationToken ct)
+    private async Task<string?> TryPyncmdAsync(SongItem song, bool preferLossless, CancellationToken ct, string? targetQualityLevel = null)
     {
         if (song.NumericId <= 0) return null;
 
-        // 1. 优先调用 GD 音乐台最新签名接口 (music.gdstudio.org/api.php) 直接按网易云 ID 获取 999k (24bit Hi-Res / 16bit FLAC) 无损直链
-        var gdDirectUrl = await TryGdStudioDirectUrlByIdAsync(song.NumericId.ToString(), "netease", preferLossless, ct);
+        // 1. 优先调用 GD 音乐台最新签名接口 (music.gdstudio.org/api.php) 直接按网易云 ID 获取指定/最高音质直链
+        var gdDirectUrl = await TryGdStudioDirectUrlByIdAsync(song.NumericId.ToString(), "netease", preferLossless, ct, targetQualityLevel);
         if (!string.IsNullOrWhiteSpace(gdDirectUrl))
         {
             return gdDirectUrl;
         }
 
         // 2. 尝试落月 API (api.vkeys.cn) 网易云解析
-        var vkeysUrl = await TryVkeysNeteaseAsync(song.NumericId, preferLossless, ct);
+        var vkeysUrl = await TryVkeysNeteaseAsync(song.NumericId, preferLossless, ct, targetQualityLevel);
         if (!string.IsNullOrWhiteSpace(vkeysUrl))
         {
             return vkeysUrl;
@@ -370,13 +504,21 @@ public class UnblockMusicService
     }
 
     /// <summary>
-    /// 酷我音乐 (Kuwo) 音源匹配与解析（优先尝试 FLAC 无损，再回退 MP3）
+    /// 酷我音乐 (Kuwo) 音源匹配与解析（原生 KuwoRid 优先直连免搜索，支持指定音质或优先 FLAC 无损）
     /// </summary>
-    private async Task<string?> TryKuwoAsync(SongItem song, bool preferLossless, CancellationToken ct)
+    private async Task<string?> TryKuwoAsync(SongItem song, bool preferLossless, CancellationToken ct, string? targetQualityLevel = null)
     {
-        if (preferLossless)
+        if (!string.IsNullOrWhiteSpace(song.KuwoRid))
         {
-            var gdKuwoUrl = await TryGdStudioSourceAsync(song, "kuwo", preferLossless: true, ct);
+            var directGdKuwo = await TryGdStudioDirectUrlByIdAsync(song.KuwoRid, "kuwo", preferLossless, ct, targetQualityLevel);
+            if (!string.IsNullOrWhiteSpace(directGdKuwo))
+            {
+                return directGdKuwo;
+            }
+        }
+        else if (preferLossless || !string.IsNullOrWhiteSpace(targetQualityLevel))
+        {
+            var gdKuwoUrl = await TryGdStudioSourceAsync(song, "kuwo", preferLossless, ct, targetQualityLevel);
             if (!string.IsNullOrWhiteSpace(gdKuwoUrl))
             {
                 return gdKuwoUrl;
@@ -425,9 +567,9 @@ public class UnblockMusicService
     }
 
     /// <summary>
-    /// 酷狗音乐 (Kugou) 音源匹配与解析（优先尝试 sqhash 无损 FLAC，再回退 320hash / hash）
+    /// 酷狗音乐 (Kugou) 音源匹配与解析（支持按目标音质或优先顺序匹配 reshash / sqhash / 320hash / hash）
     /// </summary>
-    private async Task<string?> TryKugouAsync(SongItem song, bool preferLossless, CancellationToken ct)
+    private async Task<string?> TryKugouAsync(SongItem song, bool preferLossless, CancellationToken ct, string? targetQualityLevel = null)
     {
         string? albumId = song.KugouAlbumId;
         string? resHash = song.KugouResHash;
@@ -461,22 +603,31 @@ public class UnblockMusicService
             stdHash = first.GetStringProp("hash");
         }
 
+        var target = (targetQualityLevel ?? string.Empty).Trim().ToLowerInvariant();
         var candidateHashes = new List<(string Hash, string Br)>();
-        if (preferLossless && !string.IsNullOrWhiteSpace(resHash))
+        if (target is MusicQualityLevel.Standard or MusicQualityLevel.Higher)
         {
-            candidateHashes.Add((resHash, "flac"));
+            if (!string.IsNullOrWhiteSpace(stdHash)) candidateHashes.Add((stdHash, "128"));
+            if (!string.IsNullOrWhiteSpace(hqHash)) candidateHashes.Add((hqHash, "hq"));
         }
-        if (preferLossless && !string.IsNullOrWhiteSpace(sqHash))
+        else if (target == MusicQualityLevel.Exhigh)
         {
-            candidateHashes.Add((sqHash, "flac"));
+            if (!string.IsNullOrWhiteSpace(hqHash)) candidateHashes.Add((hqHash, "hq"));
+            if (!string.IsNullOrWhiteSpace(stdHash)) candidateHashes.Add((stdHash, "128"));
         }
-        if (!string.IsNullOrWhiteSpace(hqHash))
+        else if (target == MusicQualityLevel.Lossless)
         {
-            candidateHashes.Add((hqHash, "hq"));
+            if (!string.IsNullOrWhiteSpace(sqHash)) candidateHashes.Add((sqHash, "flac"));
+            if (!string.IsNullOrWhiteSpace(resHash)) candidateHashes.Add((resHash, "flac"));
+            if (!string.IsNullOrWhiteSpace(hqHash)) candidateHashes.Add((hqHash, "hq"));
+            if (!string.IsNullOrWhiteSpace(stdHash)) candidateHashes.Add((stdHash, "128"));
         }
-        if (!string.IsNullOrWhiteSpace(stdHash))
+        else
         {
-            candidateHashes.Add((stdHash, "hq"));
+            if (preferLossless && !string.IsNullOrWhiteSpace(resHash)) candidateHashes.Add((resHash, "flac"));
+            if (preferLossless && !string.IsNullOrWhiteSpace(sqHash)) candidateHashes.Add((sqHash, "flac"));
+            if (!string.IsNullOrWhiteSpace(hqHash)) candidateHashes.Add((hqHash, "hq"));
+            if (!string.IsNullOrWhiteSpace(stdHash)) candidateHashes.Add((stdHash, "128"));
         }
 
         foreach (var (hash, br) in candidateHashes)
@@ -510,74 +661,206 @@ public class UnblockMusicService
 
     /// <summary>
     /// 1:1 对应原版 src/renderer/api/gdmusic.ts parseFromGDMusic(id, data, '999') 并升级为最新 music.gdstudio.org 签名协议
-    /// 优先尝试网易云 ID 直取无损、JOOX 无损、GD 自动换源 (autosource) 以及多音源搜索，获取 br=999 (FLAC/Hi-Res 无损)
+    /// 支持原生 ID 快通道与高命中多源并发竞速（消除串行轮询 10+ 秒等待与漏判无损导致空跑问题）
     /// </summary>
-    private async Task<string?> TryGdMusicMultiSourceAsync(SongItem song, bool preferLossless, CancellationToken ct)
+    private async Task<string?> TryGdMusicMultiSourceAsync(
+        SongItem song, bool preferLossless, CancellationToken ct, string? targetQualityLevel = null)
     {
-        // 1. 若有网易云 NumericId，直接请求 GDStudio netease 999k 无损直链（无需搜索，最快且直接返回 m701.music.126.net Hi-Res/FLAC）
+        static bool IsLosslessCandidate(string url, int kbps) =>
+            url.Contains(".flac", StringComparison.OrdinalIgnoreCase) || kbps > 400;
+
+        string? fallbackUrl = null;
+        int fallbackKbps = 0;
+        long fallbackSize = 0;
+
+        void ConsiderFallback(string url, int kbps, long size)
+        {
+            if (string.IsNullOrWhiteSpace(fallbackUrl) || kbps > fallbackKbps)
+            {
+                fallbackUrl = url;
+                fallbackKbps = kbps;
+                fallbackSize = size;
+            }
+        }
+
+        // 1. 原生直连快通道（网易云 NumericId / 酷我 KuwoRid：0 搜索单次直达）
         if (song.NumericId > 0)
         {
-            var directNetease = await TryGdStudioDirectUrlByIdAsync(song.NumericId.ToString(), "netease", preferLossless, ct);
+            var directNetease = await TryGdStudioDirectUrlByIdAsync(song.NumericId.ToString(), "netease", preferLossless, ct, targetQualityLevel);
             if (!string.IsNullOrWhiteSpace(directNetease))
             {
-                return directNetease;
-            }
-        }
-
-        // 2. 依次尝试 joox (支持周杰伦等港台曲库 F000 FLAC 无损) / netease / qobuz / tidal / kuwo
-        string[] sources = ["joox", "netease", "qobuz", "tidal", "kuwo"];
-        string? fallbackNonFlac = null;
-        foreach (var src in sources)
-        {
-            if (ct.IsCancellationRequested) break;
-            var url = await TryGdStudioSourceAsync(song, src, preferLossless, ct);
-            if (!string.IsNullOrWhiteSpace(url))
-            {
-                if (!preferLossless || url.Contains(".flac", StringComparison.OrdinalIgnoreCase))
+                var info = GetCurrentResolvedInfo();
+                if (!preferLossless || IsLosslessCandidate(directNetease, info.Kbps))
                 {
-                    return url;
+                    return directNetease;
                 }
-                fallbackNonFlac ??= url;
+                ConsiderFallback(directNetease, info.Kbps, info.Size);
             }
         }
 
-        // 3. 尝试 GD 音乐台自研全网自动换源 (types=autosource&br=999)
-        var autoUrl = await TryGdStudioAutoSourceAsync(song, preferLossless, ct);
-        if (!string.IsNullOrWhiteSpace(autoUrl))
+        if (!string.IsNullOrWhiteSpace(song.KuwoRid))
         {
-            if (!preferLossless || autoUrl.Contains(".flac", StringComparison.OrdinalIgnoreCase) || string.IsNullOrWhiteSpace(fallbackNonFlac))
+            var directKuwo = await TryGdStudioDirectUrlByIdAsync(song.KuwoRid, "kuwo", preferLossless, ct, targetQualityLevel);
+            if (!string.IsNullOrWhiteSpace(directKuwo))
             {
-                return autoUrl;
+                var info = GetCurrentResolvedInfo();
+                if (!preferLossless || IsLosslessCandidate(directKuwo, info.Kbps))
+                {
+                    return directKuwo;
+                }
+                ConsiderFallback(directKuwo, info.Kbps, info.Size);
             }
         }
 
-        return fallbackNonFlac;
+        // 2. 按歌曲来源精选前 3 个高命中源并发竞速（避免 5 源串行检索耗时 8~12 秒）
+        var primarySources = new List<string>();
+        var rawSource = (song.Source ?? string.Empty).Trim().ToLowerInvariant();
+        if (rawSource == "qq") primarySources.Add("tencent");
+        else if (rawSource == "migu") primarySources.Add("migu");
+        primarySources.Add("joox");
+        primarySources.Add("kuwo");
+        primarySources.Add("netease");
+        var topSources = primarySources
+            .Where(s => !string.Equals(s, "kuwo", StringComparison.OrdinalIgnoreCase) || string.IsNullOrWhiteSpace(song.KuwoRid))
+            .Where(s => !string.Equals(s, "netease", StringComparison.OrdinalIgnoreCase) || song.NumericId <= 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(3)
+            .ToList();
+
+        if (topSources.Count > 0 && !ct.IsCancellationRequested)
+        {
+            using var raceCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            var branchTasks = topSources.Select(async src =>
+            {
+                var branchInfo = new ResolveInfo();
+                _resolveInfo.Value = branchInfo;
+                var url = await TryGdStudioSourceAsync(song, src, preferLossless, raceCts.Token, targetQualityLevel);
+                return (Url: url, Info: branchInfo);
+            }).ToList();
+
+            while (branchTasks.Count > 0)
+            {
+                var finished = await Task.WhenAny(branchTasks);
+                branchTasks.Remove(finished);
+                try
+                {
+                    var res = await finished;
+                    if (string.IsNullOrWhiteSpace(res.Url)) continue;
+                    if (!preferLossless || IsLosslessCandidate(res.Url, res.Info.Kbps))
+                    {
+                        raceCts.Cancel();
+                        SetResolvedInfo(res.Info.Kbps, res.Info.Size);
+                        return res.Url;
+                    }
+                    ConsiderFallback(res.Url, res.Info.Kbps, res.Info.Size);
+                }
+                catch
+                {
+                    // 单分支失败继续等待其余分支
+                }
+            }
+        }
+
+        // 3. 若主源未命中无损且尚未拿到任何可用兜底，尝试 GD 全网自动换源
+        if (string.IsNullOrWhiteSpace(fallbackUrl) && !ct.IsCancellationRequested)
+        {
+            var autoInfo = new ResolveInfo();
+            var prevInfo = _resolveInfo.Value;
+            _resolveInfo.Value = autoInfo;
+            try
+            {
+                var autoUrl = await TryGdStudioAutoSourceAsync(song, preferLossless, ct, targetQualityLevel);
+                if (!string.IsNullOrWhiteSpace(autoUrl))
+                {
+                    fallbackUrl = autoUrl;
+                    fallbackKbps = autoInfo.Kbps;
+                    fallbackSize = autoInfo.Size;
+                }
+            }
+            finally
+            {
+                _resolveInfo.Value = prevInfo;
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(fallbackUrl))
+        {
+            SetResolvedInfo(fallbackKbps, fallbackSize);
+            return fallbackUrl;
+        }
+
+        return null;
     }
 
     /// <summary>
-    /// GD 音乐台按曲目 ID 直接请求播放/下载直链（带最新 crc32.min.js 签名与 /time 时间戳校准）
+    /// GD 音乐台按曲目 ID 直接请求播放/下载直链（带最新 crc32.min.js 签名、相对缓存路径补全与 401 自动恢复）
     /// </summary>
-    public async Task<string?> TryGdStudioDirectUrlByIdAsync(string trackId, string source, bool preferLossless, CancellationToken ct)
+    public async Task<string?> TryGdStudioDirectUrlByIdAsync(
+        string trackId, string source, bool preferLossless, CancellationToken ct, string? targetQualityLevel = null)
     {
         if (string.IsNullOrWhiteSpace(trackId)) return null;
 
+        var normalizedSrc = (source ?? string.Empty).Trim().ToLowerInvariant();
         var encodedId = GdUrlEncode(trackId);
-        string[] bitrates = preferLossless ? ["999", "740", "320"] : ["320"];
+        var target = (targetQualityLevel ?? string.Empty).Trim().ToLowerInvariant();
+        string[] bitrates = normalizedSrc switch
+        {
+            "ytmusic" => ["192", "128"],
+            "apple" => target switch
+            {
+                MusicQualityLevel.Standard or MusicQualityLevel.Higher or MusicQualityLevel.Exhigh => ["320"],
+                _ => preferLossless ? ["999", "320"] : ["320"]
+            },
+            _ => target switch
+            {
+                MusicQualityLevel.Standard => ["128", "192", "320"],
+                MusicQualityLevel.Higher => ["192", "128", "320"],
+                MusicQualityLevel.Exhigh => ["320", "192", "128"],
+                MusicQualityLevel.Lossless => ["740", "320"],
+                MusicQualityLevel.Hires or MusicQualityLevel.Jymaster or MusicQualityLevel.Jyeffect or MusicQualityLevel.Sky => ["999", "320"],
+                _ => preferLossless ? ["999", "320"] : ["320"]
+            }
+        };
 
         foreach (var br in bitrates)
         {
             try
             {
-                var sign = await ComputeGdStudioSignAsync(encodedId, ct);
-                var urlEndpoint = $"{GdStudioBaseUrl}?types=url&id={encodedId}&source={source}&br={br}&s={sign}";
-                var urlJson = await _httpClient.GetStringAsync(urlEndpoint, ct);
-                using var urlDoc = JsonDocument.Parse(urlJson);
-                var resolved = urlDoc.RootElement.GetStringProp("url").Replace("\\/", "/");
-                if (!string.IsNullOrWhiteSpace(resolved) && resolved.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+                async Task<string> BuildUrlAsync(CancellationToken token)
                 {
-                    SetResolvedInfo(urlDoc.RootElement.GetIntProp("br"), urlDoc.RootElement.GetLongProp("size"));
-                    return resolved;
+                    var sign = await ComputeGdStudioSignAsync(encodedId, token);
+                    return $"{GdStudioBaseUrl}?types=url&id={encodedId}&source={Uri.EscapeDataString(normalizedSrc)}&br={br}&s={sign}";
                 }
+
+                var urlEndpoint = await BuildUrlAsync(ct);
+                var urlJson = await SendGdGetStringAsync(urlEndpoint, BuildUrlAsync, ct);
+                if (string.IsNullOrWhiteSpace(urlJson)) continue;
+
+                using var urlDoc = JsonDocument.Parse(urlJson);
+                var root = urlDoc.RootElement;
+                if (root.ValueKind != JsonValueKind.Object) continue;
+
+                var resolved = root.GetStringProp("url").Replace("\\/", "/").Trim();
+                int resolvedBr = root.GetIntProp("br");
+                long resolvedSize = root.GetLongProp("size");
+
+                // 过滤空响应、错误标记或仅含代理域名的无效直链
+                if (string.IsNullOrWhiteSpace(resolved) ||
+                    resolved.Equals("err", StringComparison.OrdinalIgnoreCase) ||
+                    resolvedBr <= 0 ||
+                    resolved.EndsWith(".gdstudio.org/", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                // 补全 cache_sources（apple / ytmusic 等）返回的相对路径，例如 cache/apple_1440924808.256.m4a
+                if (!resolved.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+                {
+                    resolved = $"https://{GdStudioHost}/{resolved.TrimStart('/')}";
+                }
+
+                SetResolvedInfo(resolvedBr, resolvedSize);
+                return resolved;
             }
             catch
             {
@@ -589,25 +872,62 @@ public class UnblockMusicService
     }
 
     /// <summary>
-    /// 落雪音源：按“首选脚本优先 + 其余已启用脚本自动轮询”解析直链，并校验文件体积拦截试听片段
+    /// 落雪音源：按“首选脚本优先 + 其余已启用脚本分批并发竞速”解析直链，记录真实命中的脚本名称
     /// </summary>
-    public async Task<string?> TryLxMusicAsync(SongItem song, bool preferLossless, CancellationToken ct)
+    public async Task<string?> TryLxMusicAsync(
+        SongItem song, bool preferLossless, CancellationToken ct, string? targetQualityLevel = null)
     {
         var s = _configService.Settings;
         if (s.LxMusicScripts.Count == 0) return null;
 
-        var (url, quality, _) = await _lxHost.GetMusicUrlFromScriptsAsync(
+        var lxPrefer = !string.IsNullOrWhiteSpace(targetQualityLevel)
+            ? MapUserQualityToLxQuality(targetQualityLevel)
+            : (preferLossless ? "flac24bit" : "320k");
+
+        var (url, quality, scriptName) = await _lxHost.GetMusicUrlFromScriptsAsync(
             s.LxMusicScripts,
             s.ActiveLxMusicApiId,
             song,
-            preferLossless ? "flac24bit" : "320k",
+            lxPrefer,
             u => IsLikelyFullTrackAsync(u, song, ct),
             ct);
 
         if (string.IsNullOrWhiteSpace(url)) return null;
 
-        SetResolvedInfo(LxQualityToKbps(quality), 0);
+        var resolvedName = string.IsNullOrWhiteSpace(scriptName) ? "lxMusic" : scriptName;
+        SetResolvedInfo(LxQualityToKbps(quality), 0, resolvedName);
         return url;
+    }
+
+    /// <summary>
+    /// 指定单个已导入洛雪脚本进行定向解析（在独立专区标签或底栏指定音源时使用）
+    /// </summary>
+    public async Task<(string? Url, string ScriptName)> TrySpecificLxScriptAsync(
+        string scriptId, SongItem song, bool preferLossless, CancellationToken ct, string? targetQualityLevel = null)
+    {
+        var s = _configService.Settings;
+        var script = s.LxMusicScripts.FirstOrDefault(x => string.Equals(x.Id, scriptId, StringComparison.OrdinalIgnoreCase));
+        if (script == null) return (null, string.Empty);
+
+        var lxPrefer = !string.IsNullOrWhiteSpace(targetQualityLevel)
+            ? MapUserQualityToLxQuality(targetQualityLevel)
+            : (preferLossless ? "flac24bit" : "320k");
+
+        var (url, quality, scriptName) = await _lxHost.GetMusicUrlFromSingleScriptAsync(
+            script,
+            song,
+            lxPrefer,
+            u => IsLikelyFullTrackAsync(u, song, ct),
+            ct);
+
+        if (string.IsNullOrWhiteSpace(url)) return (null, string.Empty);
+
+        var resolvedName = string.IsNullOrWhiteSpace(scriptName) ? script.Name : scriptName;
+        LastResolvedBitrateKbps = LxQualityToKbps(quality);
+        LastResolvedSizeBytes = 0;
+        LastResolvedSourceName = resolvedName;
+        SetResolvedInfo(LastResolvedBitrateKbps, 0, resolvedName);
+        return (url, resolvedName);
     }
 
     /// <summary>
@@ -623,9 +943,10 @@ public class UnblockMusicService
     };
 
     /// <summary>
-    /// GD 音乐台全网自动换源接口 (types=autosource&br=999)
+    /// GD 音乐台全网自动换源接口 (types=autosource)
     /// </summary>
-    private async Task<string?> TryGdStudioAutoSourceAsync(SongItem song, bool preferLossless, CancellationToken ct)
+    private async Task<string?> TryGdStudioAutoSourceAsync(
+        SongItem song, bool preferLossless, CancellationToken ct, string? targetQualityLevel = null)
     {
         if (string.IsNullOrWhiteSpace(song.Name)) return null;
 
@@ -642,15 +963,37 @@ public class UnblockMusicService
             };
             var jsonPayload = JsonSerializer.Serialize(payloadObj);
             var encodedPayload = GdUrlEncode(jsonPayload);
-            var br = preferLossless ? "999" : "320";
-            var sign = await ComputeGdStudioSignAsync(encodedPayload, ct);
-
-            var endpoint = $"{GdStudioBaseUrl}?types=autosource&source=netease&br={br}&name={encodedPayload}&s={sign}";
-            var respJson = await _httpClient.GetStringAsync(endpoint, ct);
-            using var doc = JsonDocument.Parse(respJson);
-            var resolved = doc.RootElement.GetStringProp("url").Replace("\\/", "/");
-            if (!string.IsNullOrWhiteSpace(resolved) && resolved.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+            var target = (targetQualityLevel ?? string.Empty).Trim().ToLowerInvariant();
+            var br = target switch
             {
+                MusicQualityLevel.Standard => "128",
+                MusicQualityLevel.Higher => "192",
+                MusicQualityLevel.Exhigh => "320",
+                MusicQualityLevel.Lossless => "740",
+                MusicQualityLevel.Hires or MusicQualityLevel.Jymaster or MusicQualityLevel.Jyeffect or MusicQualityLevel.Sky => "999",
+                _ => preferLossless ? "999" : "320"
+            };
+
+            async Task<string> BuildAutoUrlAsync(CancellationToken token)
+            {
+                var sign = await ComputeGdStudioSignAsync(encodedPayload, token);
+                return $"{GdStudioBaseUrl}?types=autosource&source=netease&br={br}&name={encodedPayload}&s={sign}";
+            }
+
+            var endpoint = await BuildAutoUrlAsync(ct);
+            var respJson = await SendGdGetStringAsync(endpoint, BuildAutoUrlAsync, ct);
+            if (string.IsNullOrWhiteSpace(respJson)) return null;
+
+            using var doc = JsonDocument.Parse(respJson);
+            var resolved = doc.RootElement.GetStringProp("url").Replace("\\/", "/").Trim();
+            if (!string.IsNullOrWhiteSpace(resolved) &&
+                doc.RootElement.GetIntProp("br") > 0 &&
+                !resolved.EndsWith(".gdstudio.org/", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!resolved.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+                {
+                    resolved = $"https://{GdStudioHost}/{resolved.TrimStart('/')}";
+                }
                 SetResolvedInfo(doc.RootElement.GetIntProp("br"), doc.RootElement.GetLongProp("size"));
                 return resolved;
             }
@@ -664,14 +1007,15 @@ public class UnblockMusicService
     }
 
     /// <summary>
-    /// GD 音乐台指定音源搜索与解析（支持 joox / qobuz / tidal / netease / tencent / migu / kuwo，优先 br=999 无损 FLAC）
+    /// GD 音乐台指定音源搜索与解析（支持 joox / qobuz / tidal / netease / tencent / migu / kuwo，支持目标音质与无损优先）
     /// </summary>
-    public async Task<string?> TryGdStudioSourceAsync(SongItem song, string gdSource, bool preferLossless, CancellationToken ct)
+    public async Task<string?> TryGdStudioSourceAsync(
+        SongItem song, string gdSource, bool preferLossless, CancellationToken ct, string? targetQualityLevel = null)
     {
         // 若是 tencent 源且有 QqSongMid，先尝试落月 API (api.vkeys.cn)
         if (gdSource == "tencent" && !string.IsNullOrWhiteSpace(song.QqSongMid))
         {
-            var vkeysQqUrl = await TryVkeysTencentAsync(song.QqSongMid, preferLossless, ct);
+            var vkeysQqUrl = await TryVkeysTencentAsync(song.QqSongMid, preferLossless, ct, targetQualityLevel);
             if (!string.IsNullOrWhiteSpace(vkeysQqUrl) && (!preferLossless || vkeysQqUrl.Contains(".flac", StringComparison.OrdinalIgnoreCase)))
             {
                 return vkeysQqUrl;
@@ -684,9 +1028,17 @@ public class UnblockMusicService
         try
         {
             var encodedKw = GdUrlEncode(keyword);
-            var searchSign = await ComputeGdStudioSignAsync(encodedKw, ct);
-            var url = $"{GdStudioBaseUrl}?types=search&count=5&source={gdSource}&pages=1&name={encodedKw}&s={searchSign}";
-            var searchJson = await _httpClient.GetStringAsync(url, ct);
+
+            async Task<string> BuildSearchUrlAsync(CancellationToken token)
+            {
+                var searchSign = await ComputeGdStudioSignAsync(encodedKw, token);
+                return $"{GdStudioBaseUrl}?types=search&count=5&source={Uri.EscapeDataString(gdSource)}&pages=1&name={encodedKw}&s={searchSign}";
+            }
+
+            var url = await BuildSearchUrlAsync(ct);
+            var searchJson = await SendGdGetStringAsync(url, BuildSearchUrlAsync, ct);
+            if (string.IsNullOrWhiteSpace(searchJson)) return null;
+
             using var searchDoc = JsonDocument.Parse(searchJson);
             if (searchDoc.RootElement.ValueKind != JsonValueKind.Array || searchDoc.RootElement.GetArrayLength() == 0)
             {
@@ -704,7 +1056,370 @@ public class UnblockMusicService
             var source = matched.Value.GetStringProp("source", gdSource);
             if (string.IsNullOrWhiteSpace(trackId)) return null;
 
-            return await TryGdStudioDirectUrlByIdAsync(trackId, source, preferLossless, ct);
+            return await TryGdStudioDirectUrlByIdAsync(trackId, source, preferLossless, ct, targetQualityLevel);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 通过 GD 音乐台检索国际 Hi-Res / 流媒体曲库（支持 tidal / qobuz / ytmusic / spotify / apple / deezer）
+    /// </summary>
+    public async Task<List<SongItem>> SearchGdStudioCatalogAsync(
+        string gdSource, string keyword, int page = 1, int count = 35, CancellationToken ct = default)
+    {
+        var list = new List<SongItem>();
+        var trimmed = keyword?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(trimmed)) return list;
+
+        try
+        {
+            var encodedKw = GdUrlEncode(trimmed);
+
+            async Task<string> BuildCatalogSearchUrlAsync(CancellationToken token)
+            {
+                var sign = await ComputeGdStudioSignAsync(encodedKw, token);
+                return $"{GdStudioBaseUrl}?types=search&count={Math.Clamp(count, 1, 50)}&source={Uri.EscapeDataString(gdSource)}&pages={Math.Max(1, page)}&name={encodedKw}&s={sign}";
+            }
+
+            var url = await BuildCatalogSearchUrlAsync(ct);
+            var json = await SendGdGetStringAsync(url, BuildCatalogSearchUrlAsync, ct);
+            if (string.IsNullOrWhiteSpace(json)) return list;
+
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind != JsonValueKind.Array) return list;
+
+            var picTasks = new List<(SongItem Song, string PicId, string ItemSource)>();
+            int idx = 1;
+            foreach (var item in doc.RootElement.EnumerateArray())
+            {
+                var id = item.GetStringProp("id");
+                var urlId = item.GetStringProp("url_id");
+                var trackId = !string.IsNullOrWhiteSpace(urlId) ? urlId : id;
+                var name = item.GetStringProp("name");
+                if (string.IsNullOrWhiteSpace(trackId) || string.IsNullOrWhiteSpace(name)) continue;
+
+                var itemSource = item.GetStringProp("source", gdSource);
+                var artists = new List<ArtistItem>();
+                if (item.TryGetProperty("artist", out var artProp))
+                {
+                    if (artProp.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var a in artProp.EnumerateArray())
+                        {
+                            var aName = a.ValueKind == JsonValueKind.String ? a.GetString() : a.GetStringProp("name");
+                            if (!string.IsNullOrWhiteSpace(aName))
+                                artists.Add(new ArtistItem { Name = aName.Trim() });
+                        }
+                    }
+                    else if (artProp.ValueKind == JsonValueKind.String)
+                    {
+                        var aRaw = artProp.GetString();
+                        if (!string.IsNullOrWhiteSpace(aRaw))
+                            artists.Add(new ArtistItem { Name = aRaw.Trim() });
+                    }
+                }
+
+                var albumName = item.GetStringProp("album");
+                var picId = item.GetStringProp("pic_id");
+                var directPic = picId.StartsWith("http", StringComparison.OrdinalIgnoreCase) ? picId : string.Empty;
+
+                var song = new SongItem
+                {
+                    Id = $"{gdSource}_{trackId}",
+                    DisplayIndex = idx++,
+                    Name = name,
+                    Artists = artists,
+                    Album = new AlbumItem { Name = albumName, PicUrl = directPic },
+                    PicUrl = directPic,
+                    Source = gdSource,
+                    GdTrackId = trackId,
+                    GdSource = itemSource,
+                    NativeQualityHint = gdSource is "tidal" or "qobuz" ? "24bit Hi-Res" : "256k AAC"
+                };
+
+                list.Add(song);
+                if (string.IsNullOrEmpty(directPic) && !string.IsNullOrWhiteSpace(picId) && picTasks.Count < 12)
+                {
+                    picTasks.Add((song, picId, itemSource));
+                }
+            }
+
+            // 并发补充前 12 条无直链封面的歌曲封面图（限时 2.5 秒，不阻塞列表首屏展示）
+            if (picTasks.Count > 0)
+            {
+                using var picCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                picCts.CancelAfter(TimeSpan.FromMilliseconds(2500));
+                using var sem = new SemaphoreSlim(6);
+                await Task.WhenAll(picTasks.Select(async entry =>
+                {
+                    await sem.WaitAsync(picCts.Token);
+                    try
+                    {
+                        var encPic = GdUrlEncode(entry.PicId);
+
+                        async Task<string> BuildPicUrlAsync(CancellationToken token)
+                        {
+                            var picSign = await ComputeGdStudioSignAsync(encPic, token);
+                            return $"{GdStudioBaseUrl}?types=pic&source={Uri.EscapeDataString(entry.ItemSource)}&id={encPic}&size=300&s={picSign}";
+                        }
+
+                        var picApi = await BuildPicUrlAsync(picCts.Token);
+                        var picJson = await SendGdGetStringAsync(picApi, BuildPicUrlAsync, picCts.Token);
+                        if (string.IsNullOrWhiteSpace(picJson)) return;
+                        using var pDoc = JsonDocument.Parse(picJson);
+                        var pUrl = pDoc.RootElement.GetStringProp("url").Replace("\\/", "/");
+                        if (!string.IsNullOrWhiteSpace(pUrl) && pUrl.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+                        {
+                            entry.Song.PicUrl = pUrl;
+                            entry.Song.Album.PicUrl = pUrl;
+                        }
+                    }
+                    catch
+                    {
+                    }
+                    finally
+                    {
+                        sem.Release();
+                    }
+                })).ConfigureAwait(false);
+            }
+        }
+        catch
+        {
+        }
+
+        return list;
+    }
+
+    /// <summary>
+    /// 国际音乐平台（Spotify / Apple Music / Deezer / Tidal / Qobuz / YT Music）纯国际完整曲目解析（严禁跳转国内源）
+    /// </summary>
+    public async Task<(string? Url, string Platform)> ResolveInternationalAudioAsync(
+        SongItem song, bool preferLossless, CancellationToken ct = default, string? targetQualityLevel = null)
+    {
+        LastResolvedBitrateKbps = 0;
+        LastResolvedSizeBytes = 0;
+        if (song == null || string.IsNullOrWhiteSpace(song.Name)) return (null, string.Empty);
+
+        var rawSrc = (song.Source ?? string.Empty).Trim().ToLowerInvariant();
+        var prefix = $"{rawSrc}_";
+        var nativeId = !string.IsNullOrWhiteSpace(song.NativeTrackId)
+            ? song.NativeTrackId.Trim()
+            : (!string.IsNullOrWhiteSpace(song.GdTrackId)
+                ? song.GdTrackId.Trim()
+                : (song.Id.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+                    ? song.Id[prefix.Length..].Trim()
+                    : string.Empty));
+
+        string? fallbackUrl = null;
+        string fallbackPlat = string.Empty;
+        int fallbackKbps = 0;
+        long fallbackSize = 0;
+
+        static bool IsLosslessResult(string u, int kbps) =>
+            u.Contains(".flac", StringComparison.OrdinalIgnoreCase) || kbps > 400;
+
+        void SaveFallback(string url, string plat, int kbps, long size)
+        {
+            if (string.IsNullOrWhiteSpace(fallbackUrl) || kbps > fallbackKbps)
+            {
+                fallbackUrl = url;
+                fallbackPlat = plat;
+                fallbackKbps = kbps;
+                fallbackSize = size;
+            }
+        }
+
+        // 1. Apple Music / Tidal 原生曲目 ID 精确直连快通道（跳过同名搜索与错误版本风险）
+        if (rawSrc == "tidal" && !string.IsNullOrWhiteSpace(nativeId))
+        {
+            var directTidal = await TryGdStudioDirectUrlByIdAsync(nativeId, "tidal", preferLossless, ct, targetQualityLevel);
+            var info = GetCurrentResolvedInfo();
+            if (!string.IsNullOrWhiteSpace(directTidal) && await IsLikelyFullTrackAsync(directTidal, song, ct, info.Size, info.Kbps))
+            {
+                if (!preferLossless || IsLosslessResult(directTidal, info.Kbps))
+                {
+                    return (directTidal, "tidal");
+                }
+                SaveFallback(directTidal, "tidal", info.Kbps, info.Size);
+            }
+        }
+        else if (rawSrc == "apple" && !string.IsNullOrWhiteSpace(nativeId) && nativeId.All(char.IsDigit))
+        {
+            var directApple = await TryGdStudioDirectUrlByIdAsync(nativeId, "apple", preferLossless, ct, targetQualityLevel);
+            var info = GetCurrentResolvedInfo();
+            if (!string.IsNullOrWhiteSpace(directApple) && await IsLikelyFullTrackAsync(directApple, song, ct, info.Size, info.Kbps))
+            {
+                if (!preferLossless || IsLosslessResult(directApple, info.Kbps))
+                {
+                    return (directApple, "apple");
+                }
+                SaveFallback(directApple, "apple", info.Kbps, info.Size);
+            }
+        }
+
+        // 2. 若携带其他有效国际 GDStudio ID（仅限定在纯国际源范围内）
+        if (!string.IsNullOrWhiteSpace(song.GdTrackId) &&
+            song.GdSource?.Trim().ToLowerInvariant() is "tidal" or "apple" or "joox" or "ytmusic" &&
+            !string.Equals(song.GdSource, rawSrc, StringComparison.OrdinalIgnoreCase))
+        {
+            var gdSrc = song.GdSource.Trim().ToLowerInvariant();
+            var directUrl = await TryGdStudioDirectUrlByIdAsync(song.GdTrackId, gdSrc, preferLossless, ct, targetQualityLevel);
+            var info = GetCurrentResolvedInfo();
+            if (!string.IsNullOrWhiteSpace(directUrl) && await IsLikelyFullTrackAsync(directUrl, song, ct, info.Size, info.Kbps))
+            {
+                if (!preferLossless || IsLosslessResult(directUrl, info.Kbps))
+                {
+                    return (directUrl, gdSrc);
+                }
+                SaveFallback(directUrl, gdSrc, info.Kbps, info.Size);
+            }
+        }
+
+        // 3. 纯国际候选源并发竞速（严格限定 joox / tidal / apple / ytmusic 原生 ID，严禁调用 autosource 或任何国内源）
+        var parallelSpecs = new List<(string Platform, Func<CancellationToken, Task<string?>> Resolver)>();
+        bool hasPreciseNativeFallback = !string.IsNullOrWhiteSpace(fallbackUrl) && fallbackPlat is "apple" or "tidal";
+
+        parallelSpecs.Add(("joox", token => TryGdStudioSourceAsync(song, "joox", preferLossless, token, targetQualityLevel)));
+        if (!hasPreciseNativeFallback)
+        {
+            if (fallbackPlat != "tidal")
+            {
+                parallelSpecs.Add(("tidal", token => TryGdStudioSourceAsync(song, "tidal", preferLossless, token, targetQualityLevel)));
+            }
+            if (fallbackPlat != "apple" && (!preferLossless || rawSrc == "apple"))
+            {
+                parallelSpecs.Add(("apple", token => TryGdStudioSourceAsync(song, "apple", preferLossless, token, targetQualityLevel)));
+            }
+        }
+
+        if (rawSrc == "ytmusic" && !string.IsNullOrWhiteSpace(nativeId))
+        {
+            parallelSpecs.Add(("ytmusic", token => TryGdStudioDirectUrlByIdAsync(nativeId, "ytmusic", preferLossless: false, token, targetQualityLevel)));
+        }
+
+        if (parallelSpecs.Count > 0 && !ct.IsCancellationRequested)
+        {
+            using var intlCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            if (!string.IsNullOrWhiteSpace(fallbackUrl))
+            {
+                // 若前面已握有原生精确高码率链接，最多并发等待 1.5s 看 JOOX 能否提供 FLAC 无损
+                intlCts.CancelAfter(TimeSpan.FromMilliseconds(1500));
+            }
+
+            var tasks = parallelSpecs.Select(async spec =>
+            {
+                var branchInfo = new ResolveInfo();
+                _resolveInfo.Value = branchInfo;
+                var u = await spec.Resolver(intlCts.Token);
+                if (string.IsNullOrWhiteSpace(u)) return null;
+                if (!await IsLikelyFullTrackAsync(u, song, intlCts.Token, branchInfo.Size, branchInfo.Kbps)) return null;
+                return ((string Url, string Plat, ResolveInfo Info)?)(u, spec.Platform, branchInfo);
+            }).ToList();
+
+            bool graceStarted = !string.IsNullOrWhiteSpace(fallbackUrl);
+            while (tasks.Count > 0)
+            {
+                var finished = await Task.WhenAny(tasks);
+                tasks.Remove(finished);
+                (string Url, string Plat, ResolveInfo Info)? res = null;
+                try
+                {
+                    res = await finished;
+                }
+                catch
+                {
+                    continue;
+                }
+
+                if (res == null) continue;
+                var val = res.Value;
+                if (!preferLossless || IsLosslessResult(val.Url, val.Info.Kbps))
+                {
+                    intlCts.Cancel();
+                    LastResolvedBitrateKbps = val.Info.Kbps;
+                    LastResolvedSizeBytes = val.Info.Size;
+                    return (val.Url, val.Plat);
+                }
+
+                SaveFallback(val.Url, val.Plat, val.Info.Kbps, val.Info.Size);
+                if (!graceStarted)
+                {
+                    graceStarted = true;
+                    // 已拿到首个完整国际高码率流，再给 JOOX FLAC 最多 1.2 秒宽限窗口，超时即刻开播
+                    intlCts.CancelAfter(TimeSpan.FromMilliseconds(1200));
+                }
+            }
+        }
+
+        // 4. 非 lossless-only 场景下若上述并发仍未命中且之前跳过 apple，则补一次 apple 搜索兜底
+        if (string.IsNullOrWhiteSpace(fallbackUrl) && preferLossless && rawSrc != "apple" && !ct.IsCancellationRequested)
+        {
+            var appleInfo = new ResolveInfo();
+            _resolveInfo.Value = appleInfo;
+            var appleUrl = await TryGdStudioSourceAsync(song, "apple", false, ct, targetQualityLevel);
+            if (!string.IsNullOrWhiteSpace(appleUrl) && await IsLikelyFullTrackAsync(appleUrl, song, ct, appleInfo.Size, appleInfo.Kbps))
+            {
+                LastResolvedBitrateKbps = appleInfo.Kbps;
+                LastResolvedSizeBytes = appleInfo.Size;
+                return (appleUrl, "apple");
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(fallbackUrl))
+        {
+            LastResolvedBitrateKbps = fallbackKbps;
+            LastResolvedSizeBytes = fallbackSize;
+            return (fallbackUrl, fallbackPlat);
+        }
+
+        return (null, string.Empty);
+    }
+
+    /// <summary>
+    /// 将国际代理音频流（如 YouTube Music WebM/Opus）下载到本地缓存，供内置 mpv.exe 本地无障碍解码播放并消除 403/E_ACCESSDENIED
+    /// </summary>
+    public async Task<string?> DownloadInternationalStreamToCacheAsync(
+        string streamUrl, string cacheKey, string cacheDir, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(streamUrl) || string.IsNullOrWhiteSpace(cacheDir)) return null;
+
+        try
+        {
+            Directory.CreateDirectory(cacheDir);
+            var safeKey = Regex.Replace(cacheKey ?? "track", @"[^A-Za-z0-9_\-]", "_");
+            var cacheFile = Path.Combine(cacheDir, $"ytm_{safeKey}.webm");
+            if (File.Exists(cacheFile) && new FileInfo(cacheFile).Length > 4096)
+            {
+                return cacheFile;
+            }
+
+            var tempFile = cacheFile + ".tmp";
+            using var req = new HttpRequestMessage(HttpMethod.Get, streamUrl);
+            if (streamUrl.Contains(GdStudioHost, StringComparison.OrdinalIgnoreCase))
+            {
+                req.Headers.Referrer = new Uri(GdStudioHomeUrl);
+            }
+
+            using var resp = await _downloadHttpClient.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+            if ((int)resp.StatusCode >= 400) return null;
+
+            await using (var fs = new FileStream(tempFile, FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true))
+            {
+                await resp.Content.CopyToAsync(fs, ct);
+            }
+
+            if (!File.Exists(tempFile) || new FileInfo(tempFile).Length <= 4096)
+            {
+                try { if (File.Exists(tempFile)) File.Delete(tempFile); } catch { }
+                return null;
+            }
+
+            File.Move(tempFile, cacheFile, overwrite: true);
+            return cacheFile;
         }
         catch
         {
@@ -715,9 +1430,16 @@ public class UnblockMusicService
     /// <summary>
     /// 落月 API (api.vkeys.cn) 网易云音乐解析通道
     /// </summary>
-    private async Task<string?> TryVkeysNeteaseAsync(long songId, bool preferLossless, CancellationToken ct)
+    private async Task<string?> TryVkeysNeteaseAsync(long songId, bool preferLossless, CancellationToken ct, string? targetQualityLevel = null)
     {
-        int[] qualities = preferLossless ? [9, 4] : [4];
+        var target = (targetQualityLevel ?? string.Empty).Trim().ToLowerInvariant();
+        int[] qualities = target switch
+        {
+            MusicQualityLevel.Standard => [2, 4],
+            MusicQualityLevel.Higher => [3, 4],
+            MusicQualityLevel.Exhigh => [4],
+            _ => preferLossless ? [9, 4] : [4]
+        };
         foreach (var q in qualities)
         {
             try
@@ -745,10 +1467,16 @@ public class UnblockMusicService
     /// <summary>
     /// 落月 API (api.vkeys.cn) QQ 音乐解析通道
     /// </summary>
-    public async Task<string?> TryVkeysTencentAsync(string songMid, bool preferLossless, CancellationToken ct)
+    public async Task<string?> TryVkeysTencentAsync(string songMid, bool preferLossless, CancellationToken ct, string? targetQualityLevel = null)
     {
         if (string.IsNullOrWhiteSpace(songMid)) return null;
-        int[] qualities = preferLossless ? [10, 8] : [8];
+        var target = (targetQualityLevel ?? string.Empty).Trim().ToLowerInvariant();
+        int[] qualities = target switch
+        {
+            MusicQualityLevel.Standard or MusicQualityLevel.Higher => [6, 8],
+            MusicQualityLevel.Exhigh => [8, 6],
+            _ => preferLossless ? [10, 8] : [8]
+        };
         foreach (var q in qualities)
         {
             try
@@ -779,16 +1507,43 @@ public class UnblockMusicService
     }
 
     /// <summary>
-    /// 计算 GD 音乐台 (music.gdstudio.org) 请求签名参数 s
-    /// 算法：GdCustomMd5("{ts9}|music.gdstudio.org|20261106|{encodedParam}") 取末尾 8 位大写十六进制
+    /// 请求 GD 音乐台接口（统一注入 Referer 并在遇到 401 签名过期时自动同步最新 crc32.min.js 重试一次）
     /// </summary>
-    private async Task<string> ComputeGdStudioSignAsync(string encodedParam, CancellationToken ct)
+    private async Task<string?> SendGdGetStringAsync(
+        string url, Func<CancellationToken, Task<string>>? rebuildUrlOn401, CancellationToken ct)
     {
-        if ((DateTimeOffset.UtcNow - _gdServerTimeLastSync).TotalMinutes > 3)
+        for (int attempt = 0; attempt < 2; attempt++)
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            req.Headers.Referrer = new Uri(GdStudioHomeUrl);
+            using var resp = await _httpClient.SendAsync(req, ct);
+            if (resp.StatusCode == global::System.Net.HttpStatusCode.Unauthorized &&
+                attempt == 0 &&
+                rebuildUrlOn401 != null)
+            {
+                await RefreshGdDynamicSignAsync(ct);
+                url = await rebuildUrlOn401(ct);
+                continue;
+            }
+
+            if (!resp.IsSuccessStatusCode) return null;
+            return await resp.Content.ReadAsStringAsync(ct);
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 从 music.gdstudio.org 首页与 /time 自动刷新服务器时间、player.js 版本号及 crc32.min.js 动态脚本
+    /// </summary>
+    private async Task RefreshGdDynamicSignAsync(CancellationToken ct)
+    {
+        await _gdSyncLock.WaitAsync(ct);
+        try
         {
             try
             {
-                var timeStr = (await _httpClient.GetStringAsync(GdStudioTimeUrl, ct)).Trim();
+                var timeStr = (await SendGdGetStringAsync(GdStudioTimeUrl, null, ct))?.Trim();
                 if (long.TryParse(timeStr, out var serverSec) && serverSec > 1_000_000_000)
                 {
                     _gdServerTimeOffsetSec = serverSec - DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -797,15 +1552,160 @@ public class UnblockMusicService
             }
             catch
             {
-                // 若 /time 请求失败，回退使用本机 UTC 时间
+            }
+
+            try
+            {
+                var playerJs = await SendGdGetStringAsync(GdStudioPlayerJsUrl, null, ct);
+                if (!string.IsNullOrWhiteSpace(playerJs))
+                {
+                    var verMatch = Regex.Match(playerJs, @"version\s*:\s*[""']([0-9.]+)[""']");
+                    if (verMatch.Success)
+                    {
+                        var normalized = string.Concat(verMatch.Groups[1].Value
+                            .Split('.', StringSplitOptions.RemoveEmptyEntries)
+                            .Select(p => p.Length == 1 ? "0" + p : p));
+                        if (normalized.Length >= 8)
+                        {
+                            _gdStudioVersion = normalized;
+                            _gdVersionLastSync = DateTimeOffset.UtcNow;
+                        }
+                    }
+                }
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                var indexHtml = await SendGdGetStringAsync(GdStudioHomeUrl, null, ct);
+                var crcPath = "js/crc32.min.js";
+                if (!string.IsNullOrWhiteSpace(indexHtml))
+                {
+                    var m = Regex.Match(indexHtml, @"src=[""'](js/crc32\.min\.js(?:\?[^""']*)?)[""']", RegexOptions.IgnoreCase);
+                    if (m.Success) crcPath = m.Groups[1].Value;
+                }
+
+                var crcUrl = $"{GdStudioHomeUrl}{crcPath.TrimStart('/')}";
+                var jsCode = await SendGdGetStringAsync(crcUrl, null, ct);
+                if (!string.IsNullOrWhiteSpace(jsCode))
+                {
+                    _gdCrcJsCode = jsCode;
+                    _gdCrcTag = crcPath;
+                    _useDynamicGdMd5 = true;
+                }
+            }
+            catch
+            {
             }
         }
+        finally
+        {
+            _gdSyncLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// 并发去重同步 GD 音乐台服务器时间与版本号（已预热并在有效期内直接 0ms 返回）
+    /// </summary>
+    private async Task EnsureGdStudioReadyAsync(CancellationToken ct)
+    {
+        bool needTime = (DateTimeOffset.UtcNow - _gdServerTimeLastSync).TotalMinutes > 3;
+        bool needVersion = (DateTimeOffset.UtcNow - _gdVersionLastSync).TotalMinutes > 30;
+        if (!needTime && !needVersion) return;
+
+        await _gdSyncLock.WaitAsync(ct);
+        try
+        {
+            needTime = (DateTimeOffset.UtcNow - _gdServerTimeLastSync).TotalMinutes > 3;
+            needVersion = (DateTimeOffset.UtcNow - _gdVersionLastSync).TotalMinutes > 30;
+            if (!needTime && !needVersion) return;
+
+            using var syncCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            syncCts.CancelAfter(TimeSpan.FromSeconds(3));
+
+            var timeTask = needTime
+                ? SendGdGetStringAsync(GdStudioTimeUrl, null, syncCts.Token)
+                : Task.FromResult<string?>(null);
+            var versionTask = needVersion
+                ? SendGdGetStringAsync(GdStudioPlayerJsUrl, null, syncCts.Token)
+                : Task.FromResult<string?>(null);
+
+            try
+            {
+                await Task.WhenAll(timeTask, versionTask);
+            }
+            catch
+            {
+                // 单路同步失败继续读取已完成的结果
+            }
+
+            if (needTime && timeTask.IsCompletedSuccessfully)
+            {
+                var timeStr = timeTask.Result?.Trim();
+                if (long.TryParse(timeStr, out var serverSec) && serverSec > 1_000_000_000)
+                {
+                    _gdServerTimeOffsetSec = serverSec - DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+                    _gdServerTimeLastSync = DateTimeOffset.UtcNow;
+                }
+            }
+
+            if (needVersion && versionTask.IsCompletedSuccessfully)
+            {
+                var playerJs = versionTask.Result;
+                if (!string.IsNullOrWhiteSpace(playerJs))
+                {
+                    var verMatch = Regex.Match(playerJs, @"version\s*:\s*[""']([0-9.]+)[""']");
+                    if (verMatch.Success)
+                    {
+                        var normalized = string.Concat(verMatch.Groups[1].Value
+                            .Split('.', StringSplitOptions.RemoveEmptyEntries)
+                            .Select(p => p.Length == 1 ? "0" + p : p));
+                        if (normalized.Length >= 8)
+                        {
+                            _gdStudioVersion = normalized;
+                            _gdVersionLastSync = DateTimeOffset.UtcNow;
+                        }
+                    }
+                }
+            }
+        }
+        catch
+        {
+            // 若同步异常，回退使用本机 UTC 时间与当前默认版本号
+        }
+        finally
+        {
+            _gdSyncLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// 计算 GD 音乐台 (music.gdstudio.org) 请求签名参数 s
+    /// 算法：GdCustomMd5("{ts9}|music.gdstudio.org|{version}|{encodedParam}") 取末尾 8 位大写十六进制
+    /// 自动并发去重同步 /time 服务器时间与 /js/player.js 最新 version，并在 401 时切换离屏 WebView2 动态脚本签名
+    /// </summary>
+    private async Task<string> ComputeGdStudioSignAsync(string encodedParam, CancellationToken ct)
+    {
+        await EnsureGdStudioReadyAsync(ct);
 
         var nowSec = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + _gdServerTimeOffsetSec;
         var tsStr = nowSec.ToString();
         var ts9 = tsStr.Length >= 9 ? tsStr[..9] : tsStr;
-        var raw = $"{ts9}|{GdStudioHost}|{GdStudioVersion}|{encodedParam}";
-        var hashHex = ComputeGdCustomMd5Hex(raw);
+        var raw = $"{ts9}|{GdStudioHost}|{_gdStudioVersion}|{encodedParam}";
+
+        string? hashHex = null;
+        if (_useDynamicGdMd5 && !string.IsNullOrWhiteSpace(_gdCrcJsCode))
+        {
+            hashHex = await _lxHost.EvaluateGdStudioMd5Async(_gdCrcJsCode, _gdCrcTag, raw, ct);
+        }
+
+        if (string.IsNullOrWhiteSpace(hashHex) || hashHex.Length < 8)
+        {
+            hashHex = ComputeGdCustomMd5Hex(raw);
+        }
+
         return hashHex[^8..].ToUpperInvariant();
     }
 
@@ -824,7 +1724,7 @@ public class UnblockMusicService
     }
 
     /// <summary>
-    /// 1:1 对应 GD 音乐台 crc32.min.js 中的魔改 MD5（第 33 轮常量 T[32] = 0x59951e3e）
+    /// 1:1 对应 GD 音乐台 crc32.min.js?v=20261112 中的魔改 MD5（T[1] = 0x21c10959）
     /// </summary>
     private static string ComputeGdCustomMd5Hex(string input)
     {
@@ -915,7 +1815,9 @@ public class UnblockMusicService
 
             var candName = NormalizeMatchText(item.GetStringProp("name"));
             if (string.IsNullOrWhiteSpace(expectedName) || string.IsNullOrWhiteSpace(candName)) continue;
-            bool nameMatched = expectedName == candName || candName.Contains(expectedName) || expectedName.Contains(candName);
+            bool nameMatched = expectedName == candName ||
+                               (expectedName.Length >= 2 && candName.Contains(expectedName)) ||
+                               (candName.Length >= 2 && expectedName.Contains(candName));
             if (!nameMatched) continue;
 
             string candArtistRaw = string.Empty;
@@ -956,10 +1858,18 @@ public class UnblockMusicService
             }
         }
 
-        // 若严格匹配未命中且原曲无歌手或仅有一条同名结果，兜底取第一条
-        if (best == null && candidatesArray.GetArrayLength() > 0)
+        // 若未命中歌手校验，仅当原曲未附带歌手信息且第一条候选歌名确实归一化一致时才兜底，防止错配到完全无关曲目
+        if (best == null && expectedArtists.Count == 0 && candidatesArray.GetArrayLength() > 0)
         {
-            return candidatesArray[0];
+            var firstName = NormalizeMatchText(candidatesArray[0].GetStringProp("name"));
+            if (!string.IsNullOrWhiteSpace(expectedName) &&
+                !string.IsNullOrWhiteSpace(firstName) &&
+                (firstName == expectedName ||
+                 (expectedName.Length >= 2 && firstName.Contains(expectedName)) ||
+                 (firstName.Length >= 2 && expectedName.Contains(firstName))))
+            {
+                return candidatesArray[0];
+            }
         }
 
         return best;
