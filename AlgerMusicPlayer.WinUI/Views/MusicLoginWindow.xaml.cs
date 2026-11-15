@@ -635,7 +635,7 @@ public sealed partial class MusicLoginWindow : Window
                     try {
                         await MusicKit.configure({
                             developerToken: '{{developerToken}}',
-                            app: { name: 'AlgerMusicPlayer', build: '5.1.3' }
+                            app: { name: 'AlgerMusicPlayer', build: '5.1.4' }
                         });
                     } catch (err) {
                         window.chrome.webview.postMessage({ error: String(err) });

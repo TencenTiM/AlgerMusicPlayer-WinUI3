@@ -15,7 +15,7 @@ public partial class InstallerWindow : Window
 {
     private const string AppId = "AlgerMusicPlayer";
     private const string AppDisplayName = "Alger Music Player";
-    private const string AppVersion = "5.1.3";
+    private const string AppVersion = "5.1.4";
     private const string MainExeName = "AlgerMusicPlayer.WinUI.exe";
     private const string UninstallExeName = "Uninstall.exe";
     private const string UninstallRegKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\AlgerMusicPlayer";
