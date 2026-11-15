@@ -74,10 +74,13 @@ public class UnblockMusicService
 
         if (isFlac || kbps > 400)
         {
-            // 码率 >= 1350kbps 或单曲体积 > 42MB 为 24bit Hi-Res / 超清母带级无损
-            if (kbps >= 1350 || size > 42L * 1024 * 1024)
+            // 仅 QQ RS01 标注超清母带，其余 24bit/高码率/Q000 统一对齐为 Hi-Res，确保外层徽章与菜单档位一致
+            if (kbps >= 1350 ||
+                size > 42L * 1024 * 1024 ||
+                url.Contains("RS01", StringComparison.OrdinalIgnoreCase) ||
+                url.Contains("Q000", StringComparison.OrdinalIgnoreCase))
             {
-                var label = string.Equals(requestedQuality, MusicQualityLevel.Jymaster, StringComparison.OrdinalIgnoreCase)
+                var label = url.Contains("RS01", StringComparison.OrdinalIgnoreCase)
                     ? "超清母带"
                     : "Hi-Res";
                 return kbps > 0 && kbps != 999 ? $"{label} {kbps}k" : $"{label} 24bit";

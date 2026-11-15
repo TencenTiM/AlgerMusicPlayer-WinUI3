@@ -14,6 +14,7 @@ public class ConfigService
     private readonly string _favoritesFilePath;
     private readonly string _queueFilePath;
     private readonly string _localSongsFilePath;
+    private readonly string _customPlaylistsFilePath;
     private readonly SemaphoreSlim _ioLock = new(1, 1);
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -27,6 +28,7 @@ public class ConfigService
     public List<SongItem> LocalFavorites { get; private set; } = [];
     public List<SongItem> SavedQueue { get; private set; } = [];
     public List<SongItem> CachedLocalSongs { get; private set; } = [];
+    public List<PlaylistItem> CustomPlaylists { get; private set; } = [];
 
     public event Action? SettingsChanged;
 
@@ -42,6 +44,7 @@ public class ConfigService
         _favoritesFilePath = Path.Combine(_appDataDir, "favorites.json");
         _queueFilePath = Path.Combine(_appDataDir, "queue.json");
         _localSongsFilePath = Path.Combine(_appDataDir, "local_songs.json");
+        _customPlaylistsFilePath = Path.Combine(_appDataDir, "custom_playlists.json");
 
         LoadAllSync();
     }
@@ -66,6 +69,22 @@ public class ConfigService
         LocalFavorites = ReadJsonSafe<List<SongItem>>(_favoritesFilePath) ?? [];
         SavedQueue = ReadJsonSafe<List<SongItem>>(_queueFilePath) ?? [];
         CachedLocalSongs = ReadJsonSafe<List<SongItem>>(_localSongsFilePath) ?? [];
+        CustomPlaylists = ReadJsonSafe<List<PlaylistItem>>(_customPlaylistsFilePath) ?? [];
+        foreach (var cp in CustomPlaylists)
+        {
+            cp.Source = "local_custom";
+            if (string.IsNullOrWhiteSpace(cp.ThirdPartyId))
+            {
+                cp.ThirdPartyId = $"local_{Guid.NewGuid():N}"[..18];
+            }
+            cp.Tracks ??= [];
+            cp.TrackCount = cp.Tracks.Count;
+            if (!ImageUriHelper.HasRealImageUrl(cp.CoverImgUrl) &&
+                cp.Tracks.FirstOrDefault(t => ImageUriHelper.HasRealImageUrl(t.PicUrl)) is { } firstCoverTrack)
+            {
+                cp.CoverImgUrl = firstCoverTrack.PicUrl;
+            }
+        }
 
         if (string.IsNullOrWhiteSpace(Settings.DownloadPath))
         {
@@ -161,6 +180,161 @@ public class ConfigService
     }
 
     /// <summary>
+    /// 创建本地跨平台混合歌单并持久化
+    /// </summary>
+    public async Task<PlaylistItem> CreateCustomPlaylistAsync(string name)
+    {
+        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var pl = new PlaylistItem
+        {
+            Id = nowMs,
+            Source = "local_custom",
+            ThirdPartyId = $"local_{Guid.NewGuid():N}"[..18],
+            Name = name.Trim(),
+            Description = "本地跨平台混合歌单（支持任意音源单曲混编与直接播放）",
+            CreatorName = "本地跨平台歌单",
+            CreateTime = nowMs,
+            UpdateTime = nowMs,
+            TrackCount = 0,
+            Tracks = []
+        };
+        CustomPlaylists.Insert(0, pl);
+        await WriteJsonSafeAsync(_customPlaylistsFilePath, CustomPlaylists);
+        return pl;
+    }
+
+    /// <summary>
+    /// 删除指定本地跨平台混合歌单
+    /// </summary>
+    public async Task<bool> DeleteCustomPlaylistAsync(string thirdPartyId)
+    {
+        if (string.IsNullOrWhiteSpace(thirdPartyId)) return false;
+        int removed = CustomPlaylists.RemoveAll(p => string.Equals(p.ThirdPartyId, thirdPartyId, StringComparison.OrdinalIgnoreCase));
+        if (removed <= 0) return false;
+        await WriteJsonSafeAsync(_customPlaylistsFilePath, CustomPlaylists);
+        return true;
+    }
+
+    /// <summary>
+    /// 向指定本地跨平台混合歌单添加歌曲（保留原平台与全部原生元数据）
+    /// </summary>
+    public async Task<(int AddedCount, int SkippedCount)> AddSongsToCustomPlaylistAsync(
+        string thirdPartyId,
+        IEnumerable<SongItem> songs)
+    {
+        var pl = CustomPlaylists.FirstOrDefault(p => string.Equals(p.ThirdPartyId, thirdPartyId, StringComparison.OrdinalIgnoreCase));
+        if (pl == null) return (0, 0);
+
+        int added = 0;
+        int skipped = 0;
+        foreach (var song in songs)
+        {
+            if (song == null || string.IsNullOrWhiteSpace(song.Id)) continue;
+            if (pl.Tracks.Any(t => string.Equals(t.Id, song.Id, StringComparison.OrdinalIgnoreCase)))
+            {
+                skipped++;
+                continue;
+            }
+            pl.Tracks.Add(CloneSongForStorage(song));
+            added++;
+        }
+
+        if (added > 0)
+        {
+            pl.TrackCount = pl.Tracks.Count;
+            pl.UpdateTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            if (!ImageUriHelper.HasRealImageUrl(pl.CoverImgUrl) &&
+                pl.Tracks.FirstOrDefault(t => ImageUriHelper.HasRealImageUrl(t.PicUrl)) is { } firstCover)
+            {
+                pl.CoverImgUrl = firstCover.PicUrl;
+            }
+            await WriteJsonSafeAsync(_customPlaylistsFilePath, CustomPlaylists);
+        }
+
+        return (added, skipped);
+    }
+
+    /// <summary>
+    /// 从指定本地跨平台混合歌单删除一批歌曲
+    /// </summary>
+    public async Task<int> RemoveSongsFromCustomPlaylistAsync(string thirdPartyId, IEnumerable<string> songIds)
+    {
+        var pl = CustomPlaylists.FirstOrDefault(p => string.Equals(p.ThirdPartyId, thirdPartyId, StringComparison.OrdinalIgnoreCase));
+        if (pl == null) return 0;
+
+        var idSet = new HashSet<string>(songIds.Where(id => !string.IsNullOrWhiteSpace(id)), StringComparer.OrdinalIgnoreCase);
+        if (idSet.Count == 0) return 0;
+
+        int removed = pl.Tracks.RemoveAll(t => idSet.Contains(t.Id));
+        if (removed > 0)
+        {
+            pl.TrackCount = pl.Tracks.Count;
+            pl.UpdateTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var nextCover = pl.Tracks.FirstOrDefault(t => ImageUriHelper.HasRealImageUrl(t.PicUrl))?.PicUrl ?? string.Empty;
+            if (pl.Tracks.Count == 0 ||
+                !ImageUriHelper.HasRealImageUrl(pl.CoverImgUrl) ||
+                pl.Tracks.All(t => !string.Equals(t.PicUrl, pl.CoverImgUrl, StringComparison.OrdinalIgnoreCase)))
+            {
+                pl.CoverImgUrl = nextCover;
+            }
+            await WriteJsonSafeAsync(_customPlaylistsFilePath, CustomPlaylists);
+        }
+
+        return removed;
+    }
+
+    private static SongItem CloneSongForStorage(SongItem src) => new()
+    {
+        Id = src.Id,
+        Name = src.Name,
+        PicUrl = src.PicUrl,
+        Artists = src.Artists.Select(a => new ArtistItem { Id = a.Id, Name = a.Name, PicUrl = a.PicUrl }).ToList(),
+        Album = new AlbumItem
+        {
+            Id = src.Album.Id,
+            Name = src.Album.Name,
+            PicUrl = src.Album.PicUrl,
+            PublishTime = src.Album.PublishTime,
+            Size = src.Album.Size,
+            ArtistName = src.Album.ArtistName
+        },
+        DurationMs = src.DurationMs,
+        MvId = src.MvId,
+        Fee = src.Fee,
+        Alias = [.. src.Alias],
+        Translations = [.. src.Translations],
+        Source = src.Source,
+        LocalFilePath = src.LocalFilePath,
+        ChannelCount = src.ChannelCount,
+        FileSize = src.FileSize,
+        ModifiedTime = src.ModifiedTime,
+        QqSongMid = src.QqSongMid,
+        QqSongId = src.QqSongId,
+        EmbeddedLyric = src.EmbeddedLyric,
+        BilibiliBvid = src.BilibiliBvid,
+        BilibiliCid = src.BilibiliCid,
+        BilibiliAid = src.BilibiliAid,
+        KugouHash = src.KugouHash,
+        Kugou320Hash = src.Kugou320Hash,
+        KugouSqHash = src.KugouSqHash,
+        KugouResHash = src.KugouResHash,
+        KugouAlbumId = src.KugouAlbumId,
+        KugouCloudFileId = src.KugouCloudFileId,
+        KuwoRid = src.KuwoRid,
+        MiguCopyrightId = src.MiguCopyrightId,
+        MiguContentId = src.MiguContentId,
+        MiguLrcUrl = src.MiguLrcUrl,
+        QishuiTrackId = src.QishuiTrackId,
+        NativeTrackId = src.NativeTrackId,
+        NativePlayUrl = src.NativePlayUrl,
+        YtmSetVideoId = src.YtmSetVideoId,
+        GdTrackId = src.GdTrackId,
+        GdSource = src.GdSource,
+        NativeQualityHint = src.NativeQualityHint,
+        IsLiked = src.IsLiked
+    };
+
+    /// <summary>
     /// 统计缓存目录磁盘占用（音乐缓存字节、歌词缓存字节、总缓存字节、音频文件数、歌词文件数、占用百分比）
     /// </summary>
     public (long MusicBytes, long LyricBytes, long TotalBytes, int MusicCount, int LyricCount, double UsagePercent) GetCacheSizeStatsFull()
@@ -228,6 +402,17 @@ public class ConfigService
                     Settings.NeteaseCookie = string.Empty;
                     Settings.SavedUid = 0;
                     Settings.LoginType = string.Empty;
+                    Settings.QqMusicCookie = string.Empty;
+                    Settings.QqMusicUin = string.Empty;
+                    Settings.QqMusicNickname = string.Empty;
+                    try
+                    {
+                        var credFile = Path.Combine(_appDataDir, "Credentials", "accounts.dat");
+                        if (File.Exists(credFile)) File.Delete(credFile);
+                    }
+                    catch
+                    {
+                    }
                     await SaveSettingsAsync();
                     break;
                 case "settings":

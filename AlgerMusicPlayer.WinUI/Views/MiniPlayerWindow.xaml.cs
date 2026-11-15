@@ -307,6 +307,8 @@ public sealed partial class MiniPlayerWindow : Window
 
     private void OnMiniBarPointerWheelChanged(object sender, PointerRoutedEventArgs e)
     {
+        // 仅在顶部 64px 迷你控制栏区域响应滚轮调节音量，避免截获下方展开队列的滚轮滚动
+        if (e.GetCurrentPoint(MiniBarContainer).Position.Y > 64) return;
         var delta = e.GetCurrentPoint(RootGrid).Properties.MouseWheelDelta;
         if (delta == 0) return;
 
@@ -314,6 +316,40 @@ public sealed partial class MiniPlayerWindow : Window
         float nextVol = Math.Clamp(_vm.Config.Settings.Volume + step, 0f, 1f);
         _vm.Player.SetVolume(nextVol);
         e.Handled = true;
+    }
+
+    private void OnMiniQueueListViewPointerWheelChanged(object sender, PointerRoutedEventArgs e)
+    {
+        var props = e.GetCurrentPoint(MiniQueueListView).Properties;
+        if (!props.IsHorizontalMouseWheel && props.MouseWheelDelta != 0)
+        {
+            var sv = FindMiniDescendantScrollViewer(MiniQueueListView);
+            if (sv == null)
+            {
+                MiniQueueListView.UpdateLayout();
+                sv = FindMiniDescendantScrollViewer(MiniQueueListView);
+            }
+            if (sv != null && sv.ScrollableHeight > 0)
+            {
+                double step = (props.MouseWheelDelta / 120.0) * 104.0;
+                double targetOffset = Math.Clamp(sv.VerticalOffset - step, 0, sv.ScrollableHeight);
+                sv.ChangeView(null, targetOffset, null, disableAnimation: true);
+            }
+        }
+        e.Handled = true;
+    }
+
+    private static ScrollViewer? FindMiniDescendantScrollViewer(DependencyObject root)
+    {
+        int count = VisualTreeHelper.GetChildrenCount(root);
+        for (int i = 0; i < count; i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            if (child is ScrollViewer sv) return sv;
+            var found = FindMiniDescendantScrollViewer(child);
+            if (found != null) return found;
+        }
+        return null;
     }
 
     private void OnProgressBarPointerPressed(object sender, PointerRoutedEventArgs e)
@@ -378,6 +414,37 @@ public sealed partial class MiniPlayerWindow : Window
 
         int targetHeight = _isPlaylistOpen ? MiniExpandedHeight : MiniCollapsedHeight;
         _appWindow.Resize(new SizeInt32(MiniWindowWidth, targetHeight));
+
+        if (_isPlaylistOpen)
+        {
+            MiniQueueListView.ItemsSource = null;
+            MiniQueueListView.ItemsSource = _vm.Player.Queue;
+            PlaylistPanelBorder.UpdateLayout();
+
+            DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+            {
+                if (!_isPlaylistOpen) return;
+                var cur = _vm.Player.CurrentSong;
+                if (cur == null || _vm.Player.Queue.Count == 0) return;
+                int idx = -1;
+                for (int i = 0; i < _vm.Player.Queue.Count; i++)
+                {
+                    if (_vm.Player.Queue[i].Id == cur.Id)
+                    {
+                        idx = i;
+                        break;
+                    }
+                }
+                if (idx == 0)
+                {
+                    FindMiniDescendantScrollViewer(MiniQueueListView)?.ChangeView(null, 0, null, disableAnimation: true);
+                }
+                else if (idx > 0)
+                {
+                    MiniQueueListView.ScrollIntoView(_vm.Player.Queue[idx], ScrollIntoViewAlignment.Default);
+                }
+            });
+        }
     }
 
     private void OnRestoreClick(object sender, RoutedEventArgs e)

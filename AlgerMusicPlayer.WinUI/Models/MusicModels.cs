@@ -77,17 +77,31 @@ public static class MusicQualityLevel
             return normalized;
         }
 
-        bool isFlacUrl = !string.IsNullOrWhiteSpace(url) &&
-                         url.Contains(".flac", StringComparison.OrdinalIgnoreCase);
+        if (!string.IsNullOrWhiteSpace(url))
+        {
+            if (url.Contains("RS01", StringComparison.OrdinalIgnoreCase))
+            {
+                return Jymaster;
+            }
+            if (url.Contains("Q000", StringComparison.OrdinalIgnoreCase))
+            {
+                return Hires;
+            }
+        }
+
         if (kbps >= 1350 || sizeBytes > 42L * 1024 * 1024)
         {
             return Hires;
         }
+
+        bool isFlacUrl = !string.IsNullOrWhiteSpace(url) &&
+                         (url.Contains(".flac", StringComparison.OrdinalIgnoreCase) ||
+                          url.Contains("F000", StringComparison.OrdinalIgnoreCase));
         if (isFlacUrl || kbps > 400)
         {
             return Lossless;
         }
-        if (kbps >= 240)
+        if (kbps >= 240 || (!string.IsNullOrWhiteSpace(url) && url.Contains("M800", StringComparison.OrdinalIgnoreCase)))
         {
             return Exhigh;
         }
@@ -95,11 +109,54 @@ public static class MusicQualityLevel
         {
             return Higher;
         }
-        if (kbps > 0)
+        if (kbps > 0 ||
+            (!string.IsNullOrWhiteSpace(url) &&
+             (url.Contains("C400", StringComparison.OrdinalIgnoreCase) ||
+              url.Contains("M500", StringComparison.OrdinalIgnoreCase))))
         {
             return Standard;
         }
         return Exhigh;
+    }
+
+    /// <summary>
+    /// 判断是否为解析/切换过程中的临时过渡徽章
+    /// </summary>
+    public static bool IsTransientBadge(string? badge)
+    {
+        var text = (badge ?? string.Empty).Trim();
+        return text is "解析中..." or "切换中..." or "换源中...";
+    }
+
+    /// <summary>
+    /// 从已有徽章文本反推标准音质档位，供一致性校验使用
+    /// </summary>
+    public static string? InferLevelFromBadgeText(string? badge)
+    {
+        if (string.IsNullOrWhiteSpace(badge) || IsTransientBadge(badge))
+        {
+            return null;
+        }
+
+        if (badge.Contains("试听", StringComparison.OrdinalIgnoreCase) ||
+            badge.Contains("Preview", StringComparison.OrdinalIgnoreCase) ||
+            badge.Contains("本地", StringComparison.OrdinalIgnoreCase) ||
+            badge.Contains("B站", StringComparison.OrdinalIgnoreCase) ||
+            badge.Contains("汽水", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        if (badge.Contains("超清母带", StringComparison.OrdinalIgnoreCase)) return Jymaster;
+        if (badge.Contains("Hi-Res", StringComparison.OrdinalIgnoreCase)) return Hires;
+        if (badge.Contains("沉浸环绕", StringComparison.OrdinalIgnoreCase)) return Sky;
+        if (badge.Contains("高清臻音", StringComparison.OrdinalIgnoreCase)) return Jyeffect;
+        if (badge.Contains("无损", StringComparison.OrdinalIgnoreCase) ||
+            badge.Contains("FLAC", StringComparison.OrdinalIgnoreCase)) return Lossless;
+        if (badge.Contains("极高", StringComparison.OrdinalIgnoreCase)) return Exhigh;
+        if (badge.Contains("较高", StringComparison.OrdinalIgnoreCase)) return Higher;
+        if (badge.Contains("标准", StringComparison.OrdinalIgnoreCase)) return Standard;
+        return null;
     }
 
     public static string GetDisplayName(string level) => level switch
@@ -177,7 +234,7 @@ public static class MusicQualityLevel
             return $"标准 {kbps}k";
         }
 
-        return GetShortBadgeName(fallbackUserLevel);
+        return GetShortBadgeName(Exhigh);
     }
 }
 
@@ -350,6 +407,7 @@ public partial class SongItem : ObservableObject
     public string? EmbeddedLyric { get; set; }
     public string? BilibiliBvid { get; set; }
     public long? BilibiliCid { get; set; }
+    public long BilibiliAid { get; set; }
 
     // 第三方平台原生曲库元数据（供第三方音源专区直连与落雪脚本精准解析使用）
     public string? KugouHash { get; set; }
@@ -357,6 +415,7 @@ public partial class SongItem : ObservableObject
     public string? KugouSqHash { get; set; }
     public string? KugouResHash { get; set; }
     public string? KugouAlbumId { get; set; }
+    public long KugouCloudFileId { get; set; }
     public string? KuwoRid { get; set; }
     public string? MiguCopyrightId { get; set; }
     public string? MiguContentId { get; set; }
@@ -364,6 +423,7 @@ public partial class SongItem : ObservableObject
     public string? QishuiTrackId { get; set; }
     public string? NativeTrackId { get; set; }
     public string? NativePlayUrl { get; set; }
+    public string? YtmSetVideoId { get; set; }
     public string? GdTrackId { get; set; }
     public string? GdSource { get; set; }
     public string? NativeQualityHint { get; set; }
@@ -387,6 +447,8 @@ public partial class SongItem : ObservableObject
         "qobuz" => "Qobuz",
         "ytmusic" => "YT Music",
         "bilibili" => "B站",
+        "local" => "本地音乐",
+        "local_custom" => "本地歌单",
         _ => "网易云"
     };
 
@@ -429,14 +491,11 @@ public partial class SongItem : ObservableObject
         set => SetProperty(ref _playingQualityBadge, value);
     }
 
-    // 运行期实际输出的音质档位、码率（kbps）与文件体积，供动态音质菜单高亮及详情展示使用
-    [global::System.Text.Json.Serialization.JsonIgnore]
+    // 运行期实际输出的音质档位、码率（kbps）与文件体积，持久化供启动恢复与动态音质菜单校准使用
     public string? PlayingQualityLevel { get; set; }
 
-    [global::System.Text.Json.Serialization.JsonIgnore]
     public int PlayingBitrateKbps { get; set; }
 
-    [global::System.Text.Json.Serialization.JsonIgnore]
     public long PlayingSizeBytes { get; set; }
 
     private bool _isPlaying;
@@ -709,6 +768,17 @@ public class PlaylistItem
     public bool Subscribed { get; set; }
     public List<string> Tags { get; set; } = [];
     public List<SongItem> Tracks { get; set; } = [];
+
+    public bool IsLocalCustom => string.Equals(Source, "local_custom", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// 是否为平台系统默认歌单（如“我喜欢的音乐”“默认收藏夹”，禁止删除歌单本体）
+    /// </summary>
+    public bool IsSystemDefaultPlaylist { get; set; }
+
+    public Microsoft.UI.Xaml.Visibility LocalCustomDeleteVisibility => IsLocalCustom
+        ? Microsoft.UI.Xaml.Visibility.Visible
+        : Microsoft.UI.Xaml.Visibility.Collapsed;
 
     public string TrackCountBadgeText => $"{TrackCount} 首";
 
@@ -1248,6 +1318,34 @@ public static class PlatformVisualHelper
         "ytmusic" => Windows.UI.Color.FromArgb(255, 255, 0, 51),
         _ => Windows.UI.Color.FromArgb(255, 16, 185, 129)
     };
+
+    /// <summary>
+    /// 获取平台彩色品牌图标路径（优先返回本地磁盘路径，兼容非打包模式）
+    /// </summary>
+    public static string GetLogoUri(string? source)
+    {
+        var fileName = NormalizeKey(source) switch
+        {
+            "netease" => "netease.png",
+            "qq" => "qqmusic.png",
+            "qishui" => "qishui.png",
+            "kugou" => "kugou.png",
+            "kuwo" => "kuwo.png",
+            "migu" => "migu.png",
+            "bilibili" => "bilibili.png",
+            "spotify" => "spotify.png",
+            "apple" => "applemusic.png",
+            "deezer" => "deezer.png",
+            "tidal" => "tidal.png",
+            "ytmusic" => "ytmusic.png",
+            _ => "netease.png"
+        };
+
+        var localPath = global::System.IO.Path.Combine(AppContext.BaseDirectory, "Assets", "Platforms", fileName);
+        return global::System.IO.File.Exists(localPath)
+            ? localPath
+            : $"ms-appx:///Assets/Platforms/{fileName}";
+    }
 
     /// <summary>
     /// 仅在 UI 线程延迟构造与缓存 SolidColorBrush，严禁在后台线程实例化 WinUI DependencyObject

@@ -65,11 +65,17 @@ public sealed partial class MainWindow : Window
     private bool _isTrayIconAdded;
     private bool _isForceExiting;
     private bool _isCloseConfirmDialogOpen;
+    private bool _isPlaylistDeleteDialogOpen;
     private readonly Stack<string> _sectionHistory = new();
     private string _activeSection = "DiscoverHome";
     private bool _isNavigatingBack;
     private readonly MultichannelManagerService _multichannelService;
     private CancellationTokenSource? _surroundTourCts;
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _discoverBannerTimer;
+    private int _currentDiscoverBannerWave;
+    private bool _isDiscoverBannerDeckAActive = true;
+    private bool _isPointerOverDiscoverBanner;
+    private int _discoverBannerAnimToken;
 
     public MainWindow(MainViewModel viewModel)
     {
@@ -145,6 +151,8 @@ public sealed partial class MainWindow : Window
         ViewModel.PropertyChanged += OnViewModelPropertyChanged;
         UpdateTaskbarTitle();
         _ = ViewModel.InitializeAsync();
+        BottomQualityBadgeText.Text = ViewModel.CurrentQualityBadge;
+        ImmersiveQualityBadgeText.Text = ViewModel.CurrentQualityBadge;
         // 后台错峰预热已导入洛雪脚本，确保进入「第三方音源」专区时即时识别各脚本能力并消除冷启动延迟
         App.Services.GetRequiredService<Services.Unblock.LxScriptHostService>()
             .PreWarmScripts(ViewModel.LxScriptsList);
@@ -185,6 +193,7 @@ public sealed partial class MainWindow : Window
         // 综合首页集合与横幅同步事件
         DiscoverNewSongsItemsControl.ItemsSource = ViewModel.FilteredDiscoverNewSongs;
         DiscoverPlaylistsRepeater.ItemsSource = ViewModel.FilteredDiscoverPlaylists;
+        InitializeDiscoverBannerCarousel();
         ViewModel.DiscoverBannersUpdated += SyncDiscoverBannersUi;
         SyncDiscoverBannersUi();
 
@@ -231,14 +240,21 @@ public sealed partial class MainWindow : Window
         CompletedDownloadsListView.ItemsSource = ViewModel.Downloader.CompletedTasks;
         ViewModel.Downloader.StateChanged += () => DispatcherQueue.TryEnqueue(UpdateDownloadViewState);
 
-        // 个人中心集合（创建的歌单、收藏的歌单、收藏的专辑、听歌排行）
+        // 个人中心集合（12 平台账号矩阵、创建的歌单、收藏的歌单、收藏的专辑、听歌排行、本地混合歌单）
+        BindPlatformAuthCenter();
         UserCreatedPlaylistsGrid.ItemsSource = ViewModel.UserCreatedPlaylists;
         UserFavoritePlaylistsGrid.ItemsSource = ViewModel.UserFavoritePlaylists;
         UserSubscribedAlbumsGrid.ItemsSource = ViewModel.UserSubscribedAlbums;
+        LocalCustomPlaylistsGrid.ItemsSource = ViewModel.LocalCustomPlaylists;
+        UserLocalCustomPlaylistsGrid.ItemsSource = ViewModel.LocalCustomPlaylists;
+        ViewModel.LocalCustomPlaylists.CollectionChanged += (_, _) => DispatcherQueue.TryEnqueue(SyncLocalCustomPlaylistsEmptyState);
+        SyncLocalCustomPlaylistsEmptyState();
         UserPlayRecordListView.ItemsSource = ViewModel.UserPlayRecords;
 
         // 播放队列与全屏歌词
         QueueListView.ItemsSource = ViewModel.Player.Queue;
+        ViewModel.Player.Queue.CollectionChanged += (_, _) => DispatcherQueue.TryEnqueue(SyncQueueDrawerCountAndViewport);
+        SyncQueueDrawerCountAndViewport();
         ImmersiveLyricListView.ItemsSource = ViewModel.LyricLines;
         ViewModel.LyricLines.CollectionChanged += (_, _) => DispatcherQueue.TryEnqueue(SyncLyricLinesTypographyAndEmptyState);
 
@@ -341,7 +357,8 @@ public sealed partial class MainWindow : Window
         DiskCacheDirDisplayText.Text = cacheDir;
 
         SelectComboItemByTag(QualityComboBox, s.MusicQuality);
-        var initialQualityBadge = MusicQualityLevel.GetShortBadgeName(s.MusicQuality);
+        var initialQualityBadge = ViewModel.Player.GetEffectiveQualityBadge(ViewModel.Player.CurrentSong);
+        ViewModel.CurrentQualityBadge = initialQualityBadge;
         BottomQualityBadgeText.Text = initialQualityBadge;
         ImmersiveQualityBadgeText.Text = initialQualityBadge;
         SelectComboItemByTag(LanguageComboBox, s.Language);
@@ -582,7 +599,19 @@ public sealed partial class MainWindow : Window
                 case nameof(MainViewModel.DetailSongCountText):
                 case nameof(MainViewModel.CanCollectDetail):
                 case nameof(MainViewModel.IsDetailCollected):
+                case nameof(MainViewModel.CanDeleteCurrentDetail):
                     SyncDetailHeaderUi();
+                    break;
+                case nameof(MainViewModel.CanRemoveFromCurrentDetail):
+                    SyncDetailBatchSelectionUi();
+                    break;
+                case nameof(MainViewModel.IsDetailSelecting):
+                    if (!ViewModel.IsDetailSelecting && DetailBatchActionPanel.Visibility == Visibility.Visible)
+                    {
+                        DetailBatchActionPanel.Visibility = Visibility.Collapsed;
+                        DetailStartSelectBtn.Visibility = Visibility.Visible;
+                        DetailSelectAllCheckBox.IsChecked = false;
+                    }
                     break;
                 case nameof(MainViewModel.CurrentMvTitle):
                 case nameof(MainViewModel.CurrentMvArtist):
@@ -1107,6 +1136,7 @@ public sealed partial class MainWindow : Window
         }
 
         DiscoverHomeView.Visibility = section == "DiscoverHome" ? Visibility.Visible : Visibility.Collapsed;
+        UpdateDiscoverBannerTimerState();
         HomeView.Visibility = section == "Home" ? Visibility.Visible : Visibility.Collapsed;
         AlbumView.Visibility = section == "Album" ? Visibility.Visible : Visibility.Collapsed;
         PodcastView.Visibility = section == "Podcast" ? Visibility.Visible : Visibility.Collapsed;
@@ -1490,6 +1520,10 @@ public sealed partial class MainWindow : Window
                 await ViewModel.Downloader.RefreshCompletedDownloadsAsync();
                 SwitchDownloadTabUi(ViewModel.Downloader.Tasks.Count > 0 ? "downloading" : "downloaded");
                 break;
+            case "User":
+                ViewModel.SyncUserAccountCenterCards();
+                SyncLoginPanelsVisibilityUi();
+                break;
             case "Settings":
                 SyncCookieSettingsRowUi();
                 ViewModel.RefreshCacheStats();
@@ -1677,7 +1711,159 @@ public sealed partial class MainWindow : Window
         if (args.InvokedItemContainer is not NavigationViewItem item || item.Tag is not string tab) return;
         FavoriteSongsListView.Visibility = tab == "Fav" ? Visibility.Visible : Visibility.Collapsed;
         HistorySongsListView.Visibility = tab == "History" ? Visibility.Visible : Visibility.Collapsed;
-        PlayEntranceAnimation(tab == "Fav" ? FavoriteSongsListView : HistorySongsListView, 0, 14, 240);
+        LocalCustomPlaylistsView.Visibility = tab == "LocalPlaylists" ? Visibility.Visible : Visibility.Collapsed;
+        CreateLocalPlaylistInFavBtn.Visibility = tab == "LocalPlaylists" ? Visibility.Visible : Visibility.Collapsed;
+        ClearHistoryBtn.Visibility = tab == "LocalPlaylists" ? Visibility.Collapsed : Visibility.Visible;
+        SyncLocalCustomPlaylistsEmptyState();
+        FrameworkElement target = tab switch
+        {
+            "Fav" => FavoriteSongsListView,
+            "LocalPlaylists" => LocalCustomPlaylistsView,
+            _ => HistorySongsListView
+        };
+        PlayEntranceAnimation(target, 0, 14, 240);
+    }
+
+    private void SyncLocalCustomPlaylistsEmptyState()
+    {
+        if (LocalCustomPlaylistsEmptyHint != null)
+        {
+            LocalCustomPlaylistsEmptyHint.Visibility = ViewModel.LocalCustomPlaylists.Count == 0
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+        }
+        if (UserLocalCustomPlaylistsGrid != null && UserLocalCustomPlaylistsGrid.Visibility == Visibility.Visible)
+        {
+            UpdateUserLibraryEmptyHintUi();
+        }
+    }
+
+    private async void OnQuickCreateLocalPlaylistClick(object sender, RoutedEventArgs e)
+    {
+        await OpenAddToPlaylistDrawerForSongsAsync([], "local_custom", expandCreateForm: true);
+    }
+
+    private async void OnDeleteLocalCustomPlaylistMenuClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement fe && (fe.Tag as PlaylistItem ?? fe.DataContext as PlaylistItem) is PlaylistItem pl)
+        {
+            await ConfirmAndDeletePlaylistAsync(pl);
+        }
+    }
+
+    private void OnCreatedPlaylistContextFlyoutOpening(object sender, object e)
+    {
+        if (sender is not MenuFlyout flyout)
+        {
+            return;
+        }
+
+        MenuFlyoutItem? deleteItem = null;
+        foreach (var item in flyout.Items)
+        {
+            if (item is MenuFlyoutItem mfi)
+            {
+                deleteItem = mfi;
+                break;
+            }
+        }
+
+        var pl = deleteItem?.Tag as PlaylistItem ?? (flyout.Target as FrameworkElement)?.DataContext as PlaylistItem;
+        if (deleteItem != null)
+        {
+            bool canDelete = ViewModel.CanDeletePlaylist(pl);
+            deleteItem.IsEnabled = canDelete;
+            deleteItem.Text = canDelete ? "删除歌单" : "默认/收藏歌单不可删除";
+        }
+    }
+
+    private async void OnDeletePlaylistMenuClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement fe && (fe.Tag as PlaylistItem ?? fe.DataContext as PlaylistItem) is PlaylistItem pl)
+        {
+            await ConfirmAndDeletePlaylistAsync(pl);
+        }
+    }
+
+    private async void OnDeleteCurrentDetailPlaylistClick(object sender, RoutedEventArgs e)
+    {
+        if (ViewModel.CurrentDetailPlaylist is PlaylistItem pl)
+        {
+            await ConfirmAndDeletePlaylistAsync(pl);
+        }
+    }
+
+    /// <summary>
+    /// 弹出二次确认框后删除用户自建歌单（支持本地混合歌单及已登录平台的云端自建歌单）
+    /// </summary>
+    private async Task ConfirmAndDeletePlaylistAsync(PlaylistItem? pl)
+    {
+        if (pl == null || _isPlaylistDeleteDialogOpen)
+        {
+            return;
+        }
+
+        if (!ViewModel.CanDeletePlaylist(pl))
+        {
+            ViewModel.StatusToast = "系统默认或收藏歌单不可删除";
+            return;
+        }
+
+        if (RootLayout?.XamlRoot == null)
+        {
+            return;
+        }
+
+        _isPlaylistDeleteDialogOpen = true;
+        try
+        {
+            string platformLabel = PlatformVisualHelper.GetShortLabel(pl.Source);
+            string contentText = string.Equals(pl.Source, "local_custom", StringComparison.OrdinalIgnoreCase)
+                ? $"确定删除本地混合歌单「{pl.Name}」吗？删除后将无法恢复。"
+                : $"确定删除 {platformLabel} 自建歌单「{pl.Name}」吗？该操作会同步删除账号云端歌单，且不可恢复。";
+
+            var dialog = new ContentDialog
+            {
+                Title = "确认删除歌单",
+                Content = contentText,
+                PrimaryButtonText = "确认删除",
+                CloseButtonText = "取消",
+                DefaultButton = ContentDialogButton.Close,
+                XamlRoot = RootLayout.XamlRoot
+            };
+
+            var result = await dialog.ShowAsync();
+            if (result != ContentDialogResult.Primary)
+            {
+                return;
+            }
+
+            bool hadDetailOpen = ViewModel.CurrentSection == "Detail" && ViewModel.CurrentDetailPlaylist != null;
+            var (ok, msg) = await ViewModel.DeletePlaylistAsync(pl);
+            if (!string.IsNullOrWhiteSpace(msg))
+            {
+                ViewModel.StatusToast = msg;
+            }
+
+            if (ok)
+            {
+                SyncLocalCustomPlaylistsEmptyState();
+                UpdateUserLibraryEmptyHintUi();
+                if (AddToPlaylistDrawerOverlay.Visibility == Visibility.Visible && !string.IsNullOrWhiteSpace(_addToPlaylistTargetPlatform))
+                {
+                    await SelectAddToPlaylistTargetAsync(_addToPlaylistTargetPlatform);
+                }
+
+                if (hadDetailOpen && ViewModel.CurrentDetailPlaylist == null && ViewModel.CurrentSection == "Detail")
+                {
+                    await GoBackSectionAsync();
+                }
+            }
+        }
+        finally
+        {
+            _isPlaylistDeleteDialogOpen = false;
+        }
     }
 
     private void OnLoginMethodNavViewItemInvoked(NavigationView sender, NavigationViewItemInvokedEventArgs args)
@@ -1722,15 +1908,26 @@ public sealed partial class MainWindow : Window
         UserCreatedPlaylistsGrid.Visibility = tab == "Created" ? Visibility.Visible : Visibility.Collapsed;
         UserFavoritePlaylistsGrid.Visibility = tab == "Fav" ? Visibility.Visible : Visibility.Collapsed;
         UserSubscribedAlbumsGrid.Visibility = tab == "Album" ? Visibility.Visible : Visibility.Collapsed;
+        UserLocalCustomPlaylistsGrid.Visibility = tab == "LocalCustom" ? Visibility.Visible : Visibility.Collapsed;
 
         UIElement? active = tab switch
         {
             "Created" => UserCreatedPlaylistsGrid,
             "Fav" => UserFavoritePlaylistsGrid,
             "Album" => UserSubscribedAlbumsGrid,
+            "LocalCustom" => UserLocalCustomPlaylistsGrid,
             _ => null
         };
+        UpdateUserLibraryEmptyHintUi();
         PlayEntranceAnimation(active, 0, 14, 240);
+    }
+
+    private async void OnUserCreatePlaylistQuickClick(object sender, RoutedEventArgs e)
+    {
+        string preferred = UserLocalCustomPlaylistsGrid.Visibility == Visibility.Visible
+            ? "local_custom"
+            : _activeLoginProvider;
+        await OpenAddToPlaylistDrawerForSongsAsync([], preferred, expandCreateForm: true);
     }
 
     private void OnSettingsPillTabClick(object sender, RoutedEventArgs e)
@@ -1886,31 +2083,298 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    private void InitializeDiscoverBannerCarousel()
+    {
+        if (_discoverBannerTimer != null) return;
+        _discoverBannerTimer = DispatcherQueue.CreateTimer();
+        _discoverBannerTimer.Interval = TimeSpan.FromSeconds(5);
+        _discoverBannerTimer.IsRepeating = true;
+        _discoverBannerTimer.Tick += OnDiscoverBannerTimerTick;
+    }
+
+    private int GetDiscoverBannerWaveCount()
+        => Math.Clamp(ViewModel.DiscoverBanners.Count / 3, 0, 5);
+
+    private void UpdateDiscoverBannerTimerState()
+    {
+        if (_discoverBannerTimer == null) return;
+        bool shouldRun = string.Equals(_activeSection, "DiscoverHome", StringComparison.OrdinalIgnoreCase) &&
+                         GetDiscoverBannerWaveCount() > 1 &&
+                         !_isPointerOverDiscoverBanner &&
+                         (_appWindow?.IsVisible ?? true);
+        if (shouldRun)
+        {
+            if (!_discoverBannerTimer.IsRunning)
+            {
+                _discoverBannerTimer.Start();
+            }
+        }
+        else
+        {
+            _discoverBannerTimer.Stop();
+        }
+    }
+
+    private void RestartDiscoverBannerTimer()
+    {
+        if (_discoverBannerTimer == null) return;
+        _discoverBannerTimer.Stop();
+        UpdateDiscoverBannerTimerState();
+    }
+
+    private void OnDiscoverBannerTimerTick(Microsoft.UI.Dispatching.DispatcherQueueTimer sender, object args)
+    {
+        if (GetDiscoverBannerWaveCount() <= 1 || _isPointerOverDiscoverBanner) return;
+        SwitchDiscoverBannerWave(_currentDiscoverBannerWave + 1, direction: 1, animate: true);
+    }
+
     private void SyncDiscoverBannersUi()
     {
-        if (DiscoverBannerImg0 == null || DiscoverBannerImg1 == null || DiscoverBannerImg2 == null)
+        if (DiscoverBannerDeckA == null || DiscoverBannerDeckB == null)
             return;
 
-        (Image Img, Border BadgeBg, TextBlock Badge, TextBlock Headline, TextBlock Subtitle)[] slots =
-        [
-            (DiscoverBannerImg0, DiscoverBannerBadgeBg0, DiscoverBannerBadge0, DiscoverBannerHeadline0, DiscoverBannerSubtitle0),
-            (DiscoverBannerImg1, DiscoverBannerBadgeBg1, DiscoverBannerBadge1, DiscoverBannerHeadline1, DiscoverBannerSubtitle1),
-            (DiscoverBannerImg2, DiscoverBannerBadgeBg2, DiscoverBannerBadge2, DiscoverBannerHeadline2, DiscoverBannerSubtitle2)
-        ];
+        int waveCount = GetDiscoverBannerWaveCount();
+        if (ViewModel.ResetDiscoverBannerWaveOnUpdate || _currentDiscoverBannerWave >= Math.Max(1, waveCount))
+        {
+            _currentDiscoverBannerWave = 0;
+        }
 
+        if (waveCount > 0)
+        {
+            BindDiscoverBannerDeck(_isDiscoverBannerDeckAActive, _currentDiscoverBannerWave);
+        }
+
+        _discoverBannerAnimToken++;
+        var activeDeck = _isDiscoverBannerDeckAActive ? DiscoverBannerDeckA : DiscoverBannerDeckB;
+        var inactiveDeck = _isDiscoverBannerDeckAActive ? DiscoverBannerDeckB : DiscoverBannerDeckA;
+        ResetDiscoverBannerDeckTransform(activeDeck);
+        activeDeck.Visibility = Visibility.Visible;
+        ResetDiscoverBannerDeckTransform(inactiveDeck);
+        inactiveDeck.Visibility = Visibility.Collapsed;
+
+        SyncDiscoverBannerIndicatorsUi(waveCount);
+        UpdateDiscoverBannerTimerState();
+    }
+
+    private void BindDiscoverBannerDeck(bool isDeckA, int waveIndex)
+    {
+        var slots = isDeckA
+            ? new (Border Card, Image Img, Border BadgeBg, TextBlock Badge, TextBlock Headline, TextBlock Subtitle, Button PlayBtn)[]
+            {
+                (DiscoverBannerCardA0, DiscoverBannerImgA0, DiscoverBannerBadgeBgA0, DiscoverBannerBadgeA0, DiscoverBannerHeadlineA0, DiscoverBannerSubtitleA0, DiscoverBannerPlayBtnA0),
+                (DiscoverBannerCardA1, DiscoverBannerImgA1, DiscoverBannerBadgeBgA1, DiscoverBannerBadgeA1, DiscoverBannerHeadlineA1, DiscoverBannerSubtitleA1, DiscoverBannerPlayBtnA1),
+                (DiscoverBannerCardA2, DiscoverBannerImgA2, DiscoverBannerBadgeBgA2, DiscoverBannerBadgeA2, DiscoverBannerHeadlineA2, DiscoverBannerSubtitleA2, DiscoverBannerPlayBtnA2)
+            }
+            : new (Border Card, Image Img, Border BadgeBg, TextBlock Badge, TextBlock Headline, TextBlock Subtitle, Button PlayBtn)[]
+            {
+                (DiscoverBannerCardB0, DiscoverBannerImgB0, DiscoverBannerBadgeBgB0, DiscoverBannerBadgeB0, DiscoverBannerHeadlineB0, DiscoverBannerSubtitleB0, DiscoverBannerPlayBtnB0),
+                (DiscoverBannerCardB1, DiscoverBannerImgB1, DiscoverBannerBadgeBgB1, DiscoverBannerBadgeB1, DiscoverBannerHeadlineB1, DiscoverBannerSubtitleB1, DiscoverBannerPlayBtnB1),
+                (DiscoverBannerCardB2, DiscoverBannerImgB2, DiscoverBannerBadgeBgB2, DiscoverBannerBadgeB2, DiscoverBannerHeadlineB2, DiscoverBannerSubtitleB2, DiscoverBannerPlayBtnB2)
+            };
+
+        int startIndex = waveIndex * 3;
         for (int i = 0; i < slots.Length; i++)
         {
-            if (i >= ViewModel.DiscoverBanners.Count) break;
-            var banner = ViewModel.DiscoverBanners[i];
-            var (img, badgeBg, badge, headline, subtitle) = slots[i];
+            int dataIdx = startIndex + i;
+            if (dataIdx >= ViewModel.DiscoverBanners.Count) break;
+            var banner = ViewModel.DiscoverBanners[dataIdx];
+            var (card, img, badgeBg, badge, headline, subtitle, playBtn) = slots[i];
+            card.Tag = banner;
+            playBtn.Tag = banner;
             SetImageUrlSafe(img, banner.CoverUrl);
-            if (banner.PlatformBrush is Microsoft.UI.Xaml.Media.SolidColorBrush brush)
+            if (banner.PlatformBrush is SolidColorBrush brush)
             {
                 badgeBg.Background = brush;
             }
             badge.Text = banner.BadgeText;
             headline.Text = banner.Headline;
             subtitle.Text = banner.Subtitle;
+        }
+    }
+
+    private static void ResetDiscoverBannerDeckTransform(UIElement deck)
+    {
+        ElementCompositionPreview.SetIsTranslationEnabled(deck, true);
+        var visual = ElementCompositionPreview.GetElementVisual(deck);
+        visual.StopAnimation("Translation");
+        visual.Properties.InsertVector3("Translation", Vector3.Zero);
+    }
+
+    private void SyncDiscoverBannerIndicatorsUi(int waveCount)
+    {
+        int totalWaves = Math.Max(1, waveCount);
+        int activeWave = Math.Clamp(_currentDiscoverBannerWave, 0, totalWaves - 1);
+
+        if (DiscoverBannerWaveText != null)
+        {
+            DiscoverBannerWaveText.Text = $"{activeWave + 1} / {totalWaves}";
+        }
+
+        bool canSlide = waveCount > 1;
+        if (DiscoverBannerPrevBtn != null)
+        {
+            DiscoverBannerPrevBtn.IsEnabled = canSlide;
+            DiscoverBannerPrevBtn.Opacity = canSlide ? (_isPointerOverDiscoverBanner ? 1.0 : 0.86) : 0.35;
+        }
+        if (DiscoverBannerNextBtn != null)
+        {
+            DiscoverBannerNextBtn.IsEnabled = canSlide;
+            DiscoverBannerNextBtn.Opacity = canSlide ? (_isPointerOverDiscoverBanner ? 1.0 : 0.86) : 0.35;
+        }
+
+        if (DiscoverBannerDotsPanel == null) return;
+        var accentBrush = (Brush)Application.Current.Resources["BrandAccentBrush"];
+        var inactiveBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(95, 160, 170, 185));
+
+        if (DiscoverBannerDotsPanel.Children.Count != totalWaves)
+        {
+            DiscoverBannerDotsPanel.Children.Clear();
+            for (int i = 0; i < totalWaves; i++)
+            {
+                var dot = new Border
+                {
+                    Tag = i,
+                    Height = 6,
+                    CornerRadius = new CornerRadius(3),
+                    VerticalAlignment = VerticalAlignment.Center
+                };
+                dot.Tapped += OnDiscoverBannerDotTapped;
+                ToolTipService.SetToolTip(dot, $"切换至第 {i + 1} 波推荐");
+                DiscoverBannerDotsPanel.Children.Add(dot);
+            }
+        }
+
+        for (int i = 0; i < DiscoverBannerDotsPanel.Children.Count; i++)
+        {
+            if (DiscoverBannerDotsPanel.Children[i] is Border dot)
+            {
+                bool isCur = i == activeWave;
+                dot.Width = isCur ? 22 : 7;
+                dot.Background = isCur ? accentBrush : inactiveBrush;
+                dot.Tag = i;
+            }
+        }
+    }
+
+    private void SwitchDiscoverBannerWave(int targetWave, int direction, bool animate = true)
+    {
+        int waveCount = GetDiscoverBannerWaveCount();
+        if (waveCount <= 1) return;
+
+        int normalizedTarget = ((targetWave % waveCount) + waveCount) % waveCount;
+        if (normalizedTarget == _currentDiscoverBannerWave) return;
+
+        bool incomingIsDeckA = !_isDiscoverBannerDeckAActive;
+        var outgoingDeck = _isDiscoverBannerDeckAActive ? DiscoverBannerDeckA : DiscoverBannerDeckB;
+        var incomingDeck = incomingIsDeckA ? DiscoverBannerDeckA : DiscoverBannerDeckB;
+        if (outgoingDeck == null || incomingDeck == null) return;
+
+        BindDiscoverBannerDeck(incomingIsDeckA, normalizedTarget);
+        _currentDiscoverBannerWave = normalizedTarget;
+        _isDiscoverBannerDeckAActive = incomingIsDeckA;
+        SyncDiscoverBannerIndicatorsUi(waveCount);
+
+        int token = ++_discoverBannerAnimToken;
+        if (!animate ||
+            ViewModel.Config.Settings.NoAnimate ||
+            DiscoverBannerViewport == null ||
+            DiscoverBannerViewport.ActualWidth <= 20)
+        {
+            ResetDiscoverBannerDeckTransform(incomingDeck);
+            incomingDeck.Visibility = Visibility.Visible;
+            ResetDiscoverBannerDeckTransform(outgoingDeck);
+            outgoingDeck.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        float travel = (float)(DiscoverBannerViewport.ActualWidth + 14.0);
+        float dir = direction >= 0 ? 1f : -1f;
+
+        ElementCompositionPreview.SetIsTranslationEnabled(outgoingDeck, true);
+        ElementCompositionPreview.SetIsTranslationEnabled(incomingDeck, true);
+        var outgoingVisual = ElementCompositionPreview.GetElementVisual(outgoingDeck);
+        var incomingVisual = ElementCompositionPreview.GetElementVisual(incomingDeck);
+        outgoingVisual.StopAnimation("Translation");
+        incomingVisual.StopAnimation("Translation");
+
+        outgoingVisual.Properties.InsertVector3("Translation", Vector3.Zero);
+        incomingVisual.Properties.InsertVector3("Translation", new Vector3(dir * travel, 0f, 0f));
+        outgoingDeck.Visibility = Visibility.Visible;
+        incomingDeck.Visibility = Visibility.Visible;
+
+        double speed = Math.Clamp(ViewModel.Config.Settings.AnimationSpeed, 0.2, 3.0);
+        var duration = TimeSpan.FromMilliseconds(Math.Max(120, 380 / speed));
+        var compositor = incomingVisual.Compositor;
+        var ease = compositor.CreateCubicBezierEasingFunction(new Vector2(0.22f, 1.0f), new Vector2(0.36f, 1.0f));
+        var batch = compositor.CreateScopedBatch(Microsoft.UI.Composition.CompositionBatchTypes.Animation);
+
+        var outAnim = compositor.CreateVector3KeyFrameAnimation();
+        outAnim.InsertKeyFrame(0f, Vector3.Zero);
+        outAnim.InsertKeyFrame(1f, new Vector3(-dir * travel, 0f, 0f), ease);
+        outAnim.Duration = duration;
+
+        var inAnim = compositor.CreateVector3KeyFrameAnimation();
+        inAnim.InsertKeyFrame(0f, new Vector3(dir * travel, 0f, 0f));
+        inAnim.InsertKeyFrame(1f, Vector3.Zero, ease);
+        inAnim.Duration = duration;
+
+        outgoingVisual.StartAnimation("Translation", outAnim);
+        incomingVisual.StartAnimation("Translation", inAnim);
+        batch.End();
+
+        batch.Completed += (_, _) =>
+        {
+            if (token != _discoverBannerAnimToken) return;
+            outgoingDeck.Visibility = Visibility.Collapsed;
+            ResetDiscoverBannerDeckTransform(outgoingDeck);
+        };
+    }
+
+    private void OnDiscoverBannerViewportSizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (DiscoverBannerViewportClip != null)
+        {
+            DiscoverBannerViewportClip.Rect = new global::Windows.Foundation.Rect(
+                0,
+                0,
+                Math.Max(0, e.NewSize.Width),
+                Math.Max(188, e.NewSize.Height));
+        }
+    }
+
+    private void OnDiscoverBannerCarouselPointerEntered(object sender, PointerRoutedEventArgs e)
+    {
+        _isPointerOverDiscoverBanner = true;
+        SyncDiscoverBannerIndicatorsUi(GetDiscoverBannerWaveCount());
+        UpdateDiscoverBannerTimerState();
+    }
+
+    private void OnDiscoverBannerCarouselPointerExited(object sender, PointerRoutedEventArgs e)
+    {
+        _isPointerOverDiscoverBanner = false;
+        SyncDiscoverBannerIndicatorsUi(GetDiscoverBannerWaveCount());
+        UpdateDiscoverBannerTimerState();
+    }
+
+    private void OnDiscoverBannerPrevClick(object sender, RoutedEventArgs e)
+    {
+        SwitchDiscoverBannerWave(_currentDiscoverBannerWave - 1, direction: -1);
+        RestartDiscoverBannerTimer();
+    }
+
+    private void OnDiscoverBannerNextClick(object sender, RoutedEventArgs e)
+    {
+        SwitchDiscoverBannerWave(_currentDiscoverBannerWave + 1, direction: 1);
+        RestartDiscoverBannerTimer();
+    }
+
+    private void OnDiscoverBannerDotTapped(object sender, TappedRoutedEventArgs e)
+    {
+        if (sender is Border dot && dot.Tag is int target && target != _currentDiscoverBannerWave)
+        {
+            int dir = target > _currentDiscoverBannerWave ? 1 : -1;
+            SwitchDiscoverBannerWave(target, dir);
+            RestartDiscoverBannerTimer();
         }
     }
 
@@ -1929,7 +2393,7 @@ public sealed partial class MainWindow : Window
         while (cur != null)
         {
             if (cur is Button) return true;
-            cur = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetParent(cur);
+            cur = VisualTreeHelper.GetParent(cur);
         }
         return false;
     }
@@ -1942,20 +2406,18 @@ public sealed partial class MainWindow : Window
     private void OnDiscoverBannerTapped(object sender, TappedRoutedEventArgs e)
     {
         if (IsDescendantOfButton(e.OriginalSource as DependencyObject)) return;
-        if (sender is FrameworkElement fe && int.TryParse(fe.Tag?.ToString(), out int idx) &&
-            idx >= 0 && idx < ViewModel.DiscoverBanners.Count)
+        if (sender is FrameworkElement fe && fe.Tag is DiscoverBannerItem banner)
         {
-            ViewModel.OpenDiscoverBannerDetail(ViewModel.DiscoverBanners[idx]);
+            ViewModel.OpenDiscoverBannerDetail(banner);
         }
     }
 
     private async void OnDiscoverBannerPlayClick(object sender, RoutedEventArgs e)
     {
-        if (sender is Button btn && int.TryParse(btn.Tag?.ToString(), out int idx) &&
-            idx >= 0 && idx < ViewModel.DiscoverBanners.Count)
+        if (sender is Button btn && btn.Tag is DiscoverBannerItem banner)
         {
             ViewModel.IsFmModeActive = false;
-            await ViewModel.PlayDiscoverBannerAsync(ViewModel.DiscoverBanners[idx]);
+            await ViewModel.PlayDiscoverBannerAsync(banner);
         }
     }
 
@@ -2155,6 +2617,7 @@ public sealed partial class MainWindow : Window
             DetailCollectIcon.ClearValue(IconElement.ForegroundProperty);
         }
         DetailCollectText.Text = ViewModel.IsDetailCollected ? "取消收藏" : "收藏";
+        DetailDeletePlaylistBtn.Visibility = ViewModel.CanDeleteCurrentDetail ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void OnDetailSongItemClick(object sender, ItemClickEventArgs e)
@@ -2207,14 +2670,39 @@ public sealed partial class MainWindow : Window
 
     private async void OnToggleCollectDetailClick(object sender, RoutedEventArgs e)
     {
-        if (!ViewModel.CanCollectDetail || ViewModel.DetailPlaylistId <= 0) return;
+        if (!ViewModel.CanCollectDetail) return;
+
+        bool targetCollect = !ViewModel.IsDetailCollected;
+        if (string.Equals(ViewModel.DetailType, "qqPlaylist", StringComparison.OrdinalIgnoreCase))
+        {
+            if (string.IsNullOrWhiteSpace(ViewModel.DetailPlaylistDissId)) return;
+            if (ViewModel.CurrentQqUser == null || string.IsNullOrWhiteSpace(ViewModel.Config.Settings.QqMusicCookie))
+            {
+                ViewModel.StatusToast = "请先在个人中心登录 QQ 音乐账号后再收藏歌单";
+                return;
+            }
+
+            bool qqOk = await ViewModel.QqMusic.SubscribePlaylistAsync(ViewModel.DetailPlaylistDissId, targetCollect);
+            if (qqOk)
+            {
+                ViewModel.IsDetailCollected = targetCollect;
+                ViewModel.StatusToast = targetCollect ? "已收藏 QQ 音乐歌单" : "已取消收藏 QQ 音乐歌单";
+                _ = ViewModel.RefreshQqUserProfileAsync();
+            }
+            else
+            {
+                ViewModel.StatusToast = "QQ 音乐收藏操作失败，请确认登录态是否有效后重试";
+            }
+            return;
+        }
+
+        if (ViewModel.DetailPlaylistId <= 0) return;
         if (ViewModel.CurrentUser == null || ViewModel.Config.Settings.LoginType == "uid")
         {
             ViewModel.StatusToast = "请先使用扫码或 Cookie 登录网易云账号后再收藏歌单";
             return;
         }
 
-        bool targetCollect = !ViewModel.IsDetailCollected;
         bool ok = await ViewModel.Api.SubscribePlaylistAsync(ViewModel.DetailPlaylistId, targetCollect);
         if (ok)
         {
@@ -2264,6 +2752,11 @@ public sealed partial class MainWindow : Window
         int total = ViewModel.FilteredDetailSongs.Count;
         int selected = ViewModel.FilteredDetailSongs.Count(s => s.IsBatchSelected);
         DetailBatchDownloadText.Text = $"下载 ({selected})";
+        DetailBatchAddToPlaylistText.Text = $"添加到歌单 ({selected})";
+        DetailBatchRemoveFromPlaylistText.Text = $"从歌单删除 ({selected})";
+        DetailBatchRemoveFromPlaylistBtn.Visibility = ViewModel.CanRemoveFromCurrentDetail
+            ? Visibility.Visible
+            : Visibility.Collapsed;
         if (total == 0 || selected == 0)
         {
             DetailSelectAllCheckBox.IsChecked = false;
@@ -2276,6 +2769,28 @@ public sealed partial class MainWindow : Window
         {
             DetailSelectAllCheckBox.IsChecked = null;
         }
+    }
+
+    private async void OnDetailBatchAddToPlaylistClick(object sender, RoutedEventArgs e)
+    {
+        var selected = ViewModel.FilteredDetailSongs.Where(s => s.IsBatchSelected).ToList();
+        if (selected.Count == 0)
+        {
+            ViewModel.StatusToast = "请先勾选要添加到歌单的歌曲";
+            return;
+        }
+        await OpenAddToPlaylistDrawerForSongsAsync(selected);
+    }
+
+    private async void OnDetailBatchRemoveFromPlaylistClick(object sender, RoutedEventArgs e)
+    {
+        var selected = ViewModel.FilteredDetailSongs.Where(s => s.IsBatchSelected).ToList();
+        if (selected.Count == 0)
+        {
+            ViewModel.StatusToast = "请先勾选要从歌单删除的歌曲";
+            return;
+        }
+        await ViewModel.RemoveSongsFromCurrentDetailAsync(selected);
     }
 
     private async void OnDetailBatchDownloadClick(object sender, RoutedEventArgs e)
@@ -2417,10 +2932,11 @@ public sealed partial class MainWindow : Window
         bool isDisliked = ViewModel.Config.Settings.DislikedSongIds.Contains(song.Id);
         ContextMenuDislikeText.Text = isDisliked ? "取消不感兴趣" : "不感兴趣";
 
-        bool canRemove = isLocal || (ViewModel.CurrentSection == "Detail" && ViewModel.CanRemoveFromCurrentDetail);
+        bool inEditableDetail = ViewModel.CurrentSection == "Detail" && ViewModel.CanRemoveFromCurrentDetail;
+        bool canRemove = inEditableDetail || isLocal;
         ContextMenuRemoveDivider.Visibility = canRemove ? Visibility.Visible : Visibility.Collapsed;
         ContextMenuRemoveBtn.Visibility = canRemove ? Visibility.Visible : Visibility.Collapsed;
-        ContextMenuRemoveText.Text = isLocal ? "从本地列表移除" : "从歌单中删除";
+        ContextMenuRemoveText.Text = inEditableDetail ? "从歌单中删除" : "从本地列表移除";
 
         var options = new Microsoft.UI.Xaml.Controls.Primitives.FlyoutShowOptions
         {
@@ -2535,60 +3051,135 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private string _addToPlaylistTargetPlatform = "netease";
+    private string _addToPlaylistTargetPlatform = "local_custom";
+    private List<SongItem> _pendingAddSongs = [];
+    private List<PlaylistWriteTargetOption> _addToPlaylistTargets = [];
 
-    private async void OnContextMenuAddToNeteasePlaylistClick(object sender, RoutedEventArgs e)
+    private async void OnContextMenuAddToPlaylistClick(object sender, RoutedEventArgs e)
     {
         SongContextMenuFlyout.Hide();
-        await OpenAddToPlaylistDrawerAsync("netease");
-    }
-
-    private async void OnContextMenuAddToQqPlaylistClick(object sender, RoutedEventArgs e)
-    {
-        SongContextMenuFlyout.Hide();
-        await OpenAddToPlaylistDrawerAsync("qq");
-    }
-
-    private async Task OpenAddToPlaylistDrawerAsync(string targetPlatform)
-    {
         if (_contextMenuSong == null) return;
-        _addToPlaylistTargetPlatform = targetPlatform;
 
-        if (targetPlatform == "qq")
+        string preferred = ViewModel.CurrentSection == "Detail" && ViewModel.CurrentDetailPlaylist != null
+            ? (ViewModel.CurrentDetailPlaylist.IsLocalCustom ? "local_custom" : ViewModel.CurrentDetailPlaylist.Source)
+            : ViewModel.SelectedUserPlatformKey;
+        await OpenAddToPlaylistDrawerForSongsAsync([_contextMenuSong], preferred);
+    }
+
+    private async void OnContextMenuAddToLocalPlaylistClick(object sender, RoutedEventArgs e)
+    {
+        SongContextMenuFlyout.Hide();
+        if (_contextMenuSong == null) return;
+        await OpenAddToPlaylistDrawerForSongsAsync([_contextMenuSong], "local_custom");
+    }
+
+    private async Task OpenAddToPlaylistDrawerForSongsAsync(
+        IReadOnlyList<SongItem> songs,
+        string? preferredTarget = null,
+        bool expandCreateForm = false)
+    {
+        _pendingAddSongs = songs.Where(static s => s != null).ToList();
+        _addToPlaylistTargets = ViewModel.GetAvailablePlaylistWriteTargets();
+        if (_addToPlaylistTargets.Count == 0)
+            _addToPlaylistTargets.Add(new("local_custom", "本地混合歌单", "local_custom"));
+
+        var reqKey = (preferredTarget ?? string.Empty).Trim().ToLowerInvariant();
+        if (reqKey == "tx") reqKey = "qq";
+        if (reqKey == "kg") reqKey = "kugou";
+        if (reqKey == "mg") reqKey = "migu";
+
+        var matchedTarget = _addToPlaylistTargets.FirstOrDefault(t =>
+            string.Equals(t.Key, reqKey, StringComparison.OrdinalIgnoreCase));
+        if (!string.IsNullOrWhiteSpace(reqKey) && matchedTarget == null && reqKey != "local_custom")
         {
-            if (string.IsNullOrWhiteSpace(ViewModel.Config.Settings.QqMusicCookie))
-            {
-                ViewModel.StatusToast = "添加到 QQ 音乐歌单需要先登录 QQ 音乐账号";
-                return;
-            }
-            if (ViewModel.QqCreatedPlaylists.Count == 0)
-            {
-                await ViewModel.RefreshQqUserProfileAsync();
-            }
-            AddToPlaylistDrawerTitleText.Text = "添加到 QQ 音乐歌单";
-            NewPlaylistPrivacyRow.Visibility = Visibility.Collapsed;
-            AddToPlaylistTargetListView.ItemsSource = ViewModel.QqCreatedPlaylists;
-        }
-        else
-        {
-            if (ViewModel.CurrentUser == null || ViewModel.Config.Settings.LoginType == "uid")
-            {
-                ViewModel.StatusToast = "添加到网易云歌单需要先使用扫码或 Cookie 登录网易云账号";
-                return;
-            }
-            AddToPlaylistDrawerTitleText.Text = "添加到网易云歌单";
-            NewPlaylistPrivacyRow.Visibility = Visibility.Visible;
-            AddToPlaylistTargetListView.ItemsSource = ViewModel.UserCreatedPlaylists;
+            ViewModel.StatusToast = "该平台尚未登录或不支持歌单写入，已自动切换为“本地混合歌单”";
         }
 
-        CreatePlaylistFormPanel.Visibility = Visibility.Collapsed;
-        CreatePlaylistToggleIcon.Glyph = "\uE710";
-        CreatePlaylistToggleText.Text = "创建新歌单";
+        _addToPlaylistTargetPlatform = matchedTarget?.Key ?? _addToPlaylistTargets[0].Key;
+        RenderAddToPlaylistPlatformPills();
+
+        CreatePlaylistFormPanel.Visibility = expandCreateForm ? Visibility.Visible : Visibility.Collapsed;
+        CreatePlaylistToggleIcon.Glyph = expandCreateForm ? "\uE711" : "\uE710";
+        CreatePlaylistToggleText.Text = expandCreateForm ? "取消创建" : "创建新歌单";
         NewPlaylistNameInput.Text = string.Empty;
         NewPlaylistPrivateSwitch.IsOn = false;
+
         AddToPlaylistDrawerOverlay.Visibility = Visibility.Visible;
         PlayEntranceAnimation(AddToPlaylistBackdrop, 0, 0, 200);
         PlayEntranceAnimation(AddToPlaylistDrawerPanel, 340, 0, 260);
+
+        await SelectAddToPlaylistTargetAsync(_addToPlaylistTargetPlatform);
+    }
+
+    private void RenderAddToPlaylistPlatformPills()
+    {
+        AddToPlaylistPlatformPillsPanel.Children.Clear();
+        foreach (var opt in _addToPlaylistTargets)
+        {
+            var btn = new Button
+            {
+                Content = opt.DisplayName,
+                Tag = opt.Key,
+                CornerRadius = new CornerRadius(14),
+                Padding = new Thickness(12, 5, 12, 5),
+                FontSize = 12,
+                BorderThickness = new Thickness(1)
+            };
+            bool active = string.Equals(opt.Key, _addToPlaylistTargetPlatform, StringComparison.OrdinalIgnoreCase);
+            ApplyDynamicAccentButtonState(btn, active);
+            btn.Click += OnAddToPlaylistPlatformPillClick;
+            AddToPlaylistPlatformPillsPanel.Children.Add(btn);
+        }
+    }
+
+    private async void OnAddToPlaylistPlatformPillClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button btn && btn.Tag is string key &&
+            !string.Equals(key, _addToPlaylistTargetPlatform, StringComparison.OrdinalIgnoreCase))
+        {
+            await SelectAddToPlaylistTargetAsync(key);
+        }
+    }
+
+    private async Task SelectAddToPlaylistTargetAsync(string targetKey)
+    {
+        _addToPlaylistTargetPlatform = targetKey;
+        foreach (var child in AddToPlaylistPlatformPillsPanel.Children)
+        {
+            if (child is Button b && b.Tag is string key)
+                ApplyDynamicAccentButtonState(b, string.Equals(key, targetKey, StringComparison.OrdinalIgnoreCase));
+        }
+
+        var opt = _addToPlaylistTargets.FirstOrDefault(t => string.Equals(t.Key, targetKey, StringComparison.OrdinalIgnoreCase))
+                  ?? new PlaylistWriteTargetOption(targetKey, targetKey, targetKey);
+        AddToPlaylistDrawerTitleText.Text = _pendingAddSongs.Count switch
+        {
+            0 => $"新建歌单 · {opt.DisplayName}",
+            1 => $"添加到 {opt.DisplayName} 歌单",
+            _ => $"批量添加 {_pendingAddSongs.Count} 首 · {opt.DisplayName}"
+        };
+
+        NewPlaylistPrivacyRow.Visibility = targetKey is "netease" or "kugou" or "spotify" or "deezer" or "ytmusic" or "bilibili"
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+
+        AddToPlaylistEmptyHintText.Text = "正在加载歌单...";
+        AddToPlaylistEmptyHintText.Visibility = Visibility.Visible;
+        AddToPlaylistTargetListView.ItemsSource = null;
+
+        var playlists = await ViewModel.GetWritablePlaylistsForTargetAsync(targetKey);
+        if (!string.Equals(_addToPlaylistTargetPlatform, targetKey, StringComparison.OrdinalIgnoreCase)) return;
+
+        AddToPlaylistTargetListView.ItemsSource = playlists;
+        if (playlists.Count == 0)
+        {
+            AddToPlaylistEmptyHintText.Text = $"在“{opt.DisplayName}”下暂无可写歌单，请点击上方“创建新歌单”。";
+            AddToPlaylistEmptyHintText.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            AddToPlaylistEmptyHintText.Visibility = Visibility.Collapsed;
+        }
     }
 
     private async Task HideAddToPlaylistDrawerAnimatedAsync()
@@ -2625,39 +3216,28 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        if (_addToPlaylistTargetPlatform == "qq")
+        var created = await ViewModel.CreatePlaylistForTargetAsync(
+            _addToPlaylistTargetPlatform,
+            name,
+            NewPlaylistPrivateSwitch.IsOn);
+        if (created == null)
         {
-            var createdQq = await ViewModel.QqMusic.CreatePlaylistAsync(name);
-            if (createdQq != null)
-            {
-                CreatePlaylistFormPanel.Visibility = Visibility.Collapsed;
-                CreatePlaylistToggleIcon.Glyph = "\uE710";
-                CreatePlaylistToggleText.Text = "创建新歌单";
-                NewPlaylistNameInput.Text = string.Empty;
-                await ViewModel.RefreshQqUserProfileAsync();
-                AddToPlaylistTargetListView.ItemsSource = ViewModel.QqCreatedPlaylists;
-                ViewModel.StatusToast = $"已在 QQ 音乐创建歌单《{name}》";
-            }
-            else
-            {
-                ViewModel.StatusToast = "创建 QQ 音乐歌单失败，请检查登录状态";
-            }
+            ViewModel.StatusToast = "创建歌单失败，请检查该平台登录状态";
             return;
         }
 
-        var created = await ViewModel.Api.CreatePlaylistAsync(name, NewPlaylistPrivateSwitch.IsOn);
-        if (created != null)
+        CreatePlaylistFormPanel.Visibility = Visibility.Collapsed;
+        CreatePlaylistToggleIcon.Glyph = "\uE710";
+        CreatePlaylistToggleText.Text = "创建新歌单";
+        NewPlaylistNameInput.Text = string.Empty;
+
+        if (_pendingAddSongs.Count == 0)
         {
-            CreatePlaylistFormPanel.Visibility = Visibility.Collapsed;
-            CreatePlaylistToggleIcon.Glyph = "\uE710";
-            CreatePlaylistToggleText.Text = "创建新歌单";
-            NewPlaylistNameInput.Text = string.Empty;
-            await ViewModel.RefreshUserProfileAsync();
-            ViewModel.StatusToast = $"已在网易云创建歌单《{name}》";
+            await HideAddToPlaylistDrawerAnimatedAsync();
         }
         else
         {
-            ViewModel.StatusToast = "创建歌单失败，请检查登录状态";
+            await SelectAddToPlaylistTargetAsync(_addToPlaylistTargetPlatform);
         }
     }
 
@@ -2683,41 +3263,25 @@ public sealed partial class MainWindow : Window
 
     private async void OnAddToTargetPlaylistItemClick(object sender, ItemClickEventArgs e)
     {
-        if (e.ClickedItem is PlaylistItem playlist && _contextMenuSong != null)
-        {
-            if (_addToPlaylistTargetPlatform == "qq" || playlist.Source == "qq")
-            {
-                int dirId = await ViewModel.QqMusic.ResolvePlaylistDirIdAsync(playlist);
-                var (okQq, msgQq) = await ViewModel.QqMusic.AddOrRemoveSongInPlaylistAsync(_contextMenuSong, dirId, isDelete: false);
-                if (okQq)
-                {
-                    ViewModel.StatusToast = $"已将《{_contextMenuSong.Name}》添加到 QQ 音乐歌单《{playlist.Name}》";
-                    await HideAddToPlaylistDrawerAnimatedAsync();
-                    _ = ViewModel.RefreshQqUserProfileAsync();
-                }
-                else
-                {
-                    ViewModel.StatusToast = msgQq;
-                }
-                return;
-            }
+        if (e.ClickedItem is not PlaylistItem playlist) return;
 
-            long neteaseId = await ResolveNeteaseSongNumericIdAsync(_contextMenuSong);
-            if (neteaseId <= 0)
+        if (_pendingAddSongs.Count == 0)
+        {
+            await HideAddToPlaylistDrawerAnimatedAsync();
+            await ViewModel.OpenPlaylistDetailAsync(playlist);
+            return;
+        }
+
+        var (ok, _) = await ViewModel.AddSongsToTargetPlaylistAsync(
+            _addToPlaylistTargetPlatform,
+            playlist,
+            _pendingAddSongs);
+        if (ok)
+        {
+            await HideAddToPlaylistDrawerAnimatedAsync();
+            if (ViewModel.IsDetailSelecting)
             {
-                ViewModel.StatusToast = $"未能在网易云曲库匹配到《{_contextMenuSong.Name}》";
-                return;
-            }
-            bool ok = await ViewModel.Api.UpdatePlaylistTracksAsync("add", playlist.Id, [neteaseId]);
-            if (ok)
-            {
-                ViewModel.StatusToast = $"已将《{_contextMenuSong.Name}》添加到网易云歌单《{playlist.Name}》";
-                await HideAddToPlaylistDrawerAnimatedAsync();
-                _ = ViewModel.RefreshUserProfileAsync();
-            }
-            else
-            {
-                ViewModel.StatusToast = "添加到网易云歌单失败（歌曲可能已存在或登录态已过期）";
+                ViewModel.IsDetailSelecting = false;
             }
         }
     }
@@ -2800,48 +3364,14 @@ public sealed partial class MainWindow : Window
     {
         SongContextMenuFlyout.Hide();
         if (_contextMenuSong == null) return;
+        if (ViewModel.CurrentSection == "Detail" && ViewModel.CanRemoveFromCurrentDetail)
+        {
+            await ViewModel.RemoveSongsFromCurrentDetailAsync([_contextMenuSong]);
+            return;
+        }
         if (_contextMenuSong.IsLocalSong)
         {
             await ViewModel.RemoveSongFromLocalListAsync(_contextMenuSong);
-            return;
-        }
-        if (ViewModel.CurrentSection == "Detail" && ViewModel.CanRemoveFromCurrentDetail)
-        {
-            if (ViewModel.DetailType == "qqPlaylist")
-            {
-                int dirId = ViewModel.DetailQqDirId > 0 ? ViewModel.DetailQqDirId : 201;
-                var (okQq, msgQq) = await ViewModel.QqMusic.AddOrRemoveSongInPlaylistAsync(_contextMenuSong, dirId, isDelete: true);
-                if (okQq)
-                {
-                    ViewModel.DetailSongs.Remove(_contextMenuSong);
-                    ViewModel.RebuildFilteredDetailSongs();
-                    ViewModel.DetailSongCountText = $"{ViewModel.DetailSongs.Count} 首音乐";
-                    ViewModel.StatusToast = $"已从 QQ 音乐歌单中删除：《{_contextMenuSong.Name}》";
-                    _ = ViewModel.RefreshQqUserProfileAsync();
-                }
-                else
-                {
-                    ViewModel.StatusToast = msgQq;
-                }
-                return;
-            }
-
-            if (ViewModel.DetailPlaylistId > 0)
-            {
-                bool ok = await ViewModel.Api.UpdatePlaylistTracksAsync("del", ViewModel.DetailPlaylistId, [_contextMenuSong.NumericId]);
-                if (ok)
-                {
-                    ViewModel.DetailSongs.Remove(_contextMenuSong);
-                    ViewModel.RebuildFilteredDetailSongs();
-                    ViewModel.DetailSongCountText = $"{ViewModel.DetailSongs.Count} 首音乐";
-                    ViewModel.StatusToast = $"已从歌单中删除：《{_contextMenuSong.Name}》";
-                    _ = ViewModel.RefreshUserProfileAsync();
-                }
-                else
-                {
-                    ViewModel.StatusToast = "从歌单删除歌曲失败";
-                }
-            }
         }
     }
 
@@ -4730,17 +5260,21 @@ public sealed partial class MainWindow : Window
 
     private void SwitchLoginProviderUi(string provider)
     {
-        _activeLoginProvider = string.Equals(provider, "qq", StringComparison.OrdinalIgnoreCase) ? "qq" : "netease";
-        bool isQq = _activeLoginProvider == "qq";
+        _activeLoginProvider = string.IsNullOrWhiteSpace(provider) ? "netease" : provider.Trim().ToLowerInvariant();
+        bool isNetease = string.Equals(_activeLoginProvider, "netease", StringComparison.OrdinalIgnoreCase);
+        bool isQq = string.Equals(_activeLoginProvider, "qq", StringComparison.OrdinalIgnoreCase);
 
-        ApplyDynamicAccentButtonState(LoginProviderNeteaseBtn, !isQq);
+        ApplyDynamicAccentButtonState(LoginProviderNeteaseBtn, isNetease);
         ApplyDynamicAccentButtonState(LoginProviderQqBtn, isQq);
 
+        _ = ViewModel.SwitchUserCenterPlatformAsync(_activeLoginProvider);
         SyncLoginPanelsVisibilityUi();
 
         if (_isInitialized)
         {
-            var activePanel = isQq ? QqLoginProviderPanel : NeteaseLoginProviderPanel;
+            FrameworkElement activePanel = isQq
+                ? QqLoginProviderPanel
+                : (isNetease ? NeteaseLoginProviderPanel : MultiPlatformAuthProviderPanel);
             if (activePanel.Visibility == Visibility.Visible)
             {
                 PlayEntranceAnimation(activePanel, 0, 14, 240);
@@ -4755,24 +5289,34 @@ public sealed partial class MainWindow : Window
 
     private void SyncLoginPanelsVisibilityUi()
     {
+        bool isNetease = string.Equals(_activeLoginProvider, "netease", StringComparison.OrdinalIgnoreCase);
         bool isQq = string.Equals(_activeLoginProvider, "qq", StringComparison.OrdinalIgnoreCase);
         bool isNeteaseLoggedIn = ViewModel.CurrentUser != null;
         bool isQqLoggedIn = ViewModel.CurrentQqUser != null;
 
-        // 顶部只保留唯一绿色状态文案
-        UserLoginStatusText.Text = isQq ? ViewModel.QqLoginStatusText : ViewModel.LoginStatusText;
+        // 顶部只保留唯一绿色状态文案（其余 10 平台由 SyncMultiPlatformPanelsAndLibraryUi 填充）
+        if (isQq)
+        {
+            UserLoginStatusText.Text = ViewModel.QqLoginStatusText;
+        }
+        else if (isNetease)
+        {
+            UserLoginStatusText.Text = ViewModel.LoginStatusText;
+        }
 
-        // 已登录时隐藏下方登录入口面板，仅在平台切换栏右侧显示对应的「退出登录」按钮
-        NeteaseLoginProviderPanel.Visibility = (!isQq && !isNeteaseLoggedIn) ? Visibility.Visible : Visibility.Collapsed;
+        // 仅选中网易云或 QQ 音乐且尚未登录时显示对应登录入口面板，其余 10 平台由 MultiPlatformAuthProviderPanel 接管
+        NeteaseLoginProviderPanel.Visibility = (isNetease && !isNeteaseLoggedIn) ? Visibility.Visible : Visibility.Collapsed;
         QqLoginProviderPanel.Visibility = (isQq && !isQqLoggedIn) ? Visibility.Visible : Visibility.Collapsed;
 
-        NeteaseInlineLogoutBtn.Visibility = (!isQq && isNeteaseLoggedIn) ? Visibility.Visible : Visibility.Collapsed;
+        NeteaseInlineLogoutBtn.Visibility = (isNetease && isNeteaseLoggedIn) ? Visibility.Visible : Visibility.Collapsed;
         QqInlineLogoutBtn.Visibility = (isQq && isQqLoggedIn) ? Visibility.Visible : Visibility.Collapsed;
 
         // 独立 QQ 音乐歌单中心页：已登录时隐藏登录入口按钮，显示退出按钮
         QqPageQuickLoginBtn.Visibility = isQqLoggedIn ? Visibility.Collapsed : Visibility.Visible;
         QqPageGoLoginBtn.Visibility = isQqLoggedIn ? Visibility.Collapsed : Visibility.Visible;
         QqPageLogoutBtn.Visibility = isQqLoggedIn ? Visibility.Visible : Visibility.Collapsed;
+
+        SyncMultiPlatformPanelsAndLibraryUi();
     }
 
     private void SelectLocalQqAccount(LocalQqAccountItem? selected)
@@ -5386,6 +5930,7 @@ public sealed partial class MainWindow : Window
         if (args.InvokedItemContainer is not NavigationViewItem item || item.Tag is not string tab) return;
         QqCreatedPlaylistsGrid.Visibility = tab == "Created" ? Visibility.Visible : Visibility.Collapsed;
         QqCollectedPlaylistsGrid.Visibility = tab == "Collected" ? Visibility.Visible : Visibility.Collapsed;
+        UpdateQqCollectedEmptyHintUi();
         PlayEntranceAnimation(tab == "Created" ? QqCreatedPlaylistsGrid : QqCollectedPlaylistsGrid, 0, 14, 240);
     }
 
@@ -5627,6 +6172,12 @@ public sealed partial class MainWindow : Window
         };
         multichannelItem.Click += OnOpenMultichannelModalFromBadgeClick;
         flyout.Items.Add(multichannelItem);
+
+        // 同步将菜单校准后的真实音质写回底栏与全屏歌词页徽章
+        if (ViewModel.Player.CurrentSong != null && !ViewModel.Player.IsBuffering)
+        {
+            ViewModel.CurrentQualityBadge = ViewModel.Player.GetEffectiveQualityBadge(ViewModel.Player.CurrentSong);
+        }
     }
 
     private async void OnDynamicQualityMenuItemClick(object sender, RoutedEventArgs e)
@@ -6688,6 +7239,45 @@ public sealed partial class MainWindow : Window
         ViewModel.IsDesktopLyricOpen = true;
     }
 
+    private void SyncQueueDrawerCountAndViewport()
+    {
+        if (QueueDrawerCountText != null)
+        {
+            QueueDrawerCountText.Text = $"({ViewModel.Player.Queue.Count})";
+        }
+        if (QueueDrawerOverlay.Visibility == Visibility.Visible)
+        {
+            QueueListView.UpdateLayout();
+        }
+    }
+
+    private void OnQueueDrawerOverlayPointerWheelChanged(object sender, PointerRoutedEventArgs e)
+    {
+        // 抽屉开启时阻止滚轮事件穿透到底层页面
+        e.Handled = true;
+    }
+
+    private void OnQueueListViewPointerWheelChanged(object sender, PointerRoutedEventArgs e)
+    {
+        var props = e.GetCurrentPoint(QueueListView).Properties;
+        if (!props.IsHorizontalMouseWheel && props.MouseWheelDelta != 0)
+        {
+            var sv = FindDescendantScrollViewer(QueueListView);
+            if (sv == null)
+            {
+                QueueListView.UpdateLayout();
+                sv = FindDescendantScrollViewer(QueueListView);
+            }
+            if (sv != null && sv.ScrollableHeight > 0)
+            {
+                double step = (props.MouseWheelDelta / 120.0) * 108.0;
+                double targetOffset = Math.Clamp(sv.VerticalOffset - step, 0, sv.ScrollableHeight);
+                sv.ChangeView(null, targetOffset, null, disableAnimation: true);
+            }
+        }
+        e.Handled = true;
+    }
+
     private async Task HideQueueDrawerAnimatedAsync()
     {
         if (QueueDrawerOverlay.Visibility != Visibility.Visible) return;
@@ -6717,21 +7307,48 @@ public sealed partial class MainWindow : Window
                 q.IsLiked = ViewModel.Config.IsFavorite(q.Id);
             }
 
+            if (QueueDrawerCountText != null)
+            {
+                QueueDrawerCountText.Text = $"({ViewModel.Player.Queue.Count})";
+            }
+
             QueueDrawerOverlay.Visibility = Visibility.Visible;
+            // 在真实可视高度下重建虚拟化容器测量，解决折叠态批量加歌导致 ScrollableHeight 冻结
+            QueueListView.ItemsSource = null;
+            QueueListView.ItemsSource = ViewModel.Player.Queue;
+            QueueDrawerOverlay.UpdateLayout();
+
             PlayEntranceAnimation(QueueDrawerBackdrop, 0, 0, 200);
             PlayEntranceAnimation(QueueDrawerPanel, 300, 0, 260);
-            ScrollQueueToCurrentSong();
+            DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, ScrollQueueToCurrentSong);
         }
     }
 
     private void ScrollQueueToCurrentSong()
     {
+        if (QueueDrawerOverlay.Visibility != Visibility.Visible) return;
         var current = ViewModel.Player.CurrentSong;
         if (current == null || ViewModel.Player.Queue.Count == 0) return;
-        var matched = ViewModel.Player.Queue.FirstOrDefault(s => s.Id == current.Id);
-        if (matched != null)
+
+        int idx = -1;
+        for (int i = 0; i < ViewModel.Player.Queue.Count; i++)
         {
-            QueueListView.ScrollIntoView(matched, ScrollIntoViewAlignment.Leading);
+            if (ViewModel.Player.Queue[i].Id == current.Id)
+            {
+                idx = i;
+                break;
+            }
+        }
+        if (idx < 0) return;
+
+        if (idx == 0)
+        {
+            // 第 0 首直接归零偏移，避免 ScrollIntoView(Leading) 锁死首项锚点
+            FindDescendantScrollViewer(QueueListView)?.ChangeView(null, 0, null, disableAnimation: true);
+        }
+        else
+        {
+            QueueListView.ScrollIntoView(ViewModel.Player.Queue[idx], ScrollIntoViewAlignment.Default);
         }
     }
 
@@ -6804,7 +7421,12 @@ public sealed partial class MainWindow : Window
 
     private void OnAppWindowChanged(AppWindow sender, AppWindowChangedEventArgs args)
     {
-        if (!_isInitialized || !_appWindow.IsVisible) return;
+        if (!_isInitialized) return;
+        if (args.DidVisibilityChange)
+        {
+            DispatcherQueue?.TryEnqueue(UpdateDiscoverBannerTimerState);
+        }
+        if (!_appWindow.IsVisible) return;
         if (!args.DidSizeChange && !args.DidPositionChange && !args.DidPresenterChange) return;
 
         DispatcherQueue?.TryEnqueue(ScheduleUpdateTitleBarPassthroughRegions);
@@ -6862,6 +7484,7 @@ public sealed partial class MainWindow : Window
 
         if (_isForceExiting)
         {
+            _discoverBannerTimer?.Stop();
             _opticalGlassRenderer.Dispose();
             SingleInstanceGuard.ExternalActivationRequested -= OnExternalActivationRequested;
             SingleInstanceGuard.Release();
@@ -6875,6 +7498,7 @@ public sealed partial class MainWindow : Window
         var closeAction = ViewModel.Config.Settings.CloseAction;
         if (string.Equals(closeAction, "close", StringComparison.OrdinalIgnoreCase))
         {
+            _discoverBannerTimer?.Stop();
             _opticalGlassRenderer.Dispose();
             SingleInstanceGuard.ExternalActivationRequested -= OnExternalActivationRequested;
             SingleInstanceGuard.Release();
@@ -7368,6 +7992,10 @@ public sealed partial class MainWindow : Window
         if (!_isInitialized || QualityComboBox.SelectedItem is not ComboBoxItem item || item.Tag is not string q) return;
         ViewModel.Config.Settings.MusicQuality = q;
         await ViewModel.Config.SaveSettingsAsync();
+        if (ViewModel.Player.CurrentSong == null)
+        {
+            ViewModel.CurrentQualityBadge = MusicQualityLevel.GetShortBadgeName(q);
+        }
         ViewModel.StatusToast = $"在线播放与下载目标音质已切换为：{item.Content}";
     }
 
@@ -8802,6 +9430,10 @@ public sealed partial class MainWindow : Window
         }
 
         await ViewModel.Config.ClearAppDataByScopesAsync(scopes);
+        if (scopes.Contains("user"))
+        {
+            await ViewModel.LogoutAllMusicAccountsAsync();
+        }
         ViewModel.RefreshHistoryAndFavorites();
         ViewModel.RefreshCacheStats();
         LoadInitialSettingsToUi();

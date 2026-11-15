@@ -1,6 +1,7 @@
 using AlgerMusicPlayer.WinUI.Helpers;
 using AlgerMusicPlayer.WinUI.Services.Api;
 using AlgerMusicPlayer.WinUI.Services.Audio;
+using AlgerMusicPlayer.WinUI.Services.Auth;
 using AlgerMusicPlayer.WinUI.Services.Download;
 using AlgerMusicPlayer.WinUI.Services.Local;
 using AlgerMusicPlayer.WinUI.Services.Lyric;
@@ -89,6 +90,9 @@ public partial class App : Application
 
         // 核心服务单例注册
         services.AddSingleton<ConfigService>();
+        services.AddSingleton<SecureCredentialStore>();
+        services.AddSingleton<OAuthPkceService>();
+        services.AddSingleton<PlatformAuthService>();
         services.AddSingleton<ThemeService>();
         services.AddSingleton<I18nService>();
         services.AddSingleton<NeteaseApiClient>();

@@ -143,6 +143,45 @@ public class AudioPlayerService : IDisposable
 
         if (restored != null)
         {
+            // 若命中了保存的队列项，补全上次持久化在 LastPlayedSong 上的真实播放音源与音质元数据
+            var savedLast = _configService.Settings.LastPlayedSong;
+            if (savedLast != null &&
+                !ReferenceEquals(restored, savedLast) &&
+                string.Equals(restored.Id, savedLast.Id, StringComparison.OrdinalIgnoreCase))
+            {
+                if (!string.IsNullOrWhiteSpace(savedLast.ResolvedPlatform))
+                    restored.ResolvedPlatform = savedLast.ResolvedPlatform;
+                if (!string.IsNullOrWhiteSpace(savedLast.PlayMusicUrl))
+                    restored.PlayMusicUrl = savedLast.PlayMusicUrl;
+                if (!string.IsNullOrWhiteSpace(savedLast.PlayingQualityBadge))
+                    restored.PlayingQualityBadge = savedLast.PlayingQualityBadge;
+                if (!string.IsNullOrWhiteSpace(savedLast.PlayingQualityLevel))
+                    restored.PlayingQualityLevel = savedLast.PlayingQualityLevel;
+                if (savedLast.PlayingBitrateKbps > 0)
+                    restored.PlayingBitrateKbps = savedLast.PlayingBitrateKbps;
+                if (savedLast.PlayingSizeBytes > 0)
+                    restored.PlayingSizeBytes = savedLast.PlayingSizeBytes;
+            }
+
+            if (MusicQualityLevel.IsTransientBadge(restored.PlayingQualityBadge))
+            {
+                restored.PlayingQualityBadge = null;
+            }
+
+            if (!restored.IsLocalSong)
+            {
+                bool hasStreamMeta = !string.IsNullOrWhiteSpace(restored.PlayMusicUrl) ||
+                                     restored.PlayingBitrateKbps > 0 ||
+                                     restored.PlayingSizeBytes > 0;
+                var inferredLevel = !string.IsNullOrWhiteSpace(restored.PlayingQualityLevel)
+                    ? restored.PlayingQualityLevel
+                    : (hasStreamMeta
+                        ? MusicQualityLevel.InferActualQualityLevel(null, restored.PlayMusicUrl, restored.PlayingBitrateKbps, restored.PlayingSizeBytes)
+                        : (MusicQualityLevel.InferLevelFromBadgeText(restored.PlayingQualityBadge) ?? MusicQualityLevel.Exhigh));
+                restored.PlayingQualityLevel = inferredLevel;
+                restored.PlayingQualityBadge = GetEffectiveQualityBadge(restored);
+            }
+
             CurrentSong = restored;
             foreach (var q in Queue)
             {
@@ -376,9 +415,11 @@ public class AudioPlayerService : IDisposable
         {
             if (newQueue != null)
             {
+                // 先在 清空 Queue 前做快照拷贝，防止传入 Queue 自身或活动引用时枚举被清空
+                var queueSnapshot = newQueue.ToList();
                 _suppressQueueAutoSave = true;
                 Queue.Clear();
-                foreach (var item in newQueue)
+                foreach (var item in queueSnapshot)
                 {
                     item.IsLiked = _configService.IsFavorite(item.Id);
                     Queue.Add(item);
@@ -469,8 +510,19 @@ public class AudioPlayerService : IDisposable
             if (string.IsNullOrWhiteSpace(resolvedSource))
             {
                 StatusMessage?.Invoke($"无法解析《{song.Name}》的音频源，已自动跳过");
-                RunOnUi(() => song.IsLoading = false);
+                RunOnUi(() =>
+                {
+                    song.IsLoading = false;
+                    if (MusicQualityLevel.IsTransientBadge(song.PlayingQualityBadge))
+                    {
+                        song.PlayingQualityBadge = null;
+                    }
+                });
                 IsBuffering = false;
+                if (CurrentSong?.Id == song.Id)
+                {
+                    QualityBadgeChanged?.Invoke(GetEffectiveQualityBadge(song));
+                }
                 return;
             }
 
@@ -603,8 +655,16 @@ public class AudioPlayerService : IDisposable
         {
             if (sessionId == _currentPlaySessionId)
             {
-                RunOnUi(() => song.IsLoading = false);
+                RunOnUi(() =>
+                {
+                    song.IsLoading = false;
+                    if (MusicQualityLevel.IsTransientBadge(song.PlayingQualityBadge))
+                    {
+                        song.PlayingQualityBadge = null;
+                    }
+                });
                 IsBuffering = false;
+                QualityBadgeChanged?.Invoke(GetEffectiveQualityBadge(song));
                 StatusMessage?.Invoke($"播放失败: {ex.Message}");
             }
         }
@@ -750,10 +810,17 @@ public class AudioPlayerService : IDisposable
         }
 
         var displayName = MusicQualityLevel.GetDisplayName(qualityLevel);
-        if (CurrentSong == null || CurrentSong.IsLocalSong)
+        if (CurrentSong == null)
         {
             QualityBadgeChanged?.Invoke(MusicQualityLevel.GetShortBadgeName(qualityLevel));
             StatusMessage?.Invoke($"默认在线音质已切换为：{displayName}");
+            return;
+        }
+
+        if (CurrentSong.IsLocalSong)
+        {
+            QualityBadgeChanged?.Invoke(GetEffectiveQualityBadge(CurrentSong));
+            StatusMessage?.Invoke($"默认在线音质已切换为：{displayName}（本地音源保持原文件音质）");
             return;
         }
 
@@ -762,7 +829,8 @@ public class AudioPlayerService : IDisposable
         var currentPlat = FormatPlatformBadgeDisplay(CurrentSong.ResolvedPlatform ?? CurrentSong.Source);
         PlaybackBadgesChanged?.Invoke(currentPlat, "切换中...");
         await PlaySongAsync(CurrentSong, forcePlatform: _activeQueueForcePlatform, initialSeekPosition: savedPos.TotalSeconds > 1 ? savedPos : null);
-        var actualBadge = CurrentSong.PlayingQualityBadge ?? MusicQualityLevel.GetShortBadgeName(qualityLevel);
+        var actualBadge = GetEffectiveQualityBadge(CurrentSong);
+        QualityBadgeChanged?.Invoke(actualBadge);
         StatusMessage?.Invoke($"已切换音质：{displayName}（当前音源实际输出：{actualBadge}）");
     }
 
@@ -1477,6 +1545,26 @@ public class AudioPlayerService : IDisposable
             song.ResolvedPlatform = resolvedDisplay;
             song.PlayMusicUrl = playUrl;
             song.PlayingQualityBadge = qualityBadge;
+
+            if (!isPrefetch && CurrentSong?.Id == song.Id)
+            {
+                foreach (var q in Queue)
+                {
+                    if (!ReferenceEquals(q, song) && string.Equals(q.Id, song.Id, StringComparison.OrdinalIgnoreCase))
+                    {
+                        q.ResolvedPlatform = resolvedDisplay;
+                        q.PlayMusicUrl = playUrl;
+                        q.PlayingQualityBadge = qualityBadge;
+                        q.PlayingQualityLevel = song.PlayingQualityLevel;
+                        q.PlayingBitrateKbps = song.PlayingBitrateKbps;
+                        q.PlayingSizeBytes = song.PlayingSizeBytes;
+                    }
+                }
+
+                _configService.Settings.LastPlayedSongId = song.Id;
+                _configService.Settings.LastPlayedSong = song;
+                _ = _configService.SaveSettingsAsync();
+            }
         });
 
         if (!isPrefetch && CurrentSong?.Id == song.Id)
@@ -1779,17 +1867,12 @@ public class AudioPlayerService : IDisposable
                     song.QqSongMid, ct, preferLossless, userQuality, allowFastStart: canFastStartAndUpgrade && !hasEnabledLx);
                 if (!string.IsNullOrWhiteSpace(qqUrl))
                 {
-                    bool qqIsFlac = qqUrl.Contains(".flac", StringComparison.OrdinalIgnoreCase);
-                    int qqKbps = qqIsFlac
-                        ? 900
-                        : (qqUrl.Contains("C400", StringComparison.OrdinalIgnoreCase) ? 128 : 320);
-                    var qqBadge = qqIsFlac
-                        ? "无损 FLAC"
-                        : MusicQualityLevel.FormatActualQualityBadge(null, null, qqKbps * 1000, userQuality);
+                    var (qqActualLevel, qqKbps, qqBadge) = ResolveQqUrlQuality(qqUrl);
+                    bool qqIsFlac = MusicQualityLevel.GetQualityRank(qqActualLevel) >= MusicQualityLevel.GetQualityRank(MusicQualityLevel.Lossless);
 
                     if (qqIsFlac || !preferLossless || (canFastStartAndUpgrade && !hasEnabledLx))
                     {
-                        RecordResolvedSongQuality(song, "qq", userQuality, null, qqUrl, qqKbps, 0);
+                        RecordResolvedSongQuality(song, "qq", userQuality, qqActualLevel, qqUrl, qqKbps, 0);
                         ApplyResolvedPlaybackInfo(song, "qq", qqUrl, qqBadge, isPrefetch);
                         if (!qqIsFlac && canFastStartAndUpgrade && _configService.Settings.EnableMusicUnblock)
                         {
@@ -1819,9 +1902,8 @@ public class AudioPlayerService : IDisposable
 
             if (!string.IsNullOrWhiteSpace(qqFallbackUrl))
             {
-                int qqKbps = qqFallbackUrl.Contains("C400", StringComparison.OrdinalIgnoreCase) ? 128 : 320;
-                var qqBadge = MusicQualityLevel.FormatActualQualityBadge(null, null, qqKbps * 1000, userQuality);
-                RecordResolvedSongQuality(song, "qq", userQuality, null, qqFallbackUrl, qqKbps, 0);
+                var (qqActualLevel, qqKbps, qqBadge) = ResolveQqUrlQuality(qqFallbackUrl);
+                RecordResolvedSongQuality(song, "qq", userQuality, qqActualLevel, qqFallbackUrl, qqKbps, 0);
                 ApplyResolvedPlaybackInfo(song, "qq", qqFallbackUrl, qqBadge, isPrefetch);
                 if (canFastStartAndUpgrade && _configService.Settings.EnableMusicUnblock)
                 {
@@ -1969,6 +2051,29 @@ public class AudioPlayerService : IDisposable
         }
 
         return null;
+    }
+
+    private static (string ActualLevel, int Kbps, string Badge) ResolveQqUrlQuality(string qqUrl)
+    {
+        if (qqUrl.Contains("RS01", StringComparison.OrdinalIgnoreCase))
+        {
+            return (MusicQualityLevel.Jymaster, 1800, "超清母带");
+        }
+        if (qqUrl.Contains("Q000", StringComparison.OrdinalIgnoreCase))
+        {
+            return (MusicQualityLevel.Hires, 1400, "Hi-Res");
+        }
+        if (qqUrl.Contains(".flac", StringComparison.OrdinalIgnoreCase) ||
+            qqUrl.Contains("F000", StringComparison.OrdinalIgnoreCase))
+        {
+            return (MusicQualityLevel.Lossless, 900, "无损 FLAC");
+        }
+        if (qqUrl.Contains("C400", StringComparison.OrdinalIgnoreCase) ||
+            qqUrl.Contains("M500", StringComparison.OrdinalIgnoreCase))
+        {
+            return (MusicQualityLevel.Standard, 128, "标准 128k");
+        }
+        return (MusicQualityLevel.Exhigh, 320, "极高 320k");
     }
 
     /// <summary>
@@ -2123,15 +2228,20 @@ public class AudioPlayerService : IDisposable
         }
 
         // 3. 汽水音乐原生流：严格依据接口返回的无加密音频流清单分组
+        List<SongQualityOption> options;
         if (song.Source == "qishui" && plat == "qishui")
         {
             if (_thirdPartyService.TryGetCachedQishuiCandidates(song.QishuiTrackId, out var qsList) && qsList.Count > 0)
             {
-                return BuildQishuiOptionsFromCandidates(qsList, currentPlayingLevel);
+                options = BuildQishuiOptionsFromCandidates(qsList, currentPlayingLevel);
+                SyncCurrentSongBadgeWithOptions(song, options);
+                return options;
             }
 
             needsAsyncRefresh = !string.IsNullOrWhiteSpace(song.QishuiTrackId);
-            return BuildSingleCurrentFallbackOption(song, currentPlayingLevel);
+            options = BuildSingleCurrentFallbackOption(song, currentPlayingLevel);
+            SyncCurrentSongBadgeWithOptions(song, options);
+            return options;
         }
 
         // 4. 网易云官方直连播放：精确读取 /api/song/music/detail/get 返回的真实存在档位
@@ -2146,15 +2256,108 @@ public class AudioPlayerService : IDisposable
         {
             if (hasNeteaseCache && neteaseTiers.Count > 0)
             {
-                return BuildNeteaseOptionsFromTiers(song, neteaseTiers, currentPlayingLevel);
+                options = BuildNeteaseOptionsFromTiers(song, neteaseTiers, currentPlayingLevel);
+                SyncCurrentSongBadgeWithOptions(song, options);
+                return options;
             }
 
             // 未命中缓存前先展示当前真实播放的这一档，等待异步刷新替换为完整真实列表
-            return BuildSingleCurrentFallbackOption(song, currentPlayingLevel);
+            options = BuildSingleCurrentFallbackOption(song, currentPlayingLevel);
+            SyncCurrentSongBadgeWithOptions(song, options);
+            return options;
         }
 
         // 5. 外部音源 / 解灰 / 第三方国内与国际平台（GDMUSIC / 落雪 / 酷狗 / QQ / 酷我 / 咪咕 / JOOX / Tidal / Apple）
-        return BuildExternalAvailableQualityOptions(song, plat, currentPlayingLevel, hasNeteaseCache ? neteaseTiers : null);
+        options = BuildExternalAvailableQualityOptions(song, plat, currentPlayingLevel, hasNeteaseCache ? neteaseTiers : null);
+        SyncCurrentSongBadgeWithOptions(song, options);
+        return options;
+    }
+
+    /// <summary>
+    /// 获取当前曲目对外展示的实际音质徽章（绝不在已选曲目上回退显示未达标的全局设置档位）
+    /// </summary>
+    public string GetEffectiveQualityBadge(SongItem? song)
+    {
+        if (song == null)
+        {
+            return MusicQualityLevel.GetShortBadgeName(_configService.Settings.MusicQuality);
+        }
+
+        if (song.IsLocalSong)
+        {
+            if (!string.IsNullOrWhiteSpace(song.PlayingQualityBadge) && !MusicQualityLevel.IsTransientBadge(song.PlayingQualityBadge))
+            {
+                return song.PlayingQualityBadge;
+            }
+            var ext = Path.GetExtension(song.LocalFilePath ?? string.Empty).TrimStart('.').ToUpperInvariant();
+            return string.IsNullOrWhiteSpace(ext) ? "本地音源" : $"本地 {ext}";
+        }
+
+        if (IsBuffering && CurrentSong?.Id == song.Id && MusicQualityLevel.IsTransientBadge(song.PlayingQualityBadge))
+        {
+            return song.PlayingQualityBadge!;
+        }
+
+        bool hasStreamMeta = !string.IsNullOrWhiteSpace(song.PlayMusicUrl) ||
+                             song.PlayingBitrateKbps > 0 ||
+                             song.PlayingSizeBytes > 0;
+        string? knownLevel = !string.IsNullOrWhiteSpace(song.PlayingQualityLevel)
+            ? song.PlayingQualityLevel
+            : (hasStreamMeta
+                ? MusicQualityLevel.InferActualQualityLevel(null, song.PlayMusicUrl, song.PlayingBitrateKbps, song.PlayingSizeBytes)
+                : null);
+
+        if (!string.IsNullOrWhiteSpace(song.PlayingQualityBadge) && !MusicQualityLevel.IsTransientBadge(song.PlayingQualityBadge))
+        {
+            var badgeLevel = MusicQualityLevel.InferLevelFromBadgeText(song.PlayingQualityBadge);
+            if (!string.IsNullOrWhiteSpace(knownLevel) &&
+                !string.IsNullOrWhiteSpace(badgeLevel) &&
+                !string.Equals(knownLevel, badgeLevel, StringComparison.OrdinalIgnoreCase))
+            {
+                return MusicQualityLevel.FormatActualQualityBadge(knownLevel, null, song.PlayingBitrateKbps * 1000, knownLevel);
+            }
+            return song.PlayingQualityBadge;
+        }
+
+        var effectiveLevel = knownLevel ?? MusicQualityLevel.InferActualQualityLevel(null, song.PlayMusicUrl, song.PlayingBitrateKbps, song.PlayingSizeBytes);
+        return MusicQualityLevel.FormatActualQualityBadge(effectiveLevel, null, song.PlayingBitrateKbps * 1000, effectiveLevel);
+    }
+
+    private void SyncCurrentSongBadgeWithOptions(SongItem song, IReadOnlyList<SongQualityOption> options)
+    {
+        if (song.IsLocalSong || IsBuffering) return;
+        if (CurrentSong != null && !string.Equals(CurrentSong.Id, song.Id, StringComparison.OrdinalIgnoreCase)) return;
+
+        var curOpt = options.FirstOrDefault(o => o.IsCurrent);
+        if (curOpt == null || string.IsNullOrWhiteSpace(curOpt.Level)) return;
+
+        var existingBadge = song.PlayingQualityBadge;
+        var badgeLevel = MusicQualityLevel.InferLevelFromBadgeText(existingBadge);
+        bool levelMismatch = !string.Equals(song.PlayingQualityLevel, curOpt.Level, StringComparison.OrdinalIgnoreCase);
+        bool badgeMismatch = string.IsNullOrWhiteSpace(existingBadge) ||
+                             MusicQualityLevel.IsTransientBadge(existingBadge) ||
+                             (!string.IsNullOrWhiteSpace(badgeLevel) &&
+                              !string.Equals(badgeLevel, curOpt.Level, StringComparison.OrdinalIgnoreCase));
+        if (!levelMismatch && !badgeMismatch) return;
+
+        song.PlayingQualityLevel = curOpt.Level;
+        if (!badgeMismatch)
+        {
+            RunOnUi(() => song.PlayingQualityLevel = curOpt.Level);
+            return;
+        }
+
+        var syncedBadge = MusicQualityLevel.FormatActualQualityBadge(curOpt.Level, null, song.PlayingBitrateKbps * 1000, curOpt.Level);
+        song.PlayingQualityBadge = syncedBadge;
+        RunOnUi(() =>
+        {
+            song.PlayingQualityLevel = curOpt.Level;
+            song.PlayingQualityBadge = syncedBadge;
+            if (CurrentSong?.Id == song.Id)
+            {
+                QualityBadgeChanged?.Invoke(syncedBadge);
+            }
+        });
     }
 
     /// <summary>

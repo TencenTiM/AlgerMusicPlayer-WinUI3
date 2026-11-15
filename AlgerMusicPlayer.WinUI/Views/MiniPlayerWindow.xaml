@@ -200,7 +200,13 @@
                     CanReorderItems="True"
                     AllowDrop="True"
                     IsItemClickEnabled="False"
-                    Padding="8,6">
+                    Padding="8,6"
+                    ScrollViewer.VerticalScrollMode="Enabled"
+                    ScrollViewer.VerticalScrollBarVisibility="Auto"
+                    ScrollViewer.IsVerticalRailEnabled="True"
+                    ScrollViewer.HorizontalScrollMode="Disabled"
+                    ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                    PointerWheelChanged="OnMiniQueueListViewPointerWheelChanged">
                     <ListView.ItemContainerStyle>
                         <Style TargetType="ListViewItem">
                             <Setter Property="HorizontalContentAlignment" Value="Stretch" />

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Collections.ObjectModel;
 using AlgerMusicPlayer.WinUI.Models;
 using AlgerMusicPlayer.WinUI.Services.Api;
@@ -11,6 +12,11 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using Microsoft.UI.Dispatching;
 
 namespace AlgerMusicPlayer.WinUI.ViewModels;
+
+/// <summary>
+/// 歌单写入抽屉中的可写目标平台选项
+/// </summary>
+public sealed record PlaylistWriteTargetOption(string Key, string DisplayName, string SourceKey);
 
 /// <summary>
 /// 主视图模型（统一管理导航、首页推荐、搜索、歌单/专辑/歌手详情、播放控制、歌词、下载、本地音乐与设置）
@@ -342,6 +348,10 @@ public partial class MainViewModel : ObservableObject
 
     public int DetailQqDirId { get; set; }
 
+    public string DetailPlaylistDissId { get; private set; } = string.Empty;
+
+    public PlaylistItem? CurrentDetailPlaylist { get; private set; }
+
     /// <summary>
     /// 当前在「第三方音源 / 自带音源」专区选中的定向音源 key（例如 lx_all / lx:<id> / gdmusic；在独立平台专区为 null）
     /// </summary>
@@ -371,6 +381,13 @@ public partial class MainViewModel : ObservableObject
     {
         get => _canRemoveFromCurrentDetail;
         set => SetProperty(ref _canRemoveFromCurrentDetail, value);
+    }
+
+    private bool _canDeleteCurrentDetail;
+    public bool CanDeleteCurrentDetail
+    {
+        get => _canDeleteCurrentDetail;
+        set => SetProperty(ref _canDeleteCurrentDetail, value);
     }
 
     private string _detailSearchKeyword = string.Empty;
@@ -416,7 +433,13 @@ public partial class MainViewModel : ObservableObject
     public UserProfile? CurrentUser
     {
         get => _currentUser;
-        set => SetProperty(ref _currentUser, value);
+        set
+        {
+            if (SetProperty(ref _currentUser, value))
+            {
+                SyncUserAccountCenterCards();
+            }
+        }
     }
 
     private string _loginStatusText = "未登录（支持扫码或填入网易云 MUSIC_U Cookie 登录）";
@@ -430,7 +453,13 @@ public partial class MainViewModel : ObservableObject
     public QqUserProfile? CurrentQqUser
     {
         get => _currentQqUser;
-        set => SetProperty(ref _currentQqUser, value);
+        set
+        {
+            if (SetProperty(ref _currentQqUser, value))
+            {
+                SyncUserAccountCenterCards();
+            }
+        }
     }
 
     private string _qqLoginStatusText = "未登录 QQ 音乐（支持一键调用本机已登录 QQ、手机扫码或 Cookie 登录）";
@@ -588,6 +617,7 @@ public partial class MainViewModel : ObservableObject
     public ObservableCollection<LocalQqAccountItem> LocalQqAccounts { get; } = [];
     public ObservableCollection<PlaylistItem> UserPlaylists { get; } = [];
     public ObservableCollection<PlaylistItem> UserCreatedPlaylists { get; } = [];
+    public ObservableCollection<PlaylistItem> LocalCustomPlaylists { get; } = [];
     public ObservableCollection<PlaylistItem> UserFavoritePlaylists { get; } = [];
     public ObservableCollection<AlbumItem> UserSubscribedAlbums { get; } = [];
     public ObservableCollection<PlayRecordItem> UserPlayRecords { get; } = [];
@@ -621,6 +651,7 @@ public partial class MainViewModel : ObservableObject
     public Microsoft.UI.Xaml.Visibility DiscoverLoadingVisibility => _isDiscoverLoading
         ? Microsoft.UI.Xaml.Visibility.Visible
         : Microsoft.UI.Xaml.Visibility.Collapsed;
+    public bool ResetDiscoverBannerWaveOnUpdate { get; private set; }
     public event Action? DiscoverBannersUpdated;
     public ObservableCollection<LxScriptItem> LxScriptsList { get; } = [];
     public ObservableCollection<DonorItem> DonorsList { get; } = [];
@@ -658,6 +689,46 @@ public partial class MainViewModel : ObservableObject
 
     public bool IsDraggingSeek { get; set; }
 
+    // 个人中心：12 平台账号矩阵与多平台歌单缓存
+    public Services.Auth.PlatformAuthService PlatformAuth { get; }
+    public ObservableCollection<PlatformAccountCardItem> PlatformAccountCards { get; } = [];
+    private readonly List<PlaylistItem> _neteaseCreatedCache = [];
+    private readonly List<PlaylistItem> _neteaseFavoriteCache = [];
+    private readonly ConcurrentDictionary<AuthMusicPlatform, (string Nickname, List<PlaylistItem> Created, List<PlaylistItem> Collected)> _platformLibraryCache = new();
+    private readonly ConcurrentDictionary<AuthMusicPlatform, DateTimeOffset> _lastPlatformLibrarySyncAt = new();
+
+    /// <summary>
+    /// 查询指定扩展平台缓存的歌单数量（用于个人中心横幅与状态提示）
+    /// </summary>
+    public bool TryGetCachedPlatformLibraryCounts(AuthMusicPlatform platform, out int createdCount, out int collectedCount)
+    {
+        if (_platformLibraryCache.TryGetValue(platform, out var cached))
+        {
+            createdCount = cached.Created.Count;
+            collectedCount = cached.Collected.Count;
+            return true;
+        }
+        createdCount = 0;
+        collectedCount = 0;
+        return false;
+    }
+
+    private string _selectedUserPlatformKey = "netease";
+    public string SelectedUserPlatformKey
+    {
+        get => _selectedUserPlatformKey;
+        set => SetProperty(ref _selectedUserPlatformKey, value);
+    }
+
+    private string _multiPlatformStatusSummary = "已登录 0 / 12 个音乐平台";
+    public string MultiPlatformStatusSummary
+    {
+        get => _multiPlatformStatusSummary;
+        set => SetProperty(ref _multiPlatformStatusSummary, value);
+    }
+
+    public event Action? AccountCenterStateChanged;
+
     public MainViewModel(
         ConfigService config,
         ThemeService theme,
@@ -672,7 +743,8 @@ public partial class MainViewModel : ObservableObject
         DownloadManagerService downloader,
         LocalMusicScannerService localScanner,
         RemoteControlService remoteControl,
-        GlobalHotkeyService hotkeys)
+        GlobalHotkeyService hotkeys,
+        Services.Auth.PlatformAuthService platformAuth)
     {
         Config = config;
         Theme = theme;
@@ -688,9 +760,11 @@ public partial class MainViewModel : ObservableObject
         LocalScanner = localScanner;
         RemoteControl = remoteControl;
         Hotkeys = hotkeys;
+        PlatformAuth = platformAuth;
+        PlatformAuth.SessionChanged += _ => RunOnUi(SyncUserAccountCenterCards);
 
         VolumePercent = Math.Round(Config.Settings.Volume * 100);
-        CurrentQualityBadge = MusicQualityLevel.GetShortBadgeName(Config.Settings.MusicQuality);
+        CurrentQualityBadge = Player.GetEffectiveQualityBadge(Player.CurrentSong);
 
         Player.SongChanged += OnPlayerSongChanged;
         Player.PlayStateChanged += OnPlayerStateChanged;
@@ -731,6 +805,7 @@ public partial class MainViewModel : ObservableObject
     public async Task InitializeAsync()
     {
         RefreshHistoryAndFavorites();
+        SyncLocalCustomPlaylists();
         RefreshCacheStats();
         SyncConfiguredFoldersList();
         RestoreCachedLocalMusic();
@@ -748,6 +823,9 @@ public partial class MainViewModel : ObservableObject
         }
 
         _ = Downloader.RefreshCompletedDownloadsAsync();
+        await PlatformAuth.InitializeAsync();
+        SyncUserAccountCenterCards();
+
         await LoadDiscoverHomeAsync();
         _ = LoadHomeDataAsync();
 
@@ -764,6 +842,9 @@ public partial class MainViewModel : ObservableObject
         {
             await RefreshQqUserProfileAsync();
         }
+
+        SyncUserAccountCenterCards();
+        _ = SyncAllLoggedInExtendedPlatformsAsync();
     }
 
     /// <summary>
@@ -1013,7 +1094,8 @@ public partial class MainViewModel : ObservableObject
 
             ApplyDiscoverSnapshot(
                 neteaseSongs, qqSongs, qishuiSongs, kugouSongs, kuwoSongs, [], [],
-                neteasePls, qqPls, qishuiPls, kugouPls, [], []);
+                neteasePls, qqPls, qishuiPls, kugouPls, [], [],
+                resetWave: forceRefresh || !_isDiscoverHomeLoaded);
             _isDiscoverHomeLoaded = true;
             IsDiscoverLoading = false;
 
@@ -1029,7 +1111,8 @@ public partial class MainViewModel : ObservableObject
             {
                 ApplyDiscoverSnapshot(
                     neteaseSongs, qqSongs, qishuiSongs, kugouSongs, kuwoSongs, appleSongs, spotifySongs,
-                    neteasePls, qqPls, qishuiPls, kugouPls, spotifyPls, applePls);
+                    neteasePls, qqPls, qishuiPls, kugouPls, spotifyPls, applePls,
+                    resetWave: false);
             }
         }
         catch (OperationCanceledException)
@@ -1061,7 +1144,8 @@ public partial class MainViewModel : ObservableObject
         List<PlaylistItem> qishuiPls,
         List<PlaylistItem> kugouPls,
         List<PlaylistItem> spotifyPls,
-        List<PlaylistItem> applePls)
+        List<PlaylistItem> applePls,
+        bool resetWave = true)
     {
         var interleavedSongs = InterleaveRoundRobin(
             [neteaseSongs, qqSongs, qishuiSongs, kugouSongs, kuwoSongs, appleSongs, spotifySongs],
@@ -1096,12 +1180,14 @@ public partial class MainViewModel : ObservableObject
             }
         }
 
-        var nextBanners = BuildDiscoverBanners(neteaseSongs, qqSongs, qishuiSongs, kugouSongs, spotifySongs, appleSongs);
+        var nextBanners = BuildDiscoverBanners(
+            neteaseSongs, qqSongs, qishuiSongs, kugouSongs, kuwoSongs, spotifySongs, appleSongs);
 
         RunOnUi(() =>
         {
             DiscoverBanners.Clear();
             foreach (var b in nextBanners) DiscoverBanners.Add(b);
+            ResetDiscoverBannerWaveOnUpdate = resetWave;
             DiscoverBannersUpdated?.Invoke();
 
             _allDiscoverNewSongs.Clear();
@@ -1123,63 +1209,150 @@ public partial class MainViewModel : ObservableObject
         List<SongItem> qqSongs,
         List<SongItem> qishuiSongs,
         List<SongItem> kugouSongs,
+        List<SongItem> kuwoSongs,
         List<SongItem> spotifySongs,
         List<SongItem> appleSongs)
     {
-        var banners = new List<DiscoverBannerItem>(3);
-
-        // 画报 1：网易云首发
-        var b0Songs = neteaseSongs.Count > 0 ? neteaseSongs : qishuiSongs.Concat(kugouSongs).ToList();
-        var lead0 = b0Songs.FirstOrDefault(s => !string.IsNullOrWhiteSpace(s.PicUrl)) ?? b0Songs.FirstOrDefault();
-        var b0 = new DiscoverBannerItem
-        {
-            Id = "banner_netease",
-            BadgeText = "网易云首发",
-            PlatformKey = "netease",
-            Headline = lead0 != null ? $"{lead0.Name} — {lead0.ArtistText}" : "网易云每日新歌首发",
-            Subtitle = b0Songs.Count > 0 ? $"今日华语与全球新曲精选 · 收录 {b0Songs.Count} 首" : "华语流行与独立原创每日速递",
-            CoverUrl = lead0?.HighResCoverUrl ?? ImageUriHelper.DefaultCoverUri
-        };
-        b0.Songs.AddRange(b0Songs.Take(20));
-        banners.Add(b0);
-
-        // 画报 2：QQ音乐巅峰首发
-        var b1Songs = qqSongs.Count > 0 ? qqSongs : qishuiSongs.Concat(kugouSongs).ToList();
-        var lead1 = b1Songs.FirstOrDefault(s => !string.IsNullOrWhiteSpace(s.PicUrl)) ?? b1Songs.FirstOrDefault();
-        var b1 = new DiscoverBannerItem
-        {
-            Id = "banner_qq",
-            BadgeText = "QQ音乐巅峰首发",
-            PlatformKey = qqSongs.Count > 0 ? "qq" : (qishuiSongs.Count > 0 ? "qishui" : "kugou"),
-            Headline = lead1 != null ? $"{lead1.Name} — {lead1.ArtistText}" : "QQ音乐巅峰新歌榜",
-            Subtitle = b1Songs.Count > 0 ? $"实时飙升首发新声 · 收录 {b1Songs.Count} 首热单" : "巅峰新歌热榜同步直达",
-            CoverUrl = lead1?.HighResCoverUrl ?? ImageUriHelper.DefaultCoverUri
-        };
-        b1.Songs.AddRange(b1Songs.Take(20));
-        banners.Add(b1);
-
-        // 画报 3：全球流行新声 (Spotify + Apple Music，若受网络限制暂未返回则平滑兜底)
         var globalPool = InterleaveRoundRobin(
             [spotifySongs, appleSongs],
             s => $"{s.Name?.Trim().ToLowerInvariant()}:{s.ArtistText?.Trim().ToLowerInvariant()}");
-        bool hasNativeGlobal = globalPool.Count > 0;
-        var b2Songs = hasNativeGlobal ? globalPool : kugouSongs.Concat(neteaseSongs).Take(16).ToList();
-        var lead2 = b2Songs.FirstOrDefault(s => !string.IsNullOrWhiteSpace(s.PicUrl)) ?? b2Songs.FirstOrDefault();
-        var b2 = new DiscoverBannerItem
-        {
-            Id = "banner_global",
-            BadgeText = "全球流行新声",
-            PlatformKey = spotifySongs.Count > 0 ? "spotify" : (appleSongs.Count > 0 ? "apple" : "kugou"),
-            Headline = lead2 != null ? $"{lead2.Name} — {lead2.ArtistText}" : "Spotify & Apple 全球流行前沿",
-            Subtitle = hasNativeGlobal
-                ? $"Spotify & Apple Music 全球风向 · 收录 {globalPool.Count} 首"
-                : "全球跨平台精选热门单曲 · 点击一键畅听",
-            CoverUrl = lead2?.HighResCoverUrl ?? ImageUriHelper.DefaultCoverUri
-        };
-        b2.Songs.AddRange(b2Songs.Take(20));
-        banners.Add(b2);
+        var allInterleaved = InterleaveRoundRobin(
+            [neteaseSongs, qqSongs, qishuiSongs, kugouSongs, kuwoSongs, spotifySongs, appleSongs],
+            s => $"{s.Name?.Trim().ToLowerInvariant()}:{s.ArtistText?.Trim().ToLowerInvariant()}");
 
-        return banners;
+        static string GetLeadKey(SongItem s) =>
+            string.IsNullOrWhiteSpace(s.Name)
+                ? s.Id
+                : $"{s.Name.Trim().ToLowerInvariant()}|{(s.ArtistText ?? string.Empty).Trim().ToLowerInvariant()}";
+
+        var usedLeadKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        SongItem? PickUniqueLead(IReadOnlyList<SongItem> primaryPool, out bool usedFallback)
+        {
+            usedFallback = false;
+            var candidate = primaryPool.FirstOrDefault(s => !string.IsNullOrWhiteSpace(s.PicUrl) && !usedLeadKeys.Contains(GetLeadKey(s)))
+                            ?? primaryPool.FirstOrDefault(s => !usedLeadKeys.Contains(GetLeadKey(s)));
+            if (candidate != null)
+            {
+                usedLeadKeys.Add(GetLeadKey(candidate));
+                return candidate;
+            }
+
+            usedFallback = true;
+            candidate = allInterleaved.FirstOrDefault(s => !string.IsNullOrWhiteSpace(s.PicUrl) && !usedLeadKeys.Contains(GetLeadKey(s)))
+                        ?? allInterleaved.FirstOrDefault(s => !usedLeadKeys.Contains(GetLeadKey(s)));
+            if (candidate != null)
+            {
+                usedLeadKeys.Add(GetLeadKey(candidate));
+            }
+            return candidate;
+        }
+
+        var specs = new (string Id, string BadgeText, string PlatformKey, IReadOnlyList<SongItem> Pool, string Desc)[]
+        {
+            // Wave 1
+            ("banner_w1_0", "网易云首发", "netease", neteaseSongs, "今日华语与全球新曲精选"),
+            ("banner_w1_1", "QQ音乐巅峰首发", "qq", qqSongs, "实时飙升首发新声热单"),
+            ("banner_w1_2", "全球流行新声", spotifySongs.Count > 0 ? "spotify" : "apple", globalPool, "Spotify & Apple Music 全球风向"),
+            // Wave 2
+            ("banner_w2_0", "汽水飙升新声", "qishui", qishuiSongs, "抖音与汽水全站热播新曲"),
+            ("banner_w2_1", "酷狗新歌速递", "kugou", kugouSongs, "流行热歌与华语首发直达"),
+            ("banner_w2_2", "酷我热歌首发", "kuwo", kuwoSongs, "品质热单与经典翻唱精选"),
+            // Wave 3
+            ("banner_w3_0", "网易云潮流新声", "netease", neteaseSongs, "独立原创与电音说唱前沿"),
+            ("banner_w3_1", "QQ音乐热歌风向", "qq", qqSongs, "巅峰榜人气新作实时同步"),
+            ("banner_w3_2", "Apple Music 热榜", "apple", appleSongs.Count > 0 ? appleSongs : globalPool, "全球流行主编精选单曲"),
+            // Wave 4
+            ("banner_w4_0", "汽水潮流热单", "qishui", qishuiSongs, "年轻世代高赞旋律精选"),
+            ("banner_w4_1", "酷狗飙升精选", "kugou", kugouSongs, "全网热度飙升新歌合集"),
+            ("banner_w4_2", "Spotify 全球热播", "spotify", spotifySongs.Count > 0 ? spotifySongs : globalPool, "海外流媒体热门新曲速递"),
+            // Wave 5
+            ("banner_w5_0", "华语首发甄选", "netease", neteaseSongs, "编辑精选近期必听华语新作"),
+            ("banner_w5_1", "巅峰新声力", "qq", qqSongs, "实力唱将与新锐音乐人新作"),
+            ("banner_w5_2", "跨平台编辑精选", "qishui", allInterleaved, "多平台高口碑首发单曲合集")
+        };
+
+        var banners = new List<DiscoverBannerItem>(15);
+        foreach (var spec in specs)
+        {
+            var lead = PickUniqueLead(spec.Pool, out bool usedFallback);
+            if (lead == null) break;
+
+            var leadPlat = PlatformVisualHelper.NormalizeKey(lead.Source);
+            bool platMatched = !usedFallback &&
+                               (spec.Id == "banner_w1_2" ||
+                                string.Equals(leadPlat, spec.PlatformKey, StringComparison.OrdinalIgnoreCase));
+            var effectivePlat = platMatched && spec.Id != "banner_w5_2" ? spec.PlatformKey : leadPlat;
+            var badgeText = platMatched
+                ? spec.BadgeText
+                : $"{PlatformVisualHelper.GetShortLabel(effectivePlat)}首发精选";
+
+            var cardSongs = new List<SongItem>(20) { lead };
+            var seenInCard = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { GetLeadKey(lead) };
+            foreach (var s in spec.Pool)
+            {
+                if (cardSongs.Count >= 20) break;
+                if (seenInCard.Add(GetLeadKey(s))) cardSongs.Add(s);
+            }
+            if (cardSongs.Count < 10)
+            {
+                foreach (var s in allInterleaved)
+                {
+                    if (cardSongs.Count >= 20) break;
+                    if (seenInCard.Add(GetLeadKey(s))) cardSongs.Add(s);
+                }
+            }
+
+            var item = new DiscoverBannerItem
+            {
+                Id = spec.Id,
+                BadgeText = badgeText,
+                PlatformKey = effectivePlat,
+                Headline = $"{lead.Name} — {lead.ArtistText}",
+                Subtitle = $"{spec.Desc} · 收录 {cardSongs.Count} 首",
+                CoverUrl = lead.HighResCoverUrl
+            };
+            item.Songs.AddRange(cardSongs);
+            banners.Add(item);
+        }
+
+        if (banners.Count >= 3)
+        {
+            int validCount = Math.Min(15, (banners.Count / 3) * 3);
+            return banners.Take(validCount).ToList();
+        }
+
+        // 极端断网或无结果时保留 3 张默认兜底画报，确保视口完整
+        return
+        [
+            new DiscoverBannerItem
+            {
+                Id = "banner_fallback_0",
+                BadgeText = "网易云首发",
+                PlatformKey = "netease",
+                Headline = "网易云每日新歌首发",
+                Subtitle = "华语流行与独立原创每日速递",
+                CoverUrl = ImageUriHelper.DefaultCoverUri
+            },
+            new DiscoverBannerItem
+            {
+                Id = "banner_fallback_1",
+                BadgeText = "QQ音乐巅峰首发",
+                PlatformKey = "qq",
+                Headline = "QQ音乐巅峰新歌榜",
+                Subtitle = "巅峰新歌热榜同步直达",
+                CoverUrl = ImageUriHelper.DefaultCoverUri
+            },
+            new DiscoverBannerItem
+            {
+                Id = "banner_fallback_2",
+                BadgeText = "全球流行新声",
+                PlatformKey = "spotify",
+                Headline = "Spotify & Apple 全球流行前沿",
+                Subtitle = "国际流行热榜同步直达",
+                CoverUrl = ImageUriHelper.DefaultCoverUri
+            }
+        ];
     }
 
     private async Task<List<SongItem>> FetchPlatformNewSongsSafeAsync(string sourceKey, CancellationToken ct)
@@ -1190,7 +1363,7 @@ public partial class MainViewModel : ObservableObject
             timeoutCts.CancelAfter(TimeSpan.FromSeconds(5.5));
             List<SongItem> songs = sourceKey switch
             {
-                "netease" => await Api.GetRecommendNewSongsAsync(12),
+                "netease" => await Api.GetRecommendNewSongsAsync(15),
                 "tx" or "qq" => await ThirdParty.GetBoardSongsAsync("tx", "new", timeoutCts.Token),
                 "qishui" => await ThirdParty.GetBoardSongsAsync("qishui", "new", timeoutCts.Token),
                 "kg" or "kugou" => await ThirdParty.GetBoardSongsAsync("kg", "new", timeoutCts.Token),
@@ -1206,7 +1379,7 @@ public partial class MainViewModel : ObservableObject
                 if (string.IsNullOrWhiteSpace(s.Source)) s.Source = normalizedSource;
                 s.IsLiked = Config.IsFavorite(s.Id);
             }
-            return songs.Take(10).ToList();
+            return songs.Take(15).ToList();
         }
         catch
         {
@@ -1403,7 +1576,7 @@ public partial class MainViewModel : ObservableObject
         using var sem = new SemaphoreSlim(3, 3);
         var tasks = cards.Select(async card =>
         {
-            if (ct.IsCancellationRequested || card.Playlist.Tracks.Count > 0) return;
+            if (ct.IsCancellationRequested || HasCompletePlaylistTracks(card.Playlist)) return;
             await sem.WaitAsync(ct);
             try
             {
@@ -1456,10 +1629,21 @@ public partial class MainViewModel : ObservableObject
         }
     }
 
-    private async Task<List<SongItem>> ResolvePlaylistTracksAsync(PlaylistItem playlist, CancellationToken ct)
+    private static bool HasCompletePlaylistTracks(PlaylistItem playlist)
+        => playlist.Tracks.Count > 0 && (playlist.TrackCount <= 0 || playlist.Tracks.Count >= Math.Min(playlist.TrackCount, 20));
+
+    private async Task<List<SongItem>> ResolvePlaylistTracksAsync(PlaylistItem playlist, CancellationToken ct, int timeoutMs = 5500)
     {
+        if (playlist.IsLocalCustom || string.Equals(playlist.Source, "local_custom", StringComparison.OrdinalIgnoreCase))
+        {
+            var latest = Config.CustomPlaylists.FirstOrDefault(p =>
+                string.Equals(p.ThirdPartyId, playlist.ThirdPartyId, StringComparison.OrdinalIgnoreCase));
+            var tracks = latest?.Tracks ?? playlist.Tracks;
+            return tracks.ToList();
+        }
+
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeoutCts.CancelAfter(TimeSpan.FromSeconds(5.5));
+        timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(timeoutMs));
 
         bool isQq = playlist.Source is "qq" or "tx" || !string.IsNullOrWhiteSpace(playlist.QqDissId);
         if (isQq)
@@ -1471,11 +1655,17 @@ public partial class MainViewModel : ObservableObject
             return qqFull?.Tracks ?? [];
         }
 
+        if (string.Equals(playlist.Source, "bilibili", StringComparison.OrdinalIgnoreCase))
+        {
+            return await Bilibili.GetFavoriteFolderSongsAsync(playlist.ThirdPartyId, timeoutCts.Token);
+        }
+
         bool isOtherThirdParty = playlist.Source is
             "kugou" or "kuwo" or "migu" or "kg" or "kw" or "mg" or
             "qishui" or "spotify" or "apple" or "deezer" or "tidal" or "qobuz" or "ytmusic";
         if (isOtherThirdParty)
         {
+            if (HasCompletePlaylistTracks(playlist)) return playlist.Tracks;
             var tpFull = await ThirdParty.GetPlaylistDetailAsync(playlist, timeoutCts.Token);
             return tpFull?.Tracks ?? [];
         }
@@ -1491,9 +1681,11 @@ public partial class MainViewModel : ObservableObject
     {
         if (banner == null) return;
         DetailForceSource = null;
+        CurrentDetailPlaylist = null;
         CurrentSection = "Detail";
         DetailType = "discoverBanner";
         DetailPlaylistId = 0;
+        DetailPlaylistDissId = string.Empty;
         DetailBadgeText = banner.BadgeText;
         DetailTitle = banner.Headline;
         DetailCreatorName = PlatformVisualHelper.GetShortLabel(banner.PlatformKey);
@@ -1505,6 +1697,7 @@ public partial class MainViewModel : ObservableObject
         CanCollectDetail = false;
         IsDetailCollected = false;
         CanRemoveFromCurrentDetail = false;
+        CanDeleteCurrentDetail = false;
         IsDetailSelecting = false;
         _detailSearchKeyword = string.Empty;
         OnPropertyChanged(nameof(DetailSearchKeyword));
@@ -1532,12 +1725,12 @@ public partial class MainViewModel : ObservableObject
     public async Task PlayDiscoverPlaylistImmediateAsync(DiscoverPlaylistCardItem? card)
     {
         if (card == null) return;
-        if (card.Playlist.Tracks.Count == 0)
+        if (!HasCompletePlaylistTracks(card.Playlist))
         {
             StatusToast = $"正在获取《{card.Title}》曲目...";
             try
             {
-                var tracks = await ResolvePlaylistTracksAsync(card.Playlist, CancellationToken.None);
+                var tracks = await ResolvePlaylistTracksAsync(card.Playlist, CancellationToken.None, timeoutMs: 15000);
                 if (tracks.Count > 0)
                 {
                     card.Playlist.Tracks = tracks;
@@ -1562,9 +1755,11 @@ public partial class MainViewModel : ObservableObject
     public void OpenDailyRecommendDetail()
     {
         DetailForceSource = null;
+        CurrentDetailPlaylist = null;
         CurrentSection = "Detail";
         DetailType = "dailyRecommend";
         DetailPlaylistId = 0;
+        DetailPlaylistDissId = string.Empty;
         DetailBadgeText = "PLAYLIST";
         DetailTitle = "每日歌曲推荐";
         DetailCreatorName = "根据你的音乐口味生成 · 每天 6:00 更新";
@@ -1576,6 +1771,7 @@ public partial class MainViewModel : ObservableObject
         CanCollectDetail = false;
         IsDetailCollected = false;
         CanRemoveFromCurrentDetail = false;
+        CanDeleteCurrentDetail = false;
         IsDetailSelecting = false;
         _detailSearchKeyword = string.Empty;
         OnPropertyChanged(nameof(DetailSearchKeyword));
@@ -1655,9 +1851,11 @@ public partial class MainViewModel : ObservableObject
     {
         if (radio == null) return;
         DetailForceSource = null;
+        CurrentDetailPlaylist = null;
         CurrentSection = "Detail";
         DetailType = "podcast";
         DetailPlaylistId = radio.Id;
+        DetailPlaylistDissId = string.Empty;
         DetailBadgeText = "PODCAST";
         DetailTitle = radio.Name;
         DetailCreatorName = radio.DjName;
@@ -1669,6 +1867,7 @@ public partial class MainViewModel : ObservableObject
         CanCollectDetail = false;
         IsDetailCollected = false;
         CanRemoveFromCurrentDetail = false;
+        CanDeleteCurrentDetail = false;
         IsDetailSelecting = false;
         _detailSearchKeyword = string.Empty;
         OnPropertyChanged(nameof(DetailSearchKeyword));
@@ -1733,16 +1932,24 @@ public partial class MainViewModel : ObservableObject
     {
         if (playlist == null) return;
         DetailForceSource = CurrentSection is "ThirdParty" or "BuiltInSources" ? ActiveZoneForceSource : null;
-        bool isQq = playlist.Source is "qq" or "tx" || !string.IsNullOrWhiteSpace(playlist.QqDissId);
-        bool isOtherThirdParty = !isQq && playlist.Source is
+        bool isLocalCustom = playlist.IsLocalCustom || string.Equals(playlist.Source, "local_custom", StringComparison.OrdinalIgnoreCase);
+        bool isQq = !isLocalCustom && (playlist.Source is "qq" or "tx" || !string.IsNullOrWhiteSpace(playlist.QqDissId));
+        bool isBilibili = !isLocalCustom && !isQq && string.Equals(playlist.Source, "bilibili", StringComparison.OrdinalIgnoreCase);
+        bool isOtherThirdParty = !isLocalCustom && !isQq && !isBilibili && playlist.Source is
             "kugou" or "kuwo" or "migu" or "kg" or "kw" or "mg" or
             "qishui" or "spotify" or "apple" or "deezer" or "tidal" or "qobuz" or "ytmusic";
 
+        CurrentDetailPlaylist = playlist;
         CurrentSection = "Detail";
-        DetailType = isQq ? "qqPlaylist" : (isOtherThirdParty ? "thirdPartyPlaylist" : "playlist");
+        DetailType = isLocalCustom ? "localCustomPlaylist" : (isQq ? "qqPlaylist" : ((isOtherThirdParty || isBilibili) ? "thirdPartyPlaylist" : "playlist"));
         DetailPlaylistId = playlist.Id;
+        DetailPlaylistDissId = isQq
+            ? (!string.IsNullOrWhiteSpace(playlist.QqDissId)
+                ? playlist.QqDissId
+                : (!string.IsNullOrWhiteSpace(playlist.ThirdPartyId) ? playlist.ThirdPartyId : playlist.Id.ToString()))
+            : string.Empty;
         DetailQqDirId = playlist.QqDirId;
-        DetailBadgeText = "PLAYLIST";
+        DetailBadgeText = isLocalCustom ? "MIXED" : "PLAYLIST";
         DetailTitle = playlist.Name;
         DetailCreatorName = playlist.CreatorName;
         DetailCreatorAvatarUrl = playlist.CreatorAvatarUrl;
@@ -1755,6 +1962,7 @@ public partial class MainViewModel : ObservableObject
         CanCollectDetail = DetailType == "playlist" && playlist.Id > 0;
         IsDetailCollected = playlist.Subscribed;
         CanRemoveFromCurrentDetail = false;
+        CanDeleteCurrentDetail = false;
         IsDetailSelecting = false;
         _detailSearchKeyword = string.Empty;
         OnPropertyChanged(nameof(DetailSearchKeyword));
@@ -1764,20 +1972,58 @@ public partial class MainViewModel : ObservableObject
         IsLoading = true;
         try
         {
+            if (isLocalCustom)
+            {
+                var latest = Config.CustomPlaylists.FirstOrDefault(p =>
+                    string.Equals(p.ThirdPartyId, playlist.ThirdPartyId, StringComparison.OrdinalIgnoreCase)) ?? playlist;
+                CurrentDetailPlaylist = latest;
+                CanCollectDetail = false;
+                CanRemoveFromCurrentDetail = true;
+                CanDeleteCurrentDetail = CanDeletePlaylist(latest);
+                DetailTitle = latest.Name;
+                DetailCreatorName = latest.CreatorName;
+                DetailDescription = latest.Description;
+                if (ImageUriHelper.HasRealImageUrl(latest.CoverImgUrl))
+                {
+                    DetailCoverUrl = latest.CoverImgUrl;
+                }
+                DetailSongCountText = $"{latest.Tracks.Count} 首音乐";
+                DetailSubtitle = $"[本地跨平台混合歌单] 创建者: {latest.CreatorName} · 共 {latest.Tracks.Count} 首";
+                foreach (var s in latest.Tracks)
+                {
+                    s.IsLiked = Config.IsFavorite(s.Id);
+                    DetailSongs.Add(s);
+                }
+                RebuildFilteredDetailSongs();
+                SyncSongPlayingStates(Player.CurrentSong?.Id, Player.IsPlaying);
+                return;
+            }
+
             if (isQq)
             {
-                var dissId = !string.IsNullOrWhiteSpace(playlist.QqDissId)
-                    ? playlist.QqDissId
-                    : (!string.IsNullOrWhiteSpace(playlist.ThirdPartyId) ? playlist.ThirdPartyId : playlist.Id.ToString());
+                var dissId = DetailPlaylistDissId;
                 var qqFull = await QqMusic.GetPlaylistDetailAsync(dissId);
                 if (qqFull != null)
                 {
                     var matchedCreated = QqCreatedPlaylists.FirstOrDefault(p => p.QqDissId == dissId || p.Id == playlist.Id);
+                    bool matchedCollected = QqCollectedPlaylists.Any(p => p.QqDissId == dissId || p.Id == playlist.Id);
                     if (matchedCreated != null)
                     {
                         DetailQqDirId = matchedCreated.QqDirId > 0 ? matchedCreated.QqDirId : qqFull.QqDirId;
+                        if (qqFull.QqDirId <= 0 && matchedCreated.QqDirId > 0) qqFull.QqDirId = matchedCreated.QqDirId;
+                        if (matchedCreated.IsSystemDefaultPlaylist) qqFull.IsSystemDefaultPlaylist = true;
                     }
+                    if (playlist.IsSystemDefaultPlaylist) qqFull.IsSystemDefaultPlaylist = true;
+                    CurrentDetailPlaylist = matchedCreated ?? qqFull;
                     CanRemoveFromCurrentDetail = matchedCreated != null;
+                    CanDeleteCurrentDetail = CanDeletePlaylist(CurrentDetailPlaylist);
+                    CanCollectDetail = matchedCreated == null && long.TryParse(dissId, out var numericDissId) && numericDissId > 0;
+                    bool isCollected = playlist.Subscribed || matchedCollected;
+                    if (CanCollectDetail && !isCollected && CurrentQqUser != null)
+                    {
+                        isCollected = await QqMusic.IsPlaylistCollectedAsync(dissId);
+                    }
+                    IsDetailCollected = isCollected;
                     DetailTitle = qqFull.Name;
                     DetailDescription = qqFull.Description;
                     DetailCreatorName = qqFull.CreatorName;
@@ -1806,11 +2052,43 @@ public partial class MainViewModel : ObservableObject
                 return;
             }
 
+            if (isBilibili)
+            {
+                var biliSongs = await Bilibili.GetFavoriteFolderSongsAsync(playlist.ThirdPartyId);
+                CanRemoveFromCurrentDetail = IsOwnedExtendedPlatformPlaylist(AuthMusicPlatform.Bilibili, playlist);
+                CanDeleteCurrentDetail = CanDeletePlaylist(playlist);
+                DetailTitle = playlist.Name;
+                DetailCreatorName = playlist.CreatorName;
+                DetailSongCountText = $"{biliSongs.Count} 首音乐";
+                DetailSubtitle = $"[B站收藏夹] 创建者: {playlist.CreatorName} · 共 {biliSongs.Count} 首";
+                foreach (var s in biliSongs)
+                {
+                    s.IsLiked = Config.IsFavorite(s.Id);
+                    DetailSongs.Add(s);
+                }
+                RebuildFilteredDetailSongs();
+                SyncSongPlayingStates(Player.CurrentSong?.Id, Player.IsPlaying);
+                if (biliSongs.Count == 0)
+                {
+                    StatusToast = $"收藏夹《{playlist.Name}》暂无可播放条目或需要先完成 B 站登录";
+                }
+                return;
+            }
+
             if (isOtherThirdParty)
             {
-                var tpFull = await ThirdParty.GetPlaylistDetailAsync(playlist);
+                var tpFull = HasCompletePlaylistTracks(playlist) ? playlist : await ThirdParty.GetPlaylistDetailAsync(playlist);
                 if (tpFull != null)
                 {
+                    if (playlist.IsSystemDefaultPlaylist) tpFull.IsSystemDefaultPlaylist = true;
+                    CurrentDetailPlaylist = tpFull;
+                    if (Services.Auth.PlatformAuthService.TryMapSourceToPlatform(playlist.Source, out var extPlat) &&
+                        ThirdPartyMusicService.SupportsCloudPlaylistTrackRemove(playlist.Source, playlist.ThirdPartyId) &&
+                        IsOwnedExtendedPlatformPlaylist(extPlat, playlist))
+                    {
+                        CanRemoveFromCurrentDetail = true;
+                    }
+                    CanDeleteCurrentDetail = CanDeletePlaylist(tpFull);
                     string platformLabel = playlist.Source.ToLowerInvariant() switch
                     {
                         "kugou" or "kg" => "酷狗歌单",
@@ -1818,7 +2096,7 @@ public partial class MainViewModel : ObservableObject
                         "migu" or "mg" => "咪咕歌单",
                         "qishui" => "汽水音乐歌单",
                         "spotify" => "Spotify 歌单",
-                        "apple" => "Apple Music 专辑",
+                        "apple" => "Apple Music 歌单/专辑",
                         "deezer" => "Deezer 歌单",
                         "tidal" => "Tidal Hi-Res",
                         "qobuz" => "Qobuz Hi-Res",
@@ -1855,6 +2133,8 @@ public partial class MainViewModel : ObservableObject
             var full = await Api.GetPlaylistDetailAsync(playlist.Id);
             if (full != null)
             {
+                if (playlist.IsSystemDefaultPlaylist) full.IsSystemDefaultPlaylist = true;
+                CurrentDetailPlaylist = full;
                 DetailTitle = full.Name;
                 DetailDescription = full.Description;
                 DetailCreatorName = full.CreatorName;
@@ -1868,6 +2148,7 @@ public partial class MainViewModel : ObservableObject
                 }
                 IsDetailCollected = full.Subscribed;
                 CanRemoveFromCurrentDetail = CurrentUser != null && full.CreatorUserId > 0 && full.CreatorUserId == CurrentUser.UserId;
+                CanDeleteCurrentDetail = CanDeletePlaylist(full);
                 CanCollectDetail = !CanRemoveFromCurrentDetail && full.Id > 0;
                 foreach (var s in full.Tracks)
                 {
@@ -1888,9 +2169,11 @@ public partial class MainViewModel : ObservableObject
     {
         if (album == null) return;
         DetailForceSource = null;
+        CurrentDetailPlaylist = null;
         CurrentSection = "Detail";
         DetailType = "album";
         DetailPlaylistId = album.Id;
+        DetailPlaylistDissId = string.Empty;
         DetailBadgeText = "ALBUM";
         DetailTitle = album.Name;
         DetailCreatorName = album.ArtistName;
@@ -1902,6 +2185,7 @@ public partial class MainViewModel : ObservableObject
         CanCollectDetail = false;
         IsDetailCollected = false;
         CanRemoveFromCurrentDetail = false;
+        CanDeleteCurrentDetail = false;
         IsDetailSelecting = false;
         _detailSearchKeyword = string.Empty;
         OnPropertyChanged(nameof(DetailSearchKeyword));
@@ -1938,9 +2222,11 @@ public partial class MainViewModel : ObservableObject
     {
         if (artist == null) return;
         DetailForceSource = null;
+        CurrentDetailPlaylist = null;
         CurrentSection = "Detail";
         DetailType = "artist";
         DetailPlaylistId = artist.Id;
+        DetailPlaylistDissId = string.Empty;
         DetailBadgeText = "ARTIST";
         DetailTitle = artist.Name;
         DetailCreatorName = artist.Name;
@@ -1952,6 +2238,7 @@ public partial class MainViewModel : ObservableObject
         CanCollectDetail = false;
         IsDetailCollected = false;
         CanRemoveFromCurrentDetail = false;
+        CanDeleteCurrentDetail = false;
         IsDetailSelecting = false;
         _detailSearchKeyword = string.Empty;
         OnPropertyChanged(nameof(DetailSearchKeyword));
@@ -2723,6 +3010,8 @@ public partial class MainViewModel : ObservableObject
 
     // ==================== QQ 音乐双平台账号与独立歌单中心 ====================
 
+    private DateTimeOffset _lastQqProfileSyncAt = DateTimeOffset.MinValue;
+
     public async Task RefreshQqUserProfileAsync()
     {
         var uin = Config.Settings.QqMusicUin;
@@ -2741,6 +3030,7 @@ public partial class MainViewModel : ObservableObject
             if (profile != null)
             {
                 CurrentQqUser = profile;
+                _lastQqProfileSyncAt = DateTimeOffset.UtcNow;
                 Config.Settings.QqMusicUin = profile.Uin;
                 Config.Settings.QqMusicNickname = profile.Nickname;
                 await Config.SaveSettingsAsync();
@@ -2750,6 +3040,12 @@ public partial class MainViewModel : ObservableObject
 
                 QqCollectedPlaylists.Clear();
                 foreach (var p in collected) QqCollectedPlaylists.Add(p);
+
+                if (string.Equals(SelectedUserPlatformKey, "qq", StringComparison.OrdinalIgnoreCase))
+                {
+                    ReplaceCollection(UserCreatedPlaylists, QqCreatedPlaylists);
+                    ReplaceCollection(UserFavoritePlaylists, QqCollectedPlaylists);
+                }
 
                 QqLoginStatusText = $"已登录 QQ 音乐：{profile.Nickname} (QQ: {profile.Uin}) · 创建歌单 {created.Count} 个 · 收藏歌单 {collected.Count} 个";
             }
@@ -2762,6 +3058,7 @@ public partial class MainViewModel : ObservableObject
         finally
         {
             IsLoading = false;
+            SyncUserAccountCenterCards();
         }
     }
 
@@ -2773,9 +3070,16 @@ public partial class MainViewModel : ObservableObject
         await Config.SaveSettingsAsync();
 
         CurrentQqUser = null;
+        _lastQqProfileSyncAt = DateTimeOffset.MinValue;
         QqCreatedPlaylists.Clear();
         QqCollectedPlaylists.Clear();
+        if (string.Equals(SelectedUserPlatformKey, "qq", StringComparison.OrdinalIgnoreCase))
+        {
+            UserCreatedPlaylists.Clear();
+            UserFavoritePlaylists.Clear();
+        }
         QqLoginStatusText = "未登录 QQ 音乐（支持手机 QQ 扫码或 QQ 音乐 Cookie 登录）";
+        SyncUserAccountCenterCards();
         StatusToast = "已退出 QQ 音乐账号";
     }
 
@@ -2783,7 +3087,13 @@ public partial class MainViewModel : ObservableObject
     {
         await LogoutUserAsync();
         await LogoutQqMusicAsync();
-        StatusToast = "已退出全部音乐平台账号";
+        await PlatformAuth.ClearAllSessionsAsync();
+        _platformLibraryCache.Clear();
+        _lastPlatformLibrarySyncAt.Clear();
+        UserCreatedPlaylists.Clear();
+        UserFavoritePlaylists.Clear();
+        SyncUserAccountCenterCards();
+        StatusToast = "已退出全部 12 个音乐平台账号";
     }
 
     public async Task RefreshUserProfileAsync()
@@ -2841,20 +3151,26 @@ public partial class MainViewModel : ObservableObject
         await Task.WhenAll(playlistsTask, albumsTask, recordTask);
 
         UserPlaylists.Clear();
-        UserCreatedPlaylists.Clear();
-        UserFavoritePlaylists.Clear();
+        _neteaseCreatedCache.Clear();
+        _neteaseFavoriteCache.Clear();
 
         foreach (var p in playlistsTask.Result)
         {
             UserPlaylists.Add(p);
             if (p.CreatorUserId == profile.UserId || p.CreatorName == profile.Nickname)
             {
-                UserCreatedPlaylists.Add(p);
+                _neteaseCreatedCache.Add(p);
             }
             else
             {
-                UserFavoritePlaylists.Add(p);
+                _neteaseFavoriteCache.Add(p);
             }
+        }
+
+        if (string.Equals(SelectedUserPlatformKey, "netease", StringComparison.OrdinalIgnoreCase))
+        {
+            ReplaceCollection(UserCreatedPlaylists, _neteaseCreatedCache);
+            ReplaceCollection(UserFavoritePlaylists, _neteaseFavoriteCache);
         }
 
         UserSubscribedAlbums.Clear();
@@ -2862,6 +3178,8 @@ public partial class MainViewModel : ObservableObject
 
         UserPlayRecords.Clear();
         foreach (var r in recordTask.Result) UserPlayRecords.Add(r);
+
+        SyncUserAccountCenterCards();
     }
 
     public async Task LoadUserPlayRecordAsync(int type = 1)
@@ -2930,12 +3248,257 @@ public partial class MainViewModel : ObservableObject
 
         CurrentUser = null;
         UserPlaylists.Clear();
-        UserCreatedPlaylists.Clear();
-        UserFavoritePlaylists.Clear();
+        _neteaseCreatedCache.Clear();
+        _neteaseFavoriteCache.Clear();
+        if (string.Equals(SelectedUserPlatformKey, "netease", StringComparison.OrdinalIgnoreCase))
+        {
+            UserCreatedPlaylists.Clear();
+            UserFavoritePlaylists.Clear();
+        }
         UserSubscribedAlbums.Clear();
         UserPlayRecords.Clear();
         LoginStatusText = "未登录（支持扫码、UID 免密或 Cookie 登录）";
+        SyncUserAccountCenterCards();
         StatusToast = "已退出登录";
+    }
+
+    // ==================== 12 平台账号矩阵同步与个人歌单切换 ====================
+
+    private static void ReplaceCollection<T>(ObservableCollection<T> target, IEnumerable<T> items)
+    {
+        target.Clear();
+        foreach (var item in items)
+        {
+            target.Add(item);
+        }
+    }
+
+    public void SyncUserAccountCenterCards()
+    {
+        RunOnUi(() =>
+        {
+            if (PlatformAccountCards.Count == 0)
+            {
+                PlatformAccountCards.Add(new PlatformAccountCardItem
+                {
+                    ProviderKey = "netease",
+                    PlatformEnum = null,
+                    DisplayName = "网易云音乐",
+                    AuthBadgeText = "扫码 / UID / Cookie"
+                });
+                PlatformAccountCards.Add(new PlatformAccountCardItem
+                {
+                    ProviderKey = "qq",
+                    PlatformEnum = null,
+                    DisplayName = "QQ 音乐",
+                    AuthBadgeText = "快捷 / 扫码 / Cookie"
+                });
+
+                foreach (var p in Enum.GetValues<AuthMusicPlatform>())
+                {
+                    var cfg = PlatformAuth.GetConfig(p);
+                    PlatformAccountCards.Add(new PlatformAccountCardItem
+                    {
+                        ProviderKey = cfg.SourceKey,
+                        PlatformEnum = p,
+                        DisplayName = cfg.DisplayName,
+                        AuthBadgeText = cfg.AuthBadgeText
+                    });
+                }
+            }
+
+            int loggedInCount = 0;
+            foreach (var card in PlatformAccountCards)
+            {
+                card.IsSelected = string.Equals(card.ProviderKey, SelectedUserPlatformKey, StringComparison.OrdinalIgnoreCase);
+
+                if (card.ProviderKey == "netease")
+                {
+                    bool loggedIn = CurrentUser != null;
+                    card.IsLoggedIn = loggedIn;
+                    card.StatusSummary = loggedIn ? CurrentUser!.Nickname : "未登录";
+                    if (loggedIn) loggedInCount++;
+                }
+                else if (card.ProviderKey == "qq")
+                {
+                    bool loggedIn = CurrentQqUser != null;
+                    card.IsLoggedIn = loggedIn;
+                    card.StatusSummary = loggedIn ? CurrentQqUser!.Nickname : "未登录";
+                    if (loggedIn) loggedInCount++;
+                }
+                else if (card.PlatformEnum.HasValue)
+                {
+                    var p = card.PlatformEnum.Value;
+                    bool loggedIn = PlatformAuth.HasValidSession(p);
+                    var session = PlatformAuth.TryGetSession(p);
+                    card.IsLoggedIn = loggedIn;
+                    if (!loggedIn)
+                    {
+                        card.StatusSummary = "未登录";
+                    }
+                    else
+                    {
+                        int totalPl = _platformLibraryCache.TryGetValue(p, out var lib)
+                            ? lib.Created.Count + lib.Collected.Count
+                            : -1;
+                        if (!string.IsNullOrWhiteSpace(session?.Nickname))
+                        {
+                            card.StatusSummary = totalPl > 0
+                                ? $"{session.Nickname} · {totalPl} 歌单"
+                                : session.Nickname;
+                        }
+                        else
+                        {
+                            card.StatusSummary = totalPl > 0
+                                ? $"已同步 {totalPl} 个歌单"
+                                : "已授权登录";
+                        }
+                    }
+                    if (loggedIn) loggedInCount++;
+                }
+            }
+
+            MultiPlatformStatusSummary = $"已登录 {loggedInCount} / 12 个音乐平台";
+            AccountCenterStateChanged?.Invoke();
+        });
+    }
+
+    public async Task SwitchUserCenterPlatformAsync(string providerKey)
+    {
+        var normalized = string.IsNullOrWhiteSpace(providerKey) ? "netease" : providerKey.Trim().ToLowerInvariant();
+        SelectedUserPlatformKey = normalized;
+        SyncUserAccountCenterCards();
+
+        if (normalized == "netease")
+        {
+            ReplaceCollection(UserCreatedPlaylists, _neteaseCreatedCache);
+            ReplaceCollection(UserFavoritePlaylists, _neteaseFavoriteCache);
+            return;
+        }
+
+        if (normalized == "qq")
+        {
+            ReplaceCollection(UserCreatedPlaylists, QqCreatedPlaylists);
+            ReplaceCollection(UserFavoritePlaylists, QqCollectedPlaylists);
+            bool hasQqCreds = !string.IsNullOrWhiteSpace(Config.Settings.QqMusicUin) ||
+                              !string.IsNullOrWhiteSpace(Config.Settings.QqMusicCookie);
+            if (hasQqCreds &&
+                (CurrentQqUser == null ||
+                 (QqCollectedPlaylists.Count == 0 && (DateTimeOffset.UtcNow - _lastQqProfileSyncAt).TotalSeconds > 15)))
+            {
+                await RefreshQqUserProfileAsync();
+            }
+            return;
+        }
+
+        if (Services.Auth.PlatformAuthService.TryMapSourceToPlatform(normalized, out var platform))
+        {
+            if (_platformLibraryCache.TryGetValue(platform, out var cached))
+            {
+                ReplaceCollection(UserCreatedPlaylists, cached.Created);
+                ReplaceCollection(UserFavoritePlaylists, cached.Collected);
+
+                if (PlatformAuth.HasValidSession(platform) &&
+                    cached.Created.Count == 0 &&
+                    cached.Collected.Count == 0)
+                {
+                    bool shouldRetry = !_lastPlatformLibrarySyncAt.TryGetValue(platform, out var lastAt) ||
+                                       (DateTimeOffset.UtcNow - lastAt).TotalSeconds > 15;
+                    if (shouldRetry)
+                    {
+                        await SyncPlatformAccountLibraryAsync(platform);
+                    }
+                }
+            }
+            else
+            {
+                UserCreatedPlaylists.Clear();
+                UserFavoritePlaylists.Clear();
+                if (PlatformAuth.HasValidSession(platform))
+                {
+                    await SyncPlatformAccountLibraryAsync(platform);
+                }
+            }
+        }
+    }
+
+    public async Task SyncAllLoggedInExtendedPlatformsAsync()
+    {
+        var loggedInPlatforms = Enum.GetValues<AuthMusicPlatform>()
+            .Where(p => PlatformAuth.HasValidSession(p))
+            .ToList();
+        if (loggedInPlatforms.Count == 0) return;
+
+        using var gate = new SemaphoreSlim(3, 3);
+        var tasks = loggedInPlatforms.Select(async p =>
+        {
+            await gate.WaitAsync();
+            try
+            {
+                await SyncPlatformAccountLibraryAsync(p, showLoading: false);
+            }
+            finally
+            {
+                gate.Release();
+            }
+        });
+        await Task.WhenAll(tasks);
+    }
+
+    public async Task SyncPlatformAccountLibraryAsync(AuthMusicPlatform platform, bool showLoading = true)
+    {
+        if (!PlatformAuth.HasValidSession(platform))
+        {
+            _platformLibraryCache.TryRemove(platform, out _);
+            _lastPlatformLibrarySyncAt.TryRemove(platform, out _);
+            if (Services.Auth.PlatformAuthService.TryMapSourceToPlatform(SelectedUserPlatformKey, out var active) && active == platform)
+            {
+                RunOnUi(() =>
+                {
+                    UserCreatedPlaylists.Clear();
+                    UserFavoritePlaylists.Clear();
+                });
+            }
+            SyncUserAccountCenterCards();
+            return;
+        }
+
+        if (showLoading) RunOnUi(() => IsLoading = true);
+        try
+        {
+            var lib = platform == AuthMusicPlatform.Bilibili
+                ? await Bilibili.GetLoggedInProfileAndFoldersAsync()
+                : await ThirdParty.GetUserAccountLibraryAsync(platform);
+
+            _lastPlatformLibrarySyncAt[platform] = DateTimeOffset.UtcNow;
+
+            if (!string.IsNullOrWhiteSpace(lib.Nickname))
+            {
+                var session = PlatformAuth.TryGetSession(platform);
+                if (session != null && !string.Equals(session.Nickname, lib.Nickname, StringComparison.Ordinal))
+                {
+                    session.Nickname = lib.Nickname;
+                    await PlatformAuth.SaveSessionAsync(session);
+                }
+            }
+
+            _platformLibraryCache[platform] = lib;
+
+            if (Services.Auth.PlatformAuthService.TryMapSourceToPlatform(SelectedUserPlatformKey, out var active) && active == platform)
+            {
+                RunOnUi(() =>
+                {
+                    ReplaceCollection(UserCreatedPlaylists, lib.Created);
+                    ReplaceCollection(UserFavoritePlaylists, lib.Collected);
+                });
+            }
+
+            SyncUserAccountCenterCards();
+        }
+        finally
+        {
+            if (showLoading) RunOnUi(() => IsLoading = false);
+        }
     }
 
     public async Task LoadCommentsForCurrentSongAsync()
@@ -3001,12 +3564,8 @@ public partial class MainViewModel : ObservableObject
         CurrentArtistName = song.ArtistText;
         CurrentCoverUrl = song.CoverThumbnailUrl;
         IsCurrentSongLiked = song.IsLiked;
-        CurrentPlatformBadge = (song.ResolvedPlatform ?? song.Source).ToUpperInvariant();
-        CurrentQualityBadge = !string.IsNullOrWhiteSpace(song.PlayingQualityBadge)
-            ? song.PlayingQualityBadge
-            : (song.IsLocalSong
-                ? $"本地 {Path.GetExtension(song.LocalFilePath ?? string.Empty).TrimStart('.').ToUpperInvariant()}".Trim()
-                : (Player.IsBuffering ? "解析中..." : MusicQualityLevel.GetShortBadgeName(Config.Settings.MusicQuality)));
+        CurrentPlatformBadge = AudioPlayerService.FormatPlatformBadgeDisplay(song.ResolvedPlatform ?? song.Source);
+        CurrentQualityBadge = Player.GetEffectiveQualityBadge(song);
         DurationSeconds = Math.Max(1, song.DurationMs / 1000.0);
         DurationText = song.DurationText;
         LyricOffsetText = "0.0s";
@@ -3035,11 +3594,8 @@ public partial class MainViewModel : ObservableObject
             SyncSongPlayingStates(Player.CurrentSong?.Id, playing);
             if (Player.CurrentSong != null)
             {
-                CurrentPlatformBadge = (Player.CurrentSong.ResolvedPlatform ?? Player.CurrentSong.Source).ToUpperInvariant();
-                if (!string.IsNullOrWhiteSpace(Player.CurrentSong.PlayingQualityBadge))
-                {
-                    CurrentQualityBadge = Player.CurrentSong.PlayingQualityBadge;
-                }
+                CurrentPlatformBadge = AudioPlayerService.FormatPlatformBadgeDisplay(Player.CurrentSong.ResolvedPlatform ?? Player.CurrentSong.Source);
+                CurrentQualityBadge = Player.GetEffectiveQualityBadge(Player.CurrentSong);
             }
         });
     }
@@ -3082,5 +3638,697 @@ public partial class MainViewModel : ObservableObject
             CurrentLyricText = line.Text;
             CurrentLyricTranslation = line.TranslationText;
         });
+    }
+
+    // ==================== 歌单统一编辑（本地混合歌单 + 全平台云端读写） ====================
+
+    public void SyncLocalCustomPlaylists()
+    {
+        var items = Config.CustomPlaylists.ToList();
+        RunOnUi(() => ReplaceCollection(LocalCustomPlaylists, items));
+    }
+
+    private bool IsOwnedExtendedPlatformPlaylist(AuthMusicPlatform platform, PlaylistItem playlist)
+    {
+        if (_platformLibraryCache.TryGetValue(platform, out var cached) &&
+            cached.Created.Any(p => !string.IsNullOrWhiteSpace(playlist.ThirdPartyId) &&
+                string.Equals(p.ThirdPartyId, playlist.ThirdPartyId, StringComparison.OrdinalIgnoreCase)))
+        {
+            return true;
+        }
+
+        if (platform == AuthMusicPlatform.Bilibili && playlist.CreatorUserId > 0)
+        {
+            var uid = PlatformAuth.TryGetSession(AuthMusicPlatform.Bilibili)?.UserId;
+            if (!string.IsNullOrWhiteSpace(uid) && string.Equals(uid, playlist.CreatorUserId.ToString(), StringComparison.Ordinal))
+                return true;
+        }
+
+        return false;
+    }
+
+    public async Task<PlaylistItem?> CreateLocalCustomPlaylistAsync(string name)
+    {
+        var created = await Config.CreateCustomPlaylistAsync(name);
+        SyncLocalCustomPlaylists();
+        if (created != null)
+            StatusToast = $"已创建本地混合歌单《{created.Name}》";
+        return created;
+    }
+
+    private void ClearDetailViewIfMatchingPlaylist(PlaylistItem playlist)
+    {
+        if (CurrentDetailPlaylist == null || !IsSamePlaylist(CurrentDetailPlaylist, playlist)) return;
+        RunOnUi(() =>
+        {
+            CurrentDetailPlaylist = null;
+            CanRemoveFromCurrentDetail = false;
+            CanDeleteCurrentDetail = false;
+            IsDetailSelecting = false;
+            DetailSongs.Clear();
+            RebuildFilteredDetailSongs();
+            DetailSongCountText = "0 首音乐";
+        });
+    }
+
+    public bool IsSystemDefaultPlaylist(PlaylistItem? playlist)
+    {
+        if (playlist == null) return false;
+        if (playlist.IsSystemDefaultPlaylist) return true;
+
+        var src = (playlist.Source ?? string.Empty).Trim().ToLowerInvariant();
+        if (src is "qq" or "tx" || !string.IsNullOrWhiteSpace(playlist.QqDissId))
+        {
+            if (playlist.QqDirId is 201 or 205 or 206 || string.Equals(playlist.Name, "我喜欢", StringComparison.Ordinal))
+                return true;
+            return QqCreatedPlaylists.Any(p => IsSamePlaylist(p, playlist) && (p.IsSystemDefaultPlaylist || p.QqDirId is 201 or 205 or 206));
+        }
+
+        if (src == "bilibili")
+        {
+            if (_platformLibraryCache.TryGetValue(AuthMusicPlatform.Bilibili, out var bLib))
+            {
+                var cachedItem = bLib.Created.FirstOrDefault(p => IsSamePlaylist(p, playlist));
+                if (cachedItem?.IsSystemDefaultPlaylist == true) return true;
+                if (bLib.Created.Count > 0 && IsSamePlaylist(bLib.Created[0], playlist) &&
+                    string.Equals(playlist.Name, "默认收藏夹", StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+            return string.Equals(playlist.Name, "默认收藏夹", StringComparison.Ordinal);
+        }
+
+        if (ThirdPartyMusicService.IsSystemDefaultThirdPartyPlaylist(playlist))
+            return true;
+
+        if (Services.Auth.PlatformAuthService.TryMapSourceToPlatform(src, out var extPlat) &&
+            _platformLibraryCache.TryGetValue(extPlat, out var extLib))
+        {
+            if (extLib.Created.Any(p => IsSamePlaylist(p, playlist) && p.IsSystemDefaultPlaylist))
+                return true;
+        }
+
+        if (string.IsNullOrEmpty(src) || src is "netease" or "wy" or "music163")
+        {
+            if (_neteaseCreatedCache.Any(p => p.Id == playlist.Id && p.IsSystemDefaultPlaylist))
+                return true;
+            if (_neteaseCreatedCache.Count > 0 && _neteaseCreatedCache[0].Id == playlist.Id &&
+                playlist.Name.EndsWith("喜欢的音乐", StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public bool CanDeletePlaylist(PlaylistItem? playlist)
+    {
+        if (playlist == null || IsSystemDefaultPlaylist(playlist)) return false;
+
+        if (playlist.IsLocalCustom || string.Equals(playlist.Source, "local_custom", StringComparison.OrdinalIgnoreCase))
+            return !string.IsNullOrWhiteSpace(playlist.ThirdPartyId);
+
+        var src = (playlist.Source ?? string.Empty).Trim().ToLowerInvariant();
+        if (src is "qq" or "tx" || !string.IsNullOrWhiteSpace(playlist.QqDissId))
+        {
+            if (string.IsNullOrWhiteSpace(Config.Settings.QqMusicCookie)) return false;
+            return QqCreatedPlaylists.Any(p =>
+                (!string.IsNullOrWhiteSpace(playlist.QqDissId) && string.Equals(p.QqDissId, playlist.QqDissId, StringComparison.OrdinalIgnoreCase)) ||
+                (playlist.Id > 0 && p.Id == playlist.Id));
+        }
+
+        if (src == "bilibili")
+        {
+            return PlatformAuth.HasValidSession(AuthMusicPlatform.Bilibili) &&
+                   !string.IsNullOrWhiteSpace(playlist.ThirdPartyId) &&
+                   !playlist.ThirdPartyId.StartsWith("season:", StringComparison.OrdinalIgnoreCase) &&
+                   IsOwnedExtendedPlatformPlaylist(AuthMusicPlatform.Bilibili, playlist);
+        }
+
+        if (ThirdPartyMusicService.SupportsCloudPlaylistWrite(src))
+        {
+            return Services.Auth.PlatformAuthService.TryMapSourceToPlatform(src, out var extPlat) &&
+                   PlatformAuth.HasValidSession(extPlat) &&
+                   IsOwnedExtendedPlatformPlaylist(extPlat, playlist);
+        }
+
+        if (string.IsNullOrEmpty(src) || src is "netease" or "wy" or "music163")
+        {
+            if (CurrentUser == null || Config.Settings.LoginType == "uid" || playlist.Id <= 0) return false;
+            return (playlist.CreatorUserId > 0 && playlist.CreatorUserId == CurrentUser.UserId) ||
+                   _neteaseCreatedCache.Any(p => p.Id == playlist.Id);
+        }
+
+        return false;
+    }
+
+    public async Task<bool> DeleteLocalCustomPlaylistAsync(PlaylistItem? playlist)
+    {
+        if (playlist == null || string.IsNullOrWhiteSpace(playlist.ThirdPartyId)) return false;
+        bool ok = await Config.DeleteCustomPlaylistAsync(playlist.ThirdPartyId);
+        if (!ok) return false;
+
+        SyncLocalCustomPlaylists();
+        ClearDetailViewIfMatchingPlaylist(playlist);
+        StatusToast = $"已删除本地混合歌单《{playlist.Name}》";
+        return true;
+    }
+
+    public async Task<(bool Success, string Message)> DeletePlaylistAsync(PlaylistItem? playlist)
+    {
+        if (playlist == null)
+            return (false, "未选择要删除的歌单");
+        if (IsSystemDefaultPlaylist(playlist))
+        {
+            StatusToast = "系统默认歌单不支持删除";
+            return (false, StatusToast);
+        }
+        if (!CanDeletePlaylist(playlist))
+        {
+            StatusToast = "当前仅支持删除本人已登录账号创建的自建歌单";
+            return (false, StatusToast);
+        }
+
+        (bool Success, string Message) outcome;
+        if (playlist.IsLocalCustom || string.Equals(playlist.Source, "local_custom", StringComparison.OrdinalIgnoreCase))
+        {
+            bool okLocal = await DeleteLocalCustomPlaylistAsync(playlist);
+            return okLocal
+                ? (true, $"已删除本地混合歌单《{playlist.Name}》")
+                : (false, "删除本地混合歌单失败");
+        }
+
+        var src = (playlist.Source ?? string.Empty).Trim().ToLowerInvariant();
+        if (src is "qq" or "tx" || !string.IsNullOrWhiteSpace(playlist.QqDissId))
+        {
+            outcome = await QqMusic.DeletePlaylistAsync(playlist);
+            if (outcome.Success)
+            {
+                RunOnUi(() =>
+                {
+                    for (int i = QqCreatedPlaylists.Count - 1; i >= 0; i--)
+                    {
+                        if (IsSamePlaylist(QqCreatedPlaylists[i], playlist))
+                            QqCreatedPlaylists.RemoveAt(i);
+                    }
+                    if (string.Equals(SelectedUserPlatformKey, "qq", StringComparison.OrdinalIgnoreCase))
+                        ReplaceCollection(UserCreatedPlaylists, QqCreatedPlaylists);
+                });
+                SyncUserAccountCenterCards();
+                _ = RefreshQqUserProfileAsync();
+            }
+        }
+        else if (src == "bilibili")
+        {
+            outcome = await Bilibili.DeleteFavoriteFolderAsync(playlist.ThirdPartyId);
+            if (outcome.Success && _platformLibraryCache.TryGetValue(AuthMusicPlatform.Bilibili, out var cachedBili))
+            {
+                var nextCreated = cachedBili.Created.Where(p => !IsSamePlaylist(p, playlist)).ToList();
+                _platformLibraryCache[AuthMusicPlatform.Bilibili] = (cachedBili.Nickname, nextCreated, cachedBili.Collected);
+                if (Services.Auth.PlatformAuthService.TryMapSourceToPlatform(SelectedUserPlatformKey, out var activePlat) &&
+                    activePlat == AuthMusicPlatform.Bilibili)
+                {
+                    RunOnUi(() => ReplaceCollection(UserCreatedPlaylists, nextCreated));
+                }
+                SyncUserAccountCenterCards();
+                _ = SyncPlatformAccountLibraryAsync(AuthMusicPlatform.Bilibili, showLoading: false);
+            }
+        }
+        else if (ThirdPartyMusicService.SupportsCloudPlaylistWrite(src))
+        {
+            outcome = await ThirdParty.DeleteUserPlaylistAsync(playlist);
+            if (outcome.Success &&
+                Services.Auth.PlatformAuthService.TryMapSourceToPlatform(src, out var extPlat) &&
+                _platformLibraryCache.TryGetValue(extPlat, out var cachedExt))
+            {
+                var nextCreated = cachedExt.Created.Where(p => !IsSamePlaylist(p, playlist)).ToList();
+                _platformLibraryCache[extPlat] = (cachedExt.Nickname, nextCreated, cachedExt.Collected);
+                if (Services.Auth.PlatformAuthService.TryMapSourceToPlatform(SelectedUserPlatformKey, out var activePlat) &&
+                    activePlat == extPlat)
+                {
+                    RunOnUi(() => ReplaceCollection(UserCreatedPlaylists, nextCreated));
+                }
+                SyncUserAccountCenterCards();
+                _ = SyncPlatformAccountLibraryAsync(extPlat, showLoading: false);
+            }
+        }
+        else
+        {
+            bool okNe = await Api.DeletePlaylistAsync(playlist.Id);
+            outcome = okNe
+                ? (true, $"已删除网易云歌单《{playlist.Name}》")
+                : (false, "删除网易云歌单失败，请检查登录状态");
+            if (okNe)
+            {
+                _neteaseCreatedCache.RemoveAll(p => p.Id == playlist.Id);
+                if (string.Equals(SelectedUserPlatformKey, "netease", StringComparison.OrdinalIgnoreCase))
+                    RunOnUi(() => ReplaceCollection(UserCreatedPlaylists, _neteaseCreatedCache));
+                SyncUserAccountCenterCards();
+                _ = RefreshUserProfileAsync();
+            }
+        }
+
+        if (outcome.Success)
+        {
+            ClearDetailViewIfMatchingPlaylist(playlist);
+        }
+        StatusToast = outcome.Message;
+        return outcome;
+    }
+
+    public List<PlaylistWriteTargetOption> GetAvailablePlaylistWriteTargets()
+    {
+        var list = new List<PlaylistWriteTargetOption>
+        {
+            new("local_custom", "本地混合歌单", "local_custom")
+        };
+
+        if (CurrentUser != null && Config.Settings.LoginType != "uid")
+        {
+            list.Add(new("netease", "网易云音乐", "netease"));
+        }
+
+        if (!string.IsNullOrWhiteSpace(Config.Settings.QqMusicCookie))
+        {
+            list.Add(new("qq", "QQ 音乐", "qq"));
+        }
+
+        var writablePlatforms = new[]
+        {
+            AuthMusicPlatform.KuGou,
+            AuthMusicPlatform.Migu,
+            AuthMusicPlatform.Bilibili,
+            AuthMusicPlatform.Spotify,
+            AuthMusicPlatform.AppleMusic,
+            AuthMusicPlatform.Deezer,
+            AuthMusicPlatform.Tidal,
+            AuthMusicPlatform.YouTubeMusic
+        };
+
+        foreach (var plat in writablePlatforms)
+        {
+            if (!PlatformAuth.HasValidSession(plat)) continue;
+            var cfg = PlatformAuth.GetConfig(plat);
+            var label = plat == AuthMusicPlatform.Bilibili ? "B 站收藏夹" : cfg.DisplayName;
+            list.Add(new(cfg.SourceKey, label, cfg.SourceKey));
+        }
+
+        return list;
+    }
+
+    public async Task<List<PlaylistItem>> GetWritablePlaylistsForTargetAsync(string targetKey)
+    {
+        var key = (targetKey ?? "local_custom").Trim().ToLowerInvariant();
+        if (key == "local_custom")
+        {
+            return LocalCustomPlaylists.ToList();
+        }
+
+        if (key == "netease")
+        {
+            if (_neteaseCreatedCache.Count == 0 && CurrentUser != null)
+                await RefreshUserProfileAsync();
+            return _neteaseCreatedCache.ToList();
+        }
+
+        if (key is "qq" or "tx")
+        {
+            if (QqCreatedPlaylists.Count == 0 && !string.IsNullOrWhiteSpace(Config.Settings.QqMusicCookie))
+                await RefreshQqUserProfileAsync();
+            return QqCreatedPlaylists.ToList();
+        }
+
+        if (Services.Auth.PlatformAuthService.TryMapSourceToPlatform(key, out var plat) &&
+            PlatformAuth.HasValidSession(plat))
+        {
+            if (!_platformLibraryCache.TryGetValue(plat, out var cached) ||
+                (cached.Created.Count == 0 && cached.Collected.Count == 0))
+            {
+                await SyncPlatformAccountLibraryAsync(plat);
+                _platformLibraryCache.TryGetValue(plat, out cached);
+            }
+            return cached.Created?.ToList() ?? [];
+        }
+
+        return [];
+    }
+
+    public async Task<PlaylistItem?> CreatePlaylistForTargetAsync(string targetKey, string name, bool isPrivate = false)
+    {
+        var title = (name ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(title)) return null;
+
+        var key = (targetKey ?? "local_custom").Trim().ToLowerInvariant();
+        if (key == "local_custom")
+        {
+            return await CreateLocalCustomPlaylistAsync(title);
+        }
+
+        if (key == "netease")
+        {
+            var createdNe = await Api.CreatePlaylistAsync(title, isPrivate);
+            if (createdNe != null)
+            {
+                _neteaseCreatedCache.Insert(0, createdNe);
+                if (string.Equals(SelectedUserPlatformKey, "netease", StringComparison.OrdinalIgnoreCase))
+                    RunOnUi(() => ReplaceCollection(UserCreatedPlaylists, _neteaseCreatedCache));
+                _ = RefreshUserProfileAsync();
+                StatusToast = $"已在网易云音乐创建歌单《{title}》";
+            }
+            return createdNe;
+        }
+
+        if (key is "qq" or "tx")
+        {
+            var createdQq = await QqMusic.CreatePlaylistAsync(title);
+            if (createdQq != null)
+            {
+                RunOnUi(() =>
+                {
+                    QqCreatedPlaylists.Insert(0, createdQq);
+                    if (string.Equals(SelectedUserPlatformKey, "qq", StringComparison.OrdinalIgnoreCase))
+                        ReplaceCollection(UserCreatedPlaylists, QqCreatedPlaylists);
+                });
+                _ = RefreshQqUserProfileAsync();
+                StatusToast = $"已在 QQ 音乐创建歌单《{title}》";
+            }
+            return createdQq;
+        }
+
+        PlaylistItem? createdExt;
+        if (key == "bilibili")
+        {
+            var (biliPl, biliMsg) = await Bilibili.CreateFavoriteFolderAsync(title, isPrivate);
+            createdExt = biliPl;
+            if (biliPl == null && !string.IsNullOrWhiteSpace(biliMsg))
+                StatusToast = biliMsg;
+        }
+        else
+        {
+            createdExt = await ThirdParty.CreateUserPlaylistAsync(key, title, isPrivate);
+        }
+
+        if (createdExt != null && Services.Auth.PlatformAuthService.TryMapSourceToPlatform(key, out var extPlat))
+        {
+            if (_platformLibraryCache.TryGetValue(extPlat, out var existing))
+            {
+                var nextCreated = new List<PlaylistItem>(existing.Created.Count + 1) { createdExt };
+                nextCreated.AddRange(existing.Created);
+                _platformLibraryCache[extPlat] = (existing.Nickname, nextCreated, existing.Collected);
+            }
+            else
+            {
+                var nick = PlatformAuth.TryGetSession(extPlat)?.Nickname ?? string.Empty;
+                _platformLibraryCache[extPlat] = (nick, [createdExt], []);
+            }
+
+            if (Services.Auth.PlatformAuthService.TryMapSourceToPlatform(SelectedUserPlatformKey, out var activePlat) &&
+                activePlat == extPlat)
+            {
+                RunOnUi(() => ReplaceCollection(UserCreatedPlaylists, _platformLibraryCache[extPlat].Created));
+            }
+            _ = SyncPlatformAccountLibraryAsync(extPlat);
+            var cfg = PlatformAuth.GetConfig(extPlat);
+            StatusToast = $"已在 {cfg.DisplayName} 创建歌单《{title}》";
+        }
+
+        return createdExt;
+    }
+
+    public async Task<(bool Success, string Message)> AddSongsToTargetPlaylistAsync(
+        string targetKey,
+        PlaylistItem targetPlaylist,
+        IReadOnlyList<SongItem> songs)
+    {
+        if (targetPlaylist == null || songs.Count == 0)
+            return (false, "未选择目标歌单或待添加歌曲");
+
+        var key = (targetKey ?? targetPlaylist.Source ?? "local_custom").Trim().ToLowerInvariant();
+        if (targetPlaylist.IsLocalCustom) key = "local_custom";
+
+        (bool Success, string Message) outcome;
+
+        if (key == "local_custom")
+        {
+            var (addedCount, _) = await Config.AddSongsToCustomPlaylistAsync(targetPlaylist.ThirdPartyId, songs);
+            SyncLocalCustomPlaylists();
+            outcome = addedCount > 0
+                ? (true, $"已添加 {addedCount} 首歌曲到本地歌单《{targetPlaylist.Name}》")
+                : (true, $"所选歌曲均已在本地歌单《{targetPlaylist.Name}》中");
+        }
+        else if (key == "netease")
+        {
+            var matchedIds = await ResolveNeteaseSongIdsAsync(songs);
+            if (matchedIds.Count == 0)
+            {
+                outcome = (false, "未能在网易云曲库匹配到所选歌曲");
+            }
+            else
+            {
+                bool ok = await Api.UpdatePlaylistTracksAsync("add", targetPlaylist.Id, matchedIds);
+                outcome = ok
+                    ? (true, $"已添加 {matchedIds.Count} 首歌曲到网易云歌单《{targetPlaylist.Name}》")
+                    : (false, "添加到网易云歌单失败（歌曲可能已存在或登录态已过期）");
+                if (ok) _ = RefreshUserProfileAsync();
+            }
+        }
+        else if (key is "qq" or "tx")
+        {
+            int dirId = await QqMusic.ResolvePlaylistDirIdAsync(targetPlaylist);
+            if (dirId <= 0)
+            {
+                outcome = (false, "无法获取 QQ 音乐目标歌单目录编号");
+            }
+            else
+            {
+                // 使用轻量副本避免 Cross-Platform 搜索解析就地篡改原 SongItem 的 QQ 字段
+                var clones = songs.Select(s => new SongItem
+                {
+                    Id = s.Id,
+                    Name = s.Name,
+                    Artists = s.Artists,
+                    QqSongId = s.QqSongId,
+                    QqSongMid = s.QqSongMid
+                }).ToList();
+                var (okQq, countQq, msgQq) = await QqMusic.UpdateSongsInPlaylistAsync(clones, dirId, isDelete: false);
+                outcome = okQq
+                    ? (true, $"已将 {countQq} 首歌曲添加到 QQ 音乐歌单《{targetPlaylist.Name}》")
+                    : (false, msgQq);
+                if (okQq) _ = RefreshQqUserProfileAsync();
+            }
+        }
+        else if (key == "bilibili")
+        {
+            var resolved = await ResolveBilibiliSongsAsync(songs);
+            if (resolved.Count == 0)
+            {
+                outcome = (false, "未能在 B 站匹配到可收藏的视频稿件");
+            }
+            else
+            {
+                var (okBili, countBili, msgBili) = await Bilibili.AddSongsToFavoriteFolderAsync(targetPlaylist.ThirdPartyId, resolved);
+                outcome = (okBili, msgBili);
+                if (okBili) _ = SyncPlatformAccountLibraryAsync(AuthMusicPlatform.Bilibili);
+            }
+        }
+        else
+        {
+            var (okTp, _, msgTp) = await ThirdParty.AddSongsToUserPlaylistAsync(targetPlaylist, songs);
+            outcome = (okTp, msgTp);
+            if (okTp && Services.Auth.PlatformAuthService.TryMapSourceToPlatform(key, out var extPlat))
+            {
+                _ = SyncPlatformAccountLibraryAsync(extPlat);
+            }
+        }
+
+        StatusToast = outcome.Message;
+        if (outcome.Success && CurrentSection == "Detail" && CurrentDetailPlaylist != null &&
+            IsSamePlaylist(CurrentDetailPlaylist, targetPlaylist))
+        {
+            await OpenPlaylistDetailAsync(CurrentDetailPlaylist);
+        }
+        return outcome;
+    }
+
+    public async Task<(bool Success, string Message)> RemoveSongsFromCurrentDetailAsync(IReadOnlyList<SongItem> songs)
+    {
+        if (CurrentDetailPlaylist == null || !CanRemoveFromCurrentDetail || songs.Count == 0)
+            return (false, "当前视图不支持移除歌曲或未选中歌曲");
+
+        var playlist = CurrentDetailPlaylist;
+        bool isLocalCustom = playlist.IsLocalCustom || string.Equals(playlist.Source, "local_custom", StringComparison.OrdinalIgnoreCase);
+
+        (bool Success, string Message) outcome;
+        if (isLocalCustom)
+        {
+            int removed = await Config.RemoveSongsFromCustomPlaylistAsync(
+                playlist.ThirdPartyId,
+                songs.Select(static s => s.Id));
+            SyncLocalCustomPlaylists();
+            outcome = removed > 0
+                ? (true, $"已从本地歌单移除 {removed} 首歌曲")
+                : (false, "未在当前本地歌单中找到待移除歌曲");
+        }
+        else if (DetailType == "qqPlaylist" || playlist.Source is "qq" or "tx")
+        {
+            int dirId = DetailQqDirId > 0 ? DetailQqDirId : await QqMusic.ResolvePlaylistDirIdAsync(playlist);
+            if (dirId <= 0) dirId = 201;
+            var (okQq, countQq, msgQq) = await QqMusic.UpdateSongsInPlaylistAsync(songs, dirId, isDelete: true);
+            outcome = okQq
+                ? (true, $"已从 QQ 音乐歌单移除 {countQq} 首歌曲")
+                : (false, msgQq);
+            if (okQq) _ = RefreshQqUserProfileAsync();
+        }
+        else if (string.Equals(playlist.Source, "bilibili", StringComparison.OrdinalIgnoreCase))
+        {
+            var (okBili, _, msgBili) = await Bilibili.RemoveSongsFromFavoriteFolderAsync(playlist.ThirdPartyId, songs);
+            outcome = (okBili, msgBili);
+            if (okBili) _ = SyncPlatformAccountLibraryAsync(AuthMusicPlatform.Bilibili);
+        }
+        else if (ThirdPartyMusicService.SupportsCloudPlaylistTrackRemove(playlist.Source, playlist.ThirdPartyId))
+        {
+            var (okTp, _, msgTp) = await ThirdParty.RemoveSongsFromUserPlaylistAsync(playlist, songs);
+            outcome = (okTp, msgTp);
+            if (okTp && Services.Auth.PlatformAuthService.TryMapSourceToPlatform(playlist.Source, out var extPlat))
+            {
+                _ = SyncPlatformAccountLibraryAsync(extPlat);
+            }
+        }
+        else
+        {
+            var ids = songs.Select(static s => s.NumericId).Where(static id => id > 0).Distinct().ToList();
+            if (ids.Count == 0)
+            {
+                outcome = (false, "未找到有效网易云曲目 ID");
+            }
+            else
+            {
+                bool okNe = await Api.UpdatePlaylistTracksAsync("del", playlist.Id, ids);
+                outcome = okNe
+                    ? (true, $"已从歌单移除 {ids.Count} 首歌曲")
+                    : (false, "从歌单删除歌曲失败");
+                if (okNe) _ = RefreshUserProfileAsync();
+            }
+        }
+
+        StatusToast = outcome.Message;
+        if (outcome.Success)
+        {
+            var removeSet = new HashSet<SongItem>(songs);
+            var removeIds = new HashSet<string>(songs.Select(static s => s.Id), StringComparer.OrdinalIgnoreCase);
+            RunOnUi(() =>
+            {
+                for (int i = DetailSongs.Count - 1; i >= 0; i--)
+                {
+                    if (removeSet.Contains(DetailSongs[i]) || removeIds.Contains(DetailSongs[i].Id))
+                        DetailSongs.RemoveAt(i);
+                }
+                if (isLocalCustom)
+                {
+                    var refreshed = Config.CustomPlaylists.FirstOrDefault(p =>
+                        string.Equals(p.ThirdPartyId, playlist.ThirdPartyId, StringComparison.OrdinalIgnoreCase));
+                    if (refreshed != null)
+                    {
+                        CurrentDetailPlaylist = refreshed;
+                        DetailCoverUrl = refreshed.CoverImgUrl;
+                    }
+                }
+                else
+                {
+                    playlist.TrackCount = DetailSongs.Count;
+                }
+                DetailSongCountText = $"{DetailSongs.Count} 首音乐";
+                RebuildFilteredDetailSongs();
+                IsDetailSelecting = false;
+            });
+        }
+
+        return outcome;
+    }
+
+    private async Task<List<long>> ResolveNeteaseSongIdsAsync(IReadOnlyList<SongItem> songs)
+    {
+        var ids = new List<long>();
+        foreach (var song in songs)
+        {
+            bool isNativeNetease = (string.IsNullOrWhiteSpace(song.Source) ||
+                string.Equals(song.Source, "netease", StringComparison.OrdinalIgnoreCase)) &&
+                song.NumericId > 0;
+            if (isNativeNetease)
+            {
+                if (!ids.Contains(song.NumericId)) ids.Add(song.NumericId);
+                continue;
+            }
+
+            var kw = $"{song.Name} {song.ArtistText}".Replace("未知歌手", "").Trim();
+            if (string.IsNullOrWhiteSpace(kw)) continue;
+            try
+            {
+                var hits = await Api.SearchSongsAsync(kw, 6, 0);
+                var best = hits.FirstOrDefault(h =>
+                    h.NumericId > 0 &&
+                    string.Equals(h.Name.Trim(), song.Name.Trim(), StringComparison.OrdinalIgnoreCase))
+                    ?? hits.FirstOrDefault(h => h.NumericId > 0);
+                if (best != null && !ids.Contains(best.NumericId))
+                    ids.Add(best.NumericId);
+            }
+            catch
+            {
+            }
+        }
+        return ids;
+    }
+
+    private async Task<List<SongItem>> ResolveBilibiliSongsAsync(IReadOnlyList<SongItem> songs)
+    {
+        var list = new List<SongItem>();
+        foreach (var song in songs)
+        {
+            if (!string.IsNullOrWhiteSpace(song.BilibiliBvid) || song.BilibiliAid > 0)
+            {
+                list.Add(new SongItem
+                {
+                    Id = song.Id,
+                    Name = song.Name,
+                    BilibiliAid = song.BilibiliAid,
+                    BilibiliBvid = song.BilibiliBvid
+                });
+                continue;
+            }
+
+            var kw = $"{song.Name} {song.ArtistText}".Replace("未知歌手", "").Trim();
+            if (string.IsNullOrWhiteSpace(kw)) continue;
+            try
+            {
+                var hits = await Bilibili.SearchVideosAsync(kw, 1, 5);
+                var best = hits.FirstOrDefault(h => h.Aid > 0 || !string.IsNullOrWhiteSpace(h.Bvid));
+                if (best != null)
+                {
+                    list.Add(new SongItem
+                    {
+                        Name = best.Title,
+                        BilibiliAid = best.Aid,
+                        BilibiliBvid = best.Bvid
+                    });
+                }
+            }
+            catch
+            {
+            }
+        }
+        return list;
+    }
+
+    private static bool IsSamePlaylist(PlaylistItem a, PlaylistItem b)
+    {
+        if (ReferenceEquals(a, b)) return true;
+        if (!string.IsNullOrWhiteSpace(a.ThirdPartyId) && !string.IsNullOrWhiteSpace(b.ThirdPartyId))
+            return string.Equals(a.ThirdPartyId, b.ThirdPartyId, StringComparison.OrdinalIgnoreCase) &&
+                   string.Equals(a.Source, b.Source, StringComparison.OrdinalIgnoreCase);
+        if (!string.IsNullOrWhiteSpace(a.QqDissId) && !string.IsNullOrWhiteSpace(b.QqDissId))
+            return string.Equals(a.QqDissId, b.QqDissId, StringComparison.OrdinalIgnoreCase);
+        return a.Id > 0 && a.Id == b.Id && string.Equals(a.Source, b.Source, StringComparison.OrdinalIgnoreCase);
     }
 }

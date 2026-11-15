@@ -780,6 +780,114 @@ public partial class QqMusicService
         return (false, "未能获取有效的 QQ 音乐登录态", string.Empty, fallbackUin ?? string.Empty, fallbackNickname ?? string.Empty);
     }
 
+    private static string ExtractMusicKey(string cookie)
+    {
+        var key = ExtractCookieField(cookie, "qm_keyst");
+        if (string.IsNullOrWhiteSpace(key)) key = ExtractCookieField(cookie, "qqmusic_key");
+        return key;
+    }
+
+    private static string ExtractLoginType(string cookie, string musicKey)
+    {
+        var loginType = ExtractCookieField(cookie, "tmeLoginType");
+        if (string.IsNullOrWhiteSpace(loginType)) loginType = ExtractCookieField(cookie, "login_type");
+        if (string.IsNullOrWhiteSpace(loginType))
+        {
+            loginType = musicKey.StartsWith("W_X_", StringComparison.OrdinalIgnoreCase) ? "1" : "2";
+        }
+        return loginType;
+    }
+
+    private static Dictionary<string, object> BuildAuthenticatedMusicuComm(string uin, string cookie, int gtk)
+    {
+        long uinNum = long.TryParse(uin, out var u) ? u : 0;
+        var comm = new Dictionary<string, object>
+        {
+            ["cv"] = 4747474,
+            ["ct"] = 24,
+            ["format"] = "json",
+            ["inCharset"] = "utf-8",
+            ["outCharset"] = "utf-8",
+            ["notice"] = 0,
+            ["platform"] = "yqq.json",
+            ["needNewCode"] = 1,
+            ["uin"] = uinNum,
+            ["g_tk_new_20200303"] = gtk,
+            ["g_tk"] = gtk
+        };
+
+        var musicKey = ExtractMusicKey(cookie);
+        if (!string.IsNullOrWhiteSpace(musicKey))
+        {
+            comm["authst"] = musicKey;
+            comm["tmeLoginType"] = ExtractLoginType(cookie, musicKey);
+            comm["tmeAppID"] = "qqmusic";
+        }
+
+        return comm;
+    }
+
+    private static PlaylistItem? TryParseCollectedPlaylistElement(JsonElement item, string fallbackCover)
+    {
+        if (item.ValueKind != JsonValueKind.Object) return null;
+
+        string dissId = item.GetStringProp("dissid");
+        if (string.IsNullOrWhiteSpace(dissId) || dissId == "0") dissId = item.GetStringProp("tid");
+        if (string.IsNullOrWhiteSpace(dissId) || dissId == "0") dissId = item.GetStringProp("dirid");
+        if (string.IsNullOrWhiteSpace(dissId) || dissId == "0") dissId = item.GetStringProp("id");
+        if (string.IsNullOrWhiteSpace(dissId) || dissId == "0") return null;
+
+        string name = item.GetStringProp("dissname");
+        if (string.IsNullOrWhiteSpace(name)) name = item.GetStringProp("diss_name");
+        if (string.IsNullOrWhiteSpace(name)) name = item.GetStringProp("dirName");
+        if (string.IsNullOrWhiteSpace(name)) name = item.GetStringProp("title");
+        if (string.IsNullOrWhiteSpace(name)) name = item.GetStringProp("name");
+        if (string.IsNullOrWhiteSpace(name)) return null;
+
+        string cover = item.GetStringProp("logo");
+        if (string.IsNullOrWhiteSpace(cover)) cover = item.GetStringProp("imgurl");
+        if (string.IsNullOrWhiteSpace(cover)) cover = item.GetStringProp("picUrl");
+        if (string.IsNullOrWhiteSpace(cover)) cover = item.GetStringProp("picurl");
+        if (string.IsNullOrWhiteSpace(cover)) cover = item.GetStringProp("diss_cover");
+        if (string.IsNullOrWhiteSpace(cover)) cover = item.GetStringProp("pic");
+
+        int songNum = item.GetIntProp("songnum");
+        if (songNum <= 0) songNum = item.GetIntProp("songNum");
+        if (songNum <= 0) songNum = item.GetIntProp("song_cnt");
+        if (songNum <= 0) songNum = item.GetIntProp("total_song_num");
+
+        string creatorName = item.GetStringProp("nickname");
+        if (string.IsNullOrWhiteSpace(creatorName)) creatorName = item.GetStringProp("nick");
+        if (string.IsNullOrWhiteSpace(creatorName) &&
+            item.TryGetProperty("creator", out var creatorObj) &&
+            creatorObj.ValueKind == JsonValueKind.Object)
+        {
+            creatorName = creatorObj.GetStringProp("name");
+            if (string.IsNullOrWhiteSpace(creatorName)) creatorName = creatorObj.GetStringProp("nick");
+        }
+
+        return new PlaylistItem
+        {
+            Id = long.TryParse(dissId, out var lid) ? lid : Math.Abs(dissId.GetHashCode()),
+            Source = "qq",
+            QqDissId = dissId,
+            QqDirId = item.GetIntProp("dirId", item.GetIntProp("dirid")),
+            Name = WebUtility.HtmlDecode(name),
+            CoverImgUrl = NormalizeCoverUrl(cover, fallbackCover),
+            TrackCount = songNum,
+            CreatorName = WebUtility.HtmlDecode(creatorName),
+            Subscribed = true
+        };
+    }
+
+    private static string ParseCreatedPlaylistDissId(JsonElement item)
+    {
+        var dissId = item.GetStringProp("dissid");
+        if (string.IsNullOrWhiteSpace(dissId) || dissId == "0") dissId = item.GetStringProp("tid");
+        if (string.IsNullOrWhiteSpace(dissId) || dissId == "0") dissId = item.GetStringProp("id");
+        return dissId;
+    }
+
     /// <summary>
     /// 获取 QQ 音乐用户资料及创建的歌单与收藏的歌单（对应 gateway/qqServices.ts fetchQqProfileAndPlaylists）
     /// </summary>
@@ -804,32 +912,46 @@ public partial class QqMusicService
             AvatarUrl = $"https://qlogo4.store.qq.com/qzone/{uin}/{uin}/100"
         };
 
-        try
+        int gtk = ComputeGtk(cookie);
+        string encryptUin = ExtractCookieField(cookie, "euin");
+        var seenCreatedIds = new HashSet<string>(StringComparer.Ordinal);
+
+        // 1. 拉取个人主页（优先 c6.y.qq.com，回退 c.y.qq.com）
+        foreach (var host in new[] { "c6.y.qq.com", "c.y.qq.com" })
         {
-            int gtk = ComputeGtk(cookie);
-            var url = $"https://c.y.qq.com/rsc/fcgi-bin/fcg_get_profile_homepage.fcg?format=json&inCharset=utf8&outCharset=utf-8&cid=205360838&userid={uin}&reqfrom=1&g_tk={gtk}&loginUin={uin}";
-            using var req = new HttpRequestMessage(HttpMethod.Get, url);
-            req.Headers.Referrer = new Uri("https://y.qq.com/");
-            if (!string.IsNullOrWhiteSpace(cookie))
+            try
             {
-                req.Headers.Add("Cookie", cookie);
-            }
+                var url = $"https://{host}/rsc/fcgi-bin/fcg_get_profile_homepage.fcg?format=json&inCharset=utf8&outCharset=utf-8&cid=205360838&ct=24&userid={Uri.EscapeDataString(uin)}&reqfrom=1&reqtype=0&hostUin=0&loginUin={Uri.EscapeDataString(uin)}&g_tk={gtk}&g_tk_new_20200303={gtk}";
+                using var req = new HttpRequestMessage(HttpMethod.Get, url);
+                req.Headers.Referrer = new Uri("https://y.qq.com/");
+                if (!string.IsNullOrWhiteSpace(cookie))
+                {
+                    req.Headers.Add("Cookie", cookie);
+                }
 
-            using var resp = await _httpClient.SendAsync(req);
-            var json = await resp.Content.ReadAsStringAsync();
-            using var doc = JsonDocument.Parse(json);
+                using var resp = await _httpClient.SendAsync(req);
+                if (!resp.IsSuccessStatusCode) continue;
 
-            if (doc.RootElement.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Object)
-            {
+                var json = await resp.Content.ReadAsStringAsync();
+                using var doc = JsonDocument.Parse(json);
+                if (doc.RootElement.GetIntProp("code", -1) != 0 ||
+                    !doc.RootElement.TryGetProperty("data", out var data) ||
+                    data.ValueKind != JsonValueKind.Object)
+                {
+                    continue;
+                }
+
                 if (data.TryGetProperty("creator", out var creator) && creator.ValueKind == JsonValueKind.Object)
                 {
                     var nick = creator.GetStringProp("nick");
                     var headpic = creator.GetStringProp("headpic");
+                    var enc = creator.GetStringProp("encrypt_uin");
                     if (!string.IsNullOrWhiteSpace(nick)) profile.Nickname = nick;
                     if (!string.IsNullOrWhiteSpace(headpic)) profile.AvatarUrl = headpic.Replace("http://", "https://");
+                    if (!string.IsNullOrWhiteSpace(enc)) encryptUin = enc;
                 }
 
-                // 1. 我喜欢歌单 (mymusic)
+                // 1.1 我喜欢歌单 (mymusic)
                 if (data.TryGetProperty("mymusic", out var mymusic) && mymusic.ValueKind == JsonValueKind.Array)
                 {
                     foreach (var item in mymusic.EnumerateArray())
@@ -839,7 +961,7 @@ public partial class QqMusicService
                         var pic = item.GetStringProp("laypic");
                         if (string.IsNullOrWhiteSpace(pic)) pic = item.GetStringProp("picurl");
                         int num = item.GetIntProp("num0");
-                        if (!string.IsNullOrWhiteSpace(dissId) && dissId != "0")
+                        if (!string.IsNullOrWhiteSpace(dissId) && dissId != "0" && seenCreatedIds.Add(dissId))
                         {
                             created.Add(new PlaylistItem
                             {
@@ -850,13 +972,14 @@ public partial class QqMusicService
                                 Name = title,
                                 CoverImgUrl = NormalizeCoverUrl(pic, profile.DisplayAvatarUrl),
                                 TrackCount = num,
-                                CreatorName = profile.Nickname
+                                CreatorName = profile.Nickname,
+                                IsSystemDefaultPlaylist = true
                             });
                         }
                     }
                 }
 
-                // 2. 自建歌单 (mydiss.list)
+                // 1.2 自建歌单 (mydiss.list)
                 if (data.TryGetProperty("mydiss", out var mydiss) &&
                     mydiss.ValueKind == JsonValueKind.Object &&
                     mydiss.TryGetProperty("list", out var dissList) &&
@@ -864,7 +987,7 @@ public partial class QqMusicService
                 {
                     foreach (var item in dissList.EnumerateArray())
                     {
-                        var dissId = item.GetStringProp("dissid");
+                        var dissId = ParseCreatedPlaylistDissId(item);
                         int dirId = item.GetIntProp("dirid");
                         var title = item.GetStringProp("title");
                         var pic = item.GetStringProp("picurl");
@@ -873,7 +996,7 @@ public partial class QqMusicService
                         var m = Regex.Match(subtitle, @"(\d+)");
                         if (m.Success) int.TryParse(m.Groups[1].Value, out trackCount);
 
-                        if (!string.IsNullOrWhiteSpace(dissId))
+                        if (!string.IsNullOrWhiteSpace(dissId) && dissId != "0" && seenCreatedIds.Add(dissId))
                         {
                             created.Add(new PlaylistItem
                             {
@@ -884,69 +1007,500 @@ public partial class QqMusicService
                                 Name = WebUtility.HtmlDecode(title),
                                 CoverImgUrl = NormalizeCoverUrl(pic, profile.DisplayAvatarUrl),
                                 TrackCount = trackCount,
-                                CreatorName = profile.Nickname
+                                CreatorName = profile.Nickname,
+                                IsSystemDefaultPlaylist = dirId is 201 or 205 or 206
                             });
                         }
                     }
                 }
+
+                break;
+            }
+            catch
+            {
+                // 主页当前网关异常，尝试回退另一网关或新版接口
             }
         }
-        catch
-        {
-            // 若主页接口受限，继续尝试收藏与备用歌单接口
-        }
 
-        // 3. 拉取 QQ 音乐收藏的歌单 (fcg_fav_list_get.fcg)
-        try
+        // 1.3 若主页未返回自建歌单且已有登录 Cookie，回退至新版 PlaylistBaseRead.GetPlaylistByUin
+        if (created.Count == 0 && !string.IsNullOrWhiteSpace(cookie))
         {
-            int gtk = ComputeGtk(cookie);
-            var favUrl = $"https://c.y.qq.com/fav/fcgi-bin/fcg_get_profile_order_asset.fcg?format=json&inCharset=utf8&outCharset=utf-8&ct=20&cid=205360956&userid={uin}&reqtype=3&sin=0&ein=50&g_tk={gtk}&loginUin={uin}";
-            using var favReq = new HttpRequestMessage(HttpMethod.Get, favUrl);
-            favReq.Headers.Referrer = new Uri("https://y.qq.com/");
-            if (!string.IsNullOrWhiteSpace(cookie))
+            try
             {
-                favReq.Headers.Add("Cookie", cookie);
-            }
-
-            using var favResp = await _httpClient.SendAsync(favReq);
-            var favJson = await favResp.Content.ReadAsStringAsync();
-            using var favDoc = JsonDocument.Parse(favJson);
-            if (favDoc.RootElement.TryGetProperty("data", out var favData) &&
-                favData.ValueKind == JsonValueKind.Object &&
-                favData.TryGetProperty("cdlist", out var cdList) &&
-                cdList.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var item in cdList.EnumerateArray())
+                var payload = new
                 {
-                    var dissId = item.GetStringProp("dissid");
-                    if (string.IsNullOrWhiteSpace(dissId)) dissId = item.GetLongProp("dissid").ToString();
-                    var name = item.GetStringProp("dissname");
-                    var logo = item.GetStringProp("logo");
-                    int songNum = item.GetIntProp("songnum");
-                    var nick = item.GetStringProp("nickname");
-
-                    if (!string.IsNullOrWhiteSpace(dissId) && dissId != "0" && !string.IsNullOrWhiteSpace(name))
+                    comm = BuildAuthenticatedMusicuComm(uin, cookie, gtk),
+                    req_0 = new
                     {
-                        collected.Add(new PlaylistItem
+                        module = "music.musicasset.PlaylistBaseRead",
+                        method = "GetPlaylistByUin",
+                        param = new
+                        {
+                            uin,
+                            bWithoutStatus = false
+                        }
+                    }
+                };
+                using var req = new HttpRequestMessage(HttpMethod.Post, "https://u.y.qq.com/cgi-bin/musicu.fcg")
+                {
+                    Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
+                };
+                req.Headers.Referrer = new Uri("https://y.qq.com/");
+                req.Headers.Add("Cookie", cookie);
+
+                using var resp = await _httpClient.SendAsync(req);
+                var json = await resp.Content.ReadAsStringAsync();
+                using var doc = JsonDocument.Parse(json);
+                if (doc.RootElement.TryGetProperty("req_0", out var req0) &&
+                    req0.GetIntProp("code", -1) == 0 &&
+                    req0.TryGetProperty("data", out var dataEl) &&
+                    dataEl.TryGetProperty("v_playlist", out var vPlaylist) &&
+                    vPlaylist.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var item in vPlaylist.EnumerateArray())
+                    {
+                        var dissId = ParseCreatedPlaylistDissId(item);
+                        if (string.IsNullOrWhiteSpace(dissId) || dissId == "0" || !seenCreatedIds.Add(dissId)) continue;
+
+                        var title = item.GetStringProp("dirName");
+                        if (string.IsNullOrWhiteSpace(title)) title = item.GetStringProp("title", "未命名歌单");
+                        var pic = item.GetStringProp("picUrl");
+                        if (string.IsNullOrWhiteSpace(pic)) pic = item.GetStringProp("bigpicUrl");
+                        int dirId = item.GetIntProp("dirId");
+                        created.Add(new PlaylistItem
                         {
                             Id = long.TryParse(dissId, out var lid) ? lid : Math.Abs(dissId.GetHashCode()),
                             Source = "qq",
                             QqDissId = dissId,
-                            Name = WebUtility.HtmlDecode(name),
-                            CoverImgUrl = NormalizeCoverUrl(logo, profile.DisplayAvatarUrl),
-                            TrackCount = songNum,
-                            CreatorName = nick
+                            QqDirId = dirId,
+                            Name = WebUtility.HtmlDecode(title),
+                            CoverImgUrl = NormalizeCoverUrl(pic, profile.DisplayAvatarUrl),
+                            TrackCount = item.GetIntProp("songNum"),
+                            CreatorName = profile.Nickname,
+                            IsSystemDefaultPlaylist = dirId is 201 or 205 or 206
                         });
                     }
                 }
             }
+            catch
+            {
+                // 忽略新版自建歌单补全异常
+            }
         }
-        catch
+
+        // 2. 多通道拉取 QQ 音乐收藏的歌单（按 QqDissId 去重合并）
+        var seenCollectedIds = new HashSet<string>(StringComparer.Ordinal);
+        void AddCollectedIfNew(PlaylistItem? pl)
         {
-            // 忽略收藏列表异常
+            if (pl == null || string.IsNullOrWhiteSpace(pl.QqDissId)) return;
+            if (seenCollectedIds.Add(pl.QqDissId))
+            {
+                collected.Add(pl);
+            }
+        }
+
+        // 通道 A：c6.y.qq.com / c.y.qq.com fcg_get_profile_order_asset.fcg（优先 encryptUin，其次 uin，支持分页）
+        var candidateUserIds = new List<string>();
+        if (!string.IsNullOrWhiteSpace(encryptUin)) candidateUserIds.Add(encryptUin);
+        if (!candidateUserIds.Contains(uin, StringComparer.Ordinal)) candidateUserIds.Add(uin);
+
+        foreach (var targetUserId in candidateUserIds)
+        {
+            int fetchedForId = 0;
+            const int pageSize = 50;
+            for (int sin = 0; sin < 500; sin += pageSize)
+            {
+                int ein = sin + pageSize;
+                JsonDocument? pageDoc = null;
+
+                foreach (var host in new[] { "c6.y.qq.com", "c.y.qq.com" })
+                {
+                    try
+                    {
+                        var favUrl = $"https://{host}/fav/fcgi-bin/fcg_get_profile_order_asset.fcg?format=json&inCharset=utf8&outCharset=utf-8&ct=20&cid=205360956&userid={Uri.EscapeDataString(targetUserId)}&reqtype=3&sin={sin}&ein={ein}&g_tk={gtk}&g_tk_new_20200303={gtk}&loginUin={Uri.EscapeDataString(uin)}";
+                        using var favReq = new HttpRequestMessage(HttpMethod.Get, favUrl);
+                        favReq.Headers.Referrer = new Uri("https://y.qq.com/n/ryqq/profile/like/playlist");
+                        if (!string.IsNullOrWhiteSpace(cookie))
+                        {
+                            favReq.Headers.Add("Cookie", cookie);
+                        }
+
+                        using var favResp = await _httpClient.SendAsync(favReq);
+                        if (!favResp.IsSuccessStatusCode) continue;
+
+                        var favJson = await favResp.Content.ReadAsStringAsync();
+                        var candidateDoc = JsonDocument.Parse(favJson);
+                        if (candidateDoc.RootElement.GetIntProp("code", -1) == 0 &&
+                            candidateDoc.RootElement.TryGetProperty("data", out var dObj) &&
+                            dObj.ValueKind == JsonValueKind.Object)
+                        {
+                            pageDoc = candidateDoc;
+                            break;
+                        }
+                        candidateDoc.Dispose();
+                    }
+                    catch
+                    {
+                        // 当前域名请求失败则回退下一个域名
+                    }
+                }
+
+                if (pageDoc == null) break;
+
+                using (pageDoc)
+                {
+                    var favData = pageDoc.RootElement.GetProperty("data");
+                    int totalDiss = favData.GetIntProp("totaldiss");
+                    int pageCount = 0;
+
+                    if (favData.TryGetProperty("cdlist", out var cdList) && cdList.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var item in cdList.EnumerateArray())
+                        {
+                            pageCount++;
+                            var parsed = TryParseCollectedPlaylistElement(item, profile.DisplayAvatarUrl);
+                            if (parsed != null)
+                            {
+                                AddCollectedIfNew(parsed);
+                                fetchedForId++;
+                            }
+                        }
+                    }
+
+                    if (pageCount == 0 || (totalDiss > 0 && sin + pageCount >= totalDiss) || pageCount < pageSize)
+                    {
+                        break;
+                    }
+                }
+            }
+
+            if (fetchedForId > 0) break;
+        }
+
+        // 通道 B：新版 u.y.qq.com musicu.fcg -> music.musicasset.PlaylistFavRead.GetPlaylistFavInfo
+        if (!string.IsNullOrWhiteSpace(cookie))
+        {
+            const int rpcPageSize = 50;
+            for (int start = 0; start < 500; start += rpcPageSize)
+            {
+                try
+                {
+                    var payload = new
+                    {
+                        comm = BuildAuthenticatedMusicuComm(uin, cookie, gtk),
+                        req_0 = new
+                        {
+                            module = "music.musicasset.PlaylistFavRead",
+                            method = "GetPlaylistFavInfo",
+                            param = new
+                            {
+                                uin,
+                                start,
+                                number = rpcPageSize,
+                                num = rpcPageSize
+                            }
+                        }
+                    };
+
+                    using var rpcReq = new HttpRequestMessage(HttpMethod.Post, "https://u.y.qq.com/cgi-bin/musicu.fcg")
+                    {
+                        Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
+                    };
+                    rpcReq.Headers.Referrer = new Uri("https://y.qq.com/n/ryqq/profile/like/playlist");
+                    rpcReq.Headers.Add("Cookie", cookie);
+
+                    using var rpcResp = await _httpClient.SendAsync(rpcReq);
+                    if (!rpcResp.IsSuccessStatusCode) break;
+
+                    var rpcJson = await rpcResp.Content.ReadAsStringAsync();
+                    using var rpcDoc = JsonDocument.Parse(rpcJson);
+                    if (!rpcDoc.RootElement.TryGetProperty("req_0", out var req0) ||
+                        req0.GetIntProp("code", -1) != 0 ||
+                        !req0.TryGetProperty("data", out var rpcData) ||
+                        rpcData.ValueKind != JsonValueKind.Object)
+                    {
+                        break;
+                    }
+
+                    int batchCount = 0;
+                    if (rpcData.TryGetProperty("v_list", out var vList) && vList.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var item in vList.EnumerateArray())
+                        {
+                            batchCount++;
+                            AddCollectedIfNew(TryParseCollectedPlaylistElement(item, profile.DisplayAvatarUrl));
+                        }
+                    }
+
+                    bool hasMore = rpcData.GetIntProp("hasmore") == 1;
+                    if (!hasMore || batchCount == 0) break;
+                }
+                catch
+                {
+                    break;
+                }
+            }
+        }
+
+        // 通道 C：兜底调用 PlaylistFavRead.GetPlaylistFavList 获取收藏 tid 列表，再批量补全详情
+        if (collected.Count == 0 && !string.IsNullOrWhiteSpace(cookie))
+        {
+            try
+            {
+                var listPayload = new
+                {
+                    comm = BuildAuthenticatedMusicuComm(uin, cookie, gtk),
+                    req_0 = new
+                    {
+                        module = "music.musicasset.PlaylistFavRead",
+                        method = "GetPlaylistFavList",
+                        param = new
+                        {
+                            uin,
+                            start = 0,
+                            number = 100,
+                            num = 100,
+                            size = 100
+                        }
+                    }
+                };
+
+                using var listReq = new HttpRequestMessage(HttpMethod.Post, "https://u.y.qq.com/cgi-bin/musicu.fcg")
+                {
+                    Content = new StringContent(JsonSerializer.Serialize(listPayload), Encoding.UTF8, "application/json")
+                };
+                listReq.Headers.Referrer = new Uri("https://y.qq.com/");
+                listReq.Headers.Add("Cookie", cookie);
+
+                using var listResp = await _httpClient.SendAsync(listReq);
+                var listJson = await listResp.Content.ReadAsStringAsync();
+                using var listDoc = JsonDocument.Parse(listJson);
+
+                var tidList = new List<long>();
+                if (listDoc.RootElement.TryGetProperty("req_0", out var req0) &&
+                    req0.GetIntProp("code", -1) == 0 &&
+                    req0.TryGetProperty("data", out var listData) &&
+                    listData.TryGetProperty("v_tids", out var vTids) &&
+                    vTids.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var el in vTids.EnumerateArray())
+                    {
+                        long tidVal = 0;
+                        if (el.ValueKind == JsonValueKind.Number && el.TryGetInt64(out var n)) tidVal = n;
+                        else if (el.ValueKind == JsonValueKind.String && long.TryParse(el.GetString(), out var s)) tidVal = s;
+                        else if (el.ValueKind == JsonValueKind.Object)
+                        {
+                            tidVal = el.GetLongProp("tid", el.GetLongProp("dissid"));
+                        }
+
+                        if (tidVal > 0 && !tidList.Contains(tidVal)) tidList.Add(tidVal);
+                    }
+                }
+
+                // 批量通过 uniform_get_Dissinfo 补全标题、封面、创建者与曲目数（每批最多 20 个）
+                for (int offset = 0; offset < tidList.Count; offset += 20)
+                {
+                    var chunk = tidList.Skip(offset).Take(20).ToList();
+                    var batchBody = new Dictionary<string, object>
+                    {
+                        ["comm"] = BuildAuthenticatedMusicuComm(uin, cookie, gtk)
+                    };
+                    for (int i = 0; i < chunk.Count; i++)
+                    {
+                        batchBody[$"req_{i}"] = new
+                        {
+                            module = "music.srfDissInfo.aiDissInfo",
+                            method = "uniform_get_Dissinfo",
+                            param = new
+                            {
+                                disstid = chunk[i],
+                                enc_host_uin = "",
+                                tag = 1,
+                                userinfo = 1,
+                                song_begin = 0,
+                                song_num = 1,
+                                onlysonglist = 0
+                            }
+                        };
+                    }
+
+                    using var batchReq = new HttpRequestMessage(HttpMethod.Post, "https://u.y.qq.com/cgi-bin/musicu.fcg")
+                    {
+                        Content = new StringContent(JsonSerializer.Serialize(batchBody), Encoding.UTF8, "application/json")
+                    };
+                    batchReq.Headers.Referrer = new Uri("https://y.qq.com/");
+                    batchReq.Headers.Add("Cookie", cookie);
+
+                    using var batchResp = await _httpClient.SendAsync(batchReq);
+                    if (!batchResp.IsSuccessStatusCode) continue;
+
+                    var batchJson = await batchResp.Content.ReadAsStringAsync();
+                    using var batchDoc = JsonDocument.Parse(batchJson);
+                    for (int i = 0; i < chunk.Count; i++)
+                    {
+                        if (!batchDoc.RootElement.TryGetProperty($"req_{i}", out var itemReq) ||
+                            itemReq.GetIntProp("code", -1) != 0 ||
+                            !itemReq.TryGetProperty("data", out var itemData) ||
+                            !itemData.TryGetProperty("dirinfo", out var dirinfo))
+                        {
+                            continue;
+                        }
+
+                        var tidStr = chunk[i].ToString();
+                        var title = dirinfo.GetStringProp("title");
+                        if (string.IsNullOrWhiteSpace(title)) title = dirinfo.GetStringProp("dissname");
+                        if (string.IsNullOrWhiteSpace(title)) continue;
+
+                        var pic = dirinfo.GetStringProp("picurl");
+                        if (string.IsNullOrWhiteSpace(pic)) pic = dirinfo.GetStringProp("picurl2");
+                        var creatorNick = dirinfo.GetStringProp("host_nick");
+                        if (string.IsNullOrWhiteSpace(creatorNick) &&
+                            dirinfo.TryGetProperty("creator", out var cObj) &&
+                            cObj.ValueKind == JsonValueKind.Object)
+                        {
+                            creatorNick = cObj.GetStringProp("nick");
+                        }
+
+                        AddCollectedIfNew(new PlaylistItem
+                        {
+                            Id = chunk[i],
+                            Source = "qq",
+                            QqDissId = tidStr,
+                            QqDirId = dirinfo.GetIntProp("dirid"),
+                            Name = WebUtility.HtmlDecode(title),
+                            CoverImgUrl = NormalizeCoverUrl(pic, profile.DisplayAvatarUrl),
+                            TrackCount = dirinfo.GetIntProp("songnum"),
+                            CreatorName = WebUtility.HtmlDecode(creatorNick),
+                            Subscribed = true
+                        });
+                    }
+                }
+            }
+            catch
+            {
+                // 忽略兜底收藏列表异常
+            }
         }
 
         return (profile, created, collected);
+    }
+
+    /// <summary>
+    /// 查询指定 QQ 音乐歌单是否已被当前账号收藏（music.musicasset.PlaylistFavRead -> IsPlaylistFan）
+    /// </summary>
+    public async Task<bool> IsPlaylistCollectedAsync(string dissId, CancellationToken ct = default)
+    {
+        if (!long.TryParse(dissId?.Trim(), out var tid) || tid <= 0) return false;
+
+        var cookie = _configService.Settings.QqMusicCookie;
+        var uin = ExtractUinFromCookieOrInput(_configService.Settings.QqMusicUin);
+        if (string.IsNullOrWhiteSpace(uin)) uin = ExtractUinFromCookieOrInput(cookie);
+        if (string.IsNullOrWhiteSpace(uin) || string.IsNullOrWhiteSpace(cookie)) return false;
+
+        int gtk = ComputeGtk(cookie);
+
+        try
+        {
+            var payload = new
+            {
+                comm = BuildAuthenticatedMusicuComm(uin, cookie, gtk),
+                req_0 = new
+                {
+                    module = "music.musicasset.PlaylistFavRead",
+                    method = "IsPlaylistFan",
+                    param = new
+                    {
+                        v_tid = new[] { tid }
+                    }
+                }
+            };
+
+            using var req = new HttpRequestMessage(HttpMethod.Post, "https://u.y.qq.com/cgi-bin/musicu.fcg")
+            {
+                Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
+            };
+            req.Headers.Referrer = new Uri("https://y.qq.com/");
+            req.Headers.Add("Cookie", cookie);
+
+            using var resp = await _httpClient.SendAsync(req, ct);
+            if (!resp.IsSuccessStatusCode) return false;
+
+            var json = await resp.Content.ReadAsStringAsync(ct);
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.TryGetProperty("req_0", out var req0) &&
+                req0.GetIntProp("code", -1) == 0 &&
+                req0.TryGetProperty("data", out var data) &&
+                data.TryGetProperty("m_fan", out var mFan) &&
+                mFan.ValueKind == JsonValueKind.Object &&
+                mFan.TryGetProperty(tid.ToString(), out var fanVal))
+            {
+                return fanVal.ValueKind == JsonValueKind.True ||
+                       (fanVal.ValueKind == JsonValueKind.Number && fanVal.TryGetInt32(out var num) && num > 0);
+            }
+        }
+        catch
+        {
+            // 忽略收藏状态查询异常
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// 收藏或取消收藏 QQ 音乐歌单（music.musicasset.PlaylistFavWrite -> FavPlaylist / CancelFavPlaylist）
+    /// </summary>
+    public async Task<bool> SubscribePlaylistAsync(string dissId, bool collect, CancellationToken ct = default)
+    {
+        if (!long.TryParse(dissId?.Trim(), out var tid) || tid <= 0) return false;
+
+        var cookie = _configService.Settings.QqMusicCookie;
+        var uin = ExtractUinFromCookieOrInput(_configService.Settings.QqMusicUin);
+        if (string.IsNullOrWhiteSpace(uin)) uin = ExtractUinFromCookieOrInput(cookie);
+        if (string.IsNullOrWhiteSpace(uin) || string.IsNullOrWhiteSpace(cookie)) return false;
+
+        int gtk = ComputeGtk(cookie);
+
+        try
+        {
+            var payload = new
+            {
+                comm = BuildAuthenticatedMusicuComm(uin, cookie, gtk),
+                req_0 = new
+                {
+                    module = "music.musicasset.PlaylistFavWrite",
+                    method = collect ? "FavPlaylist" : "CancelFavPlaylist",
+                    param = new
+                    {
+                        uin,
+                        v_playlistId = new[] { tid }
+                    }
+                }
+            };
+
+            using var req = new HttpRequestMessage(HttpMethod.Post, "https://u.y.qq.com/cgi-bin/musicu.fcg")
+            {
+                Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
+            };
+            req.Headers.Referrer = new Uri("https://y.qq.com/");
+            req.Headers.Add("Cookie", cookie);
+
+            using var resp = await _httpClient.SendAsync(req, ct);
+            if (!resp.IsSuccessStatusCode) return false;
+
+            var json = await resp.Content.ReadAsStringAsync(ct);
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.TryGetProperty("req_0", out var req0) &&
+                req0.GetIntProp("code", -1) == 0)
+            {
+                return true;
+            }
+        }
+        catch
+        {
+            // 忽略收藏操作异常
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -975,6 +1529,7 @@ public partial class QqMusicService
                 string desc = string.Empty;
                 string creatorNick = string.Empty;
                 var allTracks = new List<SongItem>();
+                var seenIds = new HashSet<string>(StringComparer.Ordinal);
 
                 for (int page = 0; page < 4; page++)
                 {
@@ -1033,6 +1588,7 @@ public partial class QqMusicService
                     }
 
                     int pageFetched = 0;
+                    int newlyAdded = 0;
                     if (dataEl.TryGetProperty("songlist", out var songListEl) &&
                         songListEl.ValueKind == JsonValueKind.Array)
                     {
@@ -1040,11 +1596,15 @@ public partial class QqMusicService
                         {
                             pageFetched++;
                             var song = NormalizeQqSong(s);
-                            if (song != null) allTracks.Add(song);
+                            if (song != null && seenIds.Add(song.Id))
+                            {
+                                allTracks.Add(song);
+                                newlyAdded++;
+                            }
                         }
                     }
 
-                    if (pageFetched == 0 || allTracks.Count >= expectedTotal || pageFetched < pageSize)
+                    if (pageFetched == 0 || newlyAdded == 0 || (expectedTotal > 0 ? allTracks.Count >= expectedTotal : pageFetched < pageSize))
                         break;
 
                     songBegin += pageFetched;
@@ -1463,10 +2023,23 @@ public partial class QqMusicService
     }
 
     /// <summary>
-    /// 添加或从 QQ 音乐歌单移除歌曲（music.musicasset.PlaylistDetailWrite -> AddSonglist / DelSonglist）
+    /// 添加或从 QQ 音乐歌单移除单首歌曲（music.musicasset.PlaylistDetailWrite -> AddSonglist / DelSonglist）
     /// </summary>
     public async Task<(bool Success, string Message)> AddOrRemoveSongInPlaylistAsync(
         SongItem song,
+        int dirId,
+        bool isDelete = false,
+        CancellationToken ct = default)
+    {
+        var (ok, _, msg) = await UpdateSongsInPlaylistAsync([song], dirId, isDelete, ct);
+        return (ok, msg);
+    }
+
+    /// <summary>
+    /// 批量添加或从 QQ 音乐歌单移除歌曲（支持跨平台按歌名+歌手自动匹配 QQ 曲库 ID）
+    /// </summary>
+    public async Task<(bool Success, int ProcessedCount, string Message)> UpdateSongsInPlaylistAsync(
+        IReadOnlyList<SongItem> songs,
         int dirId,
         bool isDelete = false,
         CancellationToken ct = default)
@@ -1476,18 +2049,36 @@ public partial class QqMusicService
         long uinNum = long.TryParse(uin, out var u) ? u : 0;
         if (uinNum <= 0 || string.IsNullOrWhiteSpace(cookie))
         {
-            return (false, "请先登录 QQ 音乐账号");
+            return (false, 0, "请先登录 QQ 音乐账号");
         }
 
         if (dirId <= 0)
         {
-            return (false, "无效的 QQ 音乐歌单目录 ID");
+            return (false, 0, "无效的 QQ 音乐歌单目录 ID");
         }
 
-        long songId = await ResolveQqSongIdAsync(song, ct);
-        if (songId <= 0)
+        if (songs.Count == 0)
         {
-            return (false, $"未能在 QQ 音乐曲库匹配到《{song.Name}》");
+            return (false, 0, "未选择歌曲");
+        }
+
+        var matchedIds = new List<long>();
+        var seenIds = new HashSet<long>();
+        foreach (var song in songs)
+        {
+            long songId = await ResolveQqSongIdAsync(song, ct);
+            if (songId > 0 && seenIds.Add(songId))
+            {
+                matchedIds.Add(songId);
+            }
+        }
+
+        if (matchedIds.Count == 0)
+        {
+            var errMsg = songs.Count == 1
+                ? $"未能在 QQ 音乐曲库匹配到《{songs[0].Name}》"
+                : "未能在 QQ 音乐曲库匹配到所选歌曲";
+            return (false, 0, errMsg);
         }
 
         int gtk = ComputeGtk(cookie);
@@ -1518,10 +2109,7 @@ public partial class QqMusicService
                     param = new
                     {
                         dirId,
-                        v_songInfo = new[]
-                        {
-                            new { songType = 0, songId }
-                        }
+                        v_songInfo = matchedIds.Select(id => new { songType = 0, songId = id }).ToArray()
                     }
                 }
             };
@@ -1542,21 +2130,24 @@ public partial class QqMusicService
                 int retCode = req0.TryGetProperty("data", out var data) ? data.GetIntProp("retCode", 0) : 0;
                 if (code == 0 && retCode == 0)
                 {
-                    return (true, isDelete ? "已从 QQ 音乐歌单移除" : "已添加到 QQ 音乐歌单");
+                    var okMsg = isDelete
+                        ? $"已从 QQ 音乐歌单移除 {matchedIds.Count} 首歌曲"
+                        : $"已添加 {matchedIds.Count} 首歌曲到 QQ 音乐歌单";
+                    return (true, matchedIds.Count, okMsg);
                 }
                 if (code == 1000)
                 {
-                    return (false, "QQ 音乐登录态已过期，请重新登录");
+                    return (false, 0, "QQ 音乐登录态已过期，请重新登录");
                 }
-                return (false, $"QQ 音乐歌单操作失败 (code={code})");
+                return (false, 0, $"QQ 音乐歌单操作失败 (code={code})");
             }
         }
         catch (Exception ex)
         {
-            return (false, $"请求异常：{ex.Message}");
+            return (false, 0, $"请求异常：{ex.Message}");
         }
 
-        return (false, "QQ 音乐歌单操作失败");
+        return (false, 0, "QQ 音乐歌单操作失败");
     }
 
     /// <summary>
@@ -1640,6 +2231,89 @@ public partial class QqMusicService
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// 删除 QQ 音乐自建歌单（music.musicasset.PlaylistBaseWrite -> DelPlaylist，拦截系统默认歌单 dirId 201/205/206）
+    /// </summary>
+    public async Task<(bool Success, string Message)> DeletePlaylistAsync(PlaylistItem playlist, CancellationToken ct = default)
+    {
+        if (playlist == null) return (false, "未选择要删除的 QQ 音乐歌单");
+        var cookie = _configService.Settings.QqMusicCookie;
+        var uin = ExtractUinFromCookieOrInput(_configService.Settings.QqMusicUin);
+        long uinNum = long.TryParse(uin, out var u) ? u : 0;
+        if (uinNum <= 0 || string.IsNullOrWhiteSpace(cookie))
+        {
+            return (false, "请先登录 QQ 音乐后再删除歌单");
+        }
+
+        int dirId = playlist.QqDirId > 0 ? playlist.QqDirId : await ResolvePlaylistDirIdAsync(playlist, ct);
+        if (playlist.IsSystemDefaultPlaylist || dirId is 201 or 205 or 206)
+        {
+            return (false, "QQ 音乐系统默认歌单（如“我喜欢”）不支持删除");
+        }
+        if (dirId <= 0)
+        {
+            return (false, "无法获取 QQ 音乐歌单目录编号 (dirId)");
+        }
+
+        int gtk = ComputeGtk(cookie);
+
+        try
+        {
+            var payload = new
+            {
+                comm = new
+                {
+                    cv = 4747474,
+                    ct = 24,
+                    format = "json",
+                    inCharset = "utf-8",
+                    outCharset = "utf-8",
+                    notice = 0,
+                    platform = "yqq.json",
+                    needNewCode = 1,
+                    uin = uinNum,
+                    g_tk_new_20200303 = gtk,
+                    g_tk = gtk
+                },
+                req_0 = new
+                {
+                    module = "music.musicasset.PlaylistBaseWrite",
+                    method = "DelPlaylist",
+                    param = new
+                    {
+                        dirId
+                    }
+                }
+            };
+
+            using var req = new HttpRequestMessage(HttpMethod.Post, "https://u.y.qq.com/cgi-bin/musicu.fcg")
+            {
+                Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
+            };
+            req.Headers.Referrer = new Uri("https://y.qq.com/");
+            req.Headers.Add("Cookie", cookie);
+
+            using var resp = await _httpClient.SendAsync(req, ct);
+            var json = await resp.Content.ReadAsStringAsync(ct);
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.TryGetProperty("req_0", out var req0))
+            {
+                int code = req0.GetIntProp("code", -1);
+                if (code == 0)
+                {
+                    return (true, $"已删除 QQ 音乐歌单《{playlist.Name}》");
+                }
+                return (false, $"删除 QQ 音乐歌单失败 (code={code})");
+            }
+        }
+        catch (Exception ex)
+        {
+            return (false, $"删除 QQ 音乐歌单异常：{ex.Message}");
+        }
+
+        return (false, "删除 QQ 音乐歌单失败");
     }
 
     /// <summary>

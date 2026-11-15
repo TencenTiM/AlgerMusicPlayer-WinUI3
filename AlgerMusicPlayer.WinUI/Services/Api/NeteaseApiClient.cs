@@ -547,6 +547,19 @@ public class NeteaseApiClient
     }
 
     /// <summary>
+    /// 删除本人自建歌单（对应原版 /playlist/delete -> weapi /api/playlist/remove）
+    /// </summary>
+    public async Task<bool> DeletePlaylistAsync(long playlistId)
+    {
+        if (playlistId <= 0) return false;
+        using var doc = await PostWeApiAsync(
+            "playlist/remove",
+            new { ids = $"[{playlistId}]" },
+            $"/playlist/delete?id={playlistId}");
+        return doc != null && doc.RootElement.GetIntProp("code") == 200;
+    }
+
+    /// <summary>
     /// 添加或从歌单删除歌曲（op: "add" 或 "del"，对应原 updatePlaylistTracks）
     /// </summary>
     public async Task<bool> UpdatePlaylistTracksAsync(string op, long playlistId, IEnumerable<long> songIds)
@@ -575,7 +588,7 @@ public class NeteaseApiClient
     }
 
     /// <summary>
-    /// 批量获取歌曲详情
+    /// 批量获取歌曲详情（按 200 首分片，避免大歌单单次请求超限）
     /// </summary>
     public async Task<List<SongItem>> GetSongDetailsAsync(IEnumerable<long> songIds)
     {
@@ -583,17 +596,20 @@ public class NeteaseApiClient
         var result = new List<SongItem>();
         if (ids.Count == 0) return result;
 
-        var cParam = "[" + string.Join(",", ids.Select(id => $"{{\"id\":{id}}}")) + "]";
-        using var doc = await PostWeApiAsync(
-            "v3/song/detail",
-            new { c = cParam },
-            $"/song/detail?ids={string.Join(",", ids)}");
-
-        if (doc != null && doc.RootElement.TryGetProperty("songs", out var songs) && songs.ValueKind == JsonValueKind.Array)
+        foreach (var batch in ids.Chunk(200))
         {
-            foreach (var s in songs.EnumerateArray())
+            var cParam = "[" + string.Join(",", batch.Select(id => $"{{\"id\":{id}}}")) + "]";
+            using var doc = await PostWeApiAsync(
+                "v3/song/detail",
+                new { c = cParam },
+                $"/song/detail?ids={string.Join(",", batch)}");
+
+            if (doc != null && doc.RootElement.TryGetProperty("songs", out var songs) && songs.ValueKind == JsonValueKind.Array)
             {
-                result.Add(ParseSongElement(s));
+                foreach (var s in songs.EnumerateArray())
+                {
+                    result.Add(ParseSongElement(s));
+                }
             }
         }
         return result;
@@ -1600,7 +1616,8 @@ public class NeteaseApiClient
             TrackCount = pl.GetIntProp("trackCount"),
             CreateTime = pl.GetLongProp("createTime"),
             UpdateTime = pl.GetLongProp("updateTime"),
-            Subscribed = pl.TryGetProperty("subscribed", out var subElem) && subElem.ValueKind == JsonValueKind.True
+            Subscribed = pl.TryGetProperty("subscribed", out var subElem) && subElem.ValueKind == JsonValueKind.True,
+            IsSystemDefaultPlaylist = pl.GetIntProp("specialType") == 5
         };
 
         if (pl.TryGetProperty("creator", out var creator) && creator.ValueKind == JsonValueKind.Object)

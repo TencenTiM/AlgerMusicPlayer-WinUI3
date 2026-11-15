@@ -386,6 +386,14 @@ public class AppSettings
     public string QqMusicCookie { get; set; } = string.Empty;
     public string QqMusicUin { get; set; } = string.Empty;
     public string QqMusicNickname { get; set; } = string.Empty;
+
+    // 多平台 OAuth / MusicKit 开发者可选密钥配置
+    public string SpotifyClientId { get; set; } = string.Empty;
+    public string TidalClientId { get; set; } = string.Empty;
+    public string AppleMusicTeamId { get; set; } = string.Empty;
+    public string AppleMusicKeyId { get; set; } = string.Empty;
+    public string AppleMusicPrivateKeyPem { get; set; } = string.Empty;
+
     public bool EnableRealIP { get; set; } = false;
     public string RealIP { get; set; } = "116.25.146.177";
     public ProxyConfig Proxy { get; set; } = new();
