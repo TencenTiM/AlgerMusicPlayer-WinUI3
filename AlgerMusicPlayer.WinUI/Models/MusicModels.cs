@@ -661,6 +661,7 @@ public partial class SongItem : ObservableObject
 
     public string HighResCoverUrl => BuildSongHighResCoverUrl(PicUrl);
     public string ShortPlatformTag => PlatformVisualHelper.GetShortLabel(Source);
+    [System.Text.Json.Serialization.JsonIgnore]
     public Microsoft.UI.Xaml.Media.SolidColorBrush? SourcePlatformBrush => PlatformVisualHelper.GetPlatformBrush(Source);
 
     public string DiscoverQualityTag
@@ -1386,6 +1387,7 @@ public partial class DiscoverBannerItem : ObservableObject
 
     public List<SongItem> Songs { get; } = [];
     public SongItem? LeadSong => Songs.Count > 0 ? Songs[0] : null;
+    [System.Text.Json.Serialization.JsonIgnore]
     public Microsoft.UI.Xaml.Media.SolidColorBrush? PlatformBrush => PlatformVisualHelper.GetPlatformBrush(PlatformKey);
 }
 
@@ -1398,6 +1400,7 @@ public partial class DiscoverPlaylistCardItem : ObservableObject
 
     public string PlatformKey => PlatformVisualHelper.NormalizeKey(Playlist.Source);
     public string ShortPlatformTag => PlatformVisualHelper.GetShortLabel(Playlist.Source);
+    [System.Text.Json.Serialization.JsonIgnore]
     public Microsoft.UI.Xaml.Media.SolidColorBrush? PlatformBrush => PlatformVisualHelper.GetPlatformBrush(Playlist.Source);
     public string CoverUrl => ImageUriHelper.Normalize(Playlist.SafeCoverImgUrl);
     public string Title => string.IsNullOrWhiteSpace(Playlist.Name) ? "精选歌单" : Playlist.Name;

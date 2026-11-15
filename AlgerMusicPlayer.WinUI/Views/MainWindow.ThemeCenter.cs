@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices.WindowsRuntime;
 using AlgerMusicPlayer.WinUI.Models;
 using AlgerMusicPlayer.WinUI.Services.System;
 using Microsoft.UI;
@@ -12,6 +13,7 @@ using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.ApplicationModel.DataTransfer;
 using Windows.Storage.Pickers;
+using Windows.Storage.Streams;
 using Windows.System;
 using Windows.UI;
 using WinRT.Interop;
@@ -44,6 +46,7 @@ public sealed partial class MainWindow
     private string _pageThemeSubMode = "local";
     private string _modalMainMode = "workshop";
     private List<MarketplaceThemeItem> _marketItems = [];
+    private bool _isRefreshingMarketFeeds;
 
     /// <summary>
     /// 实时返回当前主界面实际应呈现的明暗基调（直接依据生效主题计算，规避 RootLayout.ActualTheme 异步滞后导致的反色漏刷）
@@ -51,12 +54,11 @@ public sealed partial class MainWindow
     private bool IsCurrentUiLightMode => ThemeService.IsEffectiveLightMode(ViewModel.Theme.GetEffectiveTheme().BaseMode);
 
     /// <summary>
-    /// 判断指定主题是否处于「iOS 27 液态玻璃 (Liquid Glass)」模式（显式选择 LiquidGlass，或自定义图片壁纸开启局部智能反色且未指定其他特定卡片风格时默认启用）
+    /// 判断指定主题是否处于「iOS 27 液态玻璃 (Liquid Glass)」模式（显式选择 LiquidGlass，或自定义图片壁纸且未指定其他特定卡片风格时默认启用）
     /// </summary>
     private static bool IsLiquidGlassMode(CustomThemeProfile profile) =>
         string.Equals(profile.CardVisualStyle, "LiquidGlass", StringComparison.OrdinalIgnoreCase) ||
         (string.Equals(profile.BackdropType, "Image", StringComparison.OrdinalIgnoreCase) &&
-         profile.EnableAdaptiveWallpaperText &&
          (string.IsNullOrWhiteSpace(profile.CardVisualStyle) ||
           string.Equals(profile.CardVisualStyle, "Default", StringComparison.OrdinalIgnoreCase)));
 
@@ -947,6 +949,7 @@ public sealed partial class MainWindow
             rootRes["SolidBackgroundFillColorBaseAltBrush"] = modalGlass;
             rootRes["AcrylicBackgroundFillColorDefaultBrush"] = modalGlass;
             rootRes["SurfaceStrokeColorFlyoutBrush"] = new SolidColorBrush(Color.FromArgb(isLight ? (byte)115 : (byte)90, accent.R, accent.G, accent.B));
+            SyncQueueDrawerThemeByOwnBackground(flyoutTint, isLight);
         }
         else
         {
@@ -954,6 +957,7 @@ public sealed partial class MainWindow
             rootRes.Remove("SolidBackgroundFillColorBaseAltBrush");
             rootRes.Remove("AcrylicBackgroundFillColorDefaultBrush");
             rootRes.Remove("SurfaceStrokeColorFlyoutBrush");
+            SyncQueueDrawerThemeByOwnBackground(null, isLight);
         }
 
         // 3. 联动首页双英雄大卡（左卡：每日推荐主色流光；右卡：私人 FM 主题副色/谐波色流光）与歌单详情页头部渐变层
@@ -1035,6 +1039,88 @@ public sealed partial class MainWindow
         ElementTheme toggleTemp = targetTheme == ElementTheme.Light ? ElementTheme.Dark : ElementTheme.Light;
         RootLayout.RequestedTheme = toggleTemp;
         RootLayout.RequestedTheme = targetTheme;
+    }
+
+    /// <summary>
+    /// 播放列表抽屉不跟随客户端底层壁纸动态反色，直接按抽屉自身当前背景画刷的明暗度判定前景文字与卡片对比色
+    /// </summary>
+    private void SyncQueueDrawerThemeByOwnBackground(Color? explicitBgTint = null, bool? fallbackIsLight = null)
+    {
+        if (QueueDrawerPanel == null)
+            return;
+
+        static bool TryGetBrushLuminance(Brush? brush, out double luminance)
+        {
+            if (brush is AcrylicBrush acrylic)
+            {
+                var c = acrylic.TintColor;
+                luminance = (0.2126 * c.R + 0.7152 * c.G + 0.0722 * c.B) / 255.0;
+                return true;
+            }
+            if (brush is SolidColorBrush solid && solid.Color.A > 40)
+            {
+                var c = solid.Color;
+                luminance = (0.2126 * c.R + 0.7152 * c.G + 0.0722 * c.B) / 255.0;
+                return true;
+            }
+            luminance = 0;
+            return false;
+        }
+
+        bool bgIsLight;
+        if (explicitBgTint.HasValue)
+        {
+            var c = explicitBgTint.Value;
+            double lum = (0.2126 * c.R + 0.7152 * c.G + 0.0722 * c.B) / 255.0;
+            bgIsLight = lum >= 0.5;
+        }
+        else if (QueueDrawerPanel.ReadLocalValue(Border.BackgroundProperty) is Brush localBg &&
+                 TryGetBrushLuminance(localBg, out double localLum))
+        {
+            bgIsLight = localLum >= 0.5;
+        }
+        else if (RootLayout.Resources.TryGetValue("SolidBackgroundFillColorBaseBrush", out var baseObj) &&
+                 baseObj is Brush baseBrush &&
+                 TryGetBrushLuminance(baseBrush, out double baseLum))
+        {
+            bgIsLight = baseLum >= 0.5;
+        }
+        else if (TryGetBrushLuminance(QueueDrawerPanel.Background, out double bgLum))
+        {
+            bgIsLight = bgLum >= 0.5;
+        }
+        else
+        {
+            bgIsLight = fallbackIsLight ?? IsCurrentUiLightMode;
+        }
+
+        var res = QueueDrawerPanel.Resources;
+        ThemeService.SetOrUpdateSolidBrush(res, "TextFillColorPrimaryBrush", bgIsLight
+            ? Color.FromArgb(255, 15, 23, 42)
+            : Color.FromArgb(255, 248, 250, 252));
+        ThemeService.SetOrUpdateSolidBrush(res, "TextFillColorSecondaryBrush", bgIsLight
+            ? Color.FromArgb(255, 51, 65, 85)
+            : Color.FromArgb(204, 203, 213, 225));
+        ThemeService.SetOrUpdateSolidBrush(res, "TextFillColorTertiaryBrush", bgIsLight
+            ? Color.FromArgb(255, 71, 85, 105)
+            : Color.FromArgb(153, 148, 163, 184));
+        ThemeService.SetOrUpdateSolidBrush(res, "DividerStrokeColorDefaultBrush", bgIsLight
+            ? Color.FromArgb(28, 15, 23, 42)
+            : Color.FromArgb(36, 255, 255, 255));
+        ThemeService.SetOrUpdateSolidBrush(res, "CardBackgroundFillColorDefaultBrush", bgIsLight
+            ? Color.FromArgb(148, 255, 255, 255)
+            : Color.FromArgb(96, 30, 41, 59));
+        ThemeService.SetOrUpdateSolidBrush(res, "CardBackgroundFillColorSecondaryBrush", bgIsLight
+            ? Color.FromArgb(42, 255, 255, 255)
+            : Color.FromArgb(55, 30, 41, 59));
+        ThemeService.SetOrUpdateSolidBrush(res, "CardStrokeColorDefaultBrush", bgIsLight
+            ? Color.FromArgb(170, 255, 255, 255)
+            : Color.FromArgb(52, 255, 255, 255));
+
+        ElementTheme wantTheme = bgIsLight ? ElementTheme.Light : ElementTheme.Dark;
+        ElementTheme toggleTemp = wantTheme == ElementTheme.Light ? ElementTheme.Dark : ElementTheme.Light;
+        QueueDrawerPanel.RequestedTheme = toggleTemp;
+        QueueDrawerPanel.RequestedTheme = wantTheme;
     }
 
     // ==================== 入口一：设置页「个性主题」常规内嵌面板准备 ====================
@@ -1189,11 +1275,34 @@ public sealed partial class MainWindow
 
     private void PopulateThreeColumnThemeGrid(Grid targetGrid, IReadOnlyList<CustomThemeProfile> items, string activeId)
     {
+        if (items.Count == 0)
+        {
+            targetGrid.Children.Clear();
+            targetGrid.RowDefinitions.Clear();
+            targetGrid.ColumnDefinitions.Clear();
+            targetGrid.Tag = null;
+            return;
+        }
+
+        // 外观签名一致时原地无损更新每张卡片的状态（边框/「使用中」徽章/按钮文案），避免 DOM 重建引发 ScrollViewer 跳动
+        string sig = string.Join("||", items.Select(x =>
+            $"{x.Id}|{x.Name}|{x.Author}|{x.Description}|{x.BaseMode}|{x.BackdropType}|{x.WindowBgColorHex}|{x.BackgroundImagePath}|{x.AccentColorHex}|{x.AccentGradientEndHex}|{x.EnableAccentGradient}|{x.AuroraColor1Hex}|{x.AuroraColor2Hex}|{x.AuroraColor3Hex}|{x.EnableParticleOverlay}|{x.ParticleType}|{x.CardVisualStyle}|{x.PlayBarLayoutMode}|{x.CoverArtShape}|{x.EnableAudioReactive}|{x.AudioReactiveStyle}|{x.AudioSensitivity}|{x.EnablePointerInteraction}"));
+
+        if (targetGrid.Tag is string oldSig && oldSig == sig && targetGrid.Children.Count == items.Count)
+        {
+            foreach (var child in targetGrid.Children)
+            {
+                if (child is Border { Tag: Action sync })
+                {
+                    sync();
+                }
+            }
+            return;
+        }
+
         targetGrid.Children.Clear();
         targetGrid.RowDefinitions.Clear();
         targetGrid.ColumnDefinitions.Clear();
-
-        if (items.Count == 0) return;
 
         const int columns = 3;
         for (int c = 0; c < columns; c++)
@@ -1210,12 +1319,315 @@ public sealed partial class MainWindow
         for (int i = 0; i < items.Count; i++)
         {
             var item = items[i];
-            bool isActive = string.Equals(item.Id, activeId, StringComparison.OrdinalIgnoreCase);
-            var card = CreateThemeLibraryItemCard(item, isActive);
+            var card = CreateLocalThemePreviewCard(item);
             Grid.SetRow((FrameworkElement)card, i / columns);
             Grid.SetColumn((FrameworkElement)card, i % columns);
             targetGrid.Children.Add(card);
         }
+
+        targetGrid.Tag = sig;
+    }
+
+    /// <summary>
+    /// 创建设置页本地预设与自制主题区使用的 1:1 微缩实景预览大卡片（视觉布局对齐主题市场卡片，支持原地无损状态同步）
+    /// </summary>
+    private UIElement CreateLocalThemePreviewCard(CustomThemeProfile item)
+    {
+        var accentCol = ThemeService.ParseColorOrDefault(item.AccentColorHex, Color.FromArgb(255, 16, 185, 129));
+        bool isThemeLight = string.Equals(item.BaseMode, "Light", StringComparison.OrdinalIgnoreCase);
+
+        Brush currentBorderBrush = new SolidColorBrush(Color.FromArgb(38, 255, 255, 255));
+        var card = new Border
+        {
+            CornerRadius = new CornerRadius(14),
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(12)
+        };
+
+        var mainStack = new StackPanel { Spacing = 10, HorizontalAlignment = HorizontalAlignment.Stretch };
+        bool isCardBusy = false;
+
+        var previewBtn = new Button
+        {
+            Content = "预览试用",
+            Style = (Style)Application.Current.Resources["SecondaryTabButtonStyle"],
+            CornerRadius = new CornerRadius(6),
+            Padding = new Thickness(8, 5, 8, 5),
+            FontSize = 11,
+            FontWeight = FontWeights.Medium,
+            IsTabStop = false,
+            HorizontalAlignment = HorizontalAlignment.Stretch
+        };
+
+        var applyBtn = new Button
+        {
+            Style = (Style)Application.Current.Resources["BrandPrimaryButtonStyle"],
+            CornerRadius = new CornerRadius(6),
+            Padding = new Thickness(8, 5, 8, 5),
+            FontSize = 11,
+            FontWeight = FontWeights.SemiBold,
+            IsTabStop = false,
+            HorizontalAlignment = HorizontalAlignment.Stretch
+        };
+
+        async Task ApplyLocalThemeCardAsync()
+        {
+            if (isCardBusy) return;
+            isCardBusy = true;
+            previewBtn.IsHitTestVisible = false;
+            applyBtn.IsHitTestVisible = false;
+
+            try
+            {
+                var settingsSv = FindAncestorScrollViewer(SettingsThemePanel);
+                double? savedOffset = (SettingsThemePanel.Visibility == Visibility.Visible && settingsSv != null)
+                    ? settingsSv.VerticalOffset
+                    : null;
+
+                await SelectAndApplyThemeCardAsync(item);
+
+                if (savedOffset.HasValue && settingsSv != null)
+                {
+                    double target = savedOffset.Value;
+                    settingsSv.ChangeView(null, target, null, disableAnimation: true);
+                    DispatcherQueue.TryEnqueue(() =>
+                    {
+                        settingsSv.ChangeView(null, target, null, disableAnimation: true);
+                    });
+                }
+            }
+            finally
+            {
+                isCardBusy = false;
+                previewBtn.IsHitTestVisible = true;
+                applyBtn.IsHitTestVisible = true;
+            }
+        }
+
+        // 1. 顶部 1:1 微缩播放器实景预览图（内置本地壁纸缩略图衬底，点击直接应用主题）
+        string leftCategoryText = item.IsBuiltIn
+            ? "官方预设"
+            : (!string.IsNullOrWhiteSpace(item.MarketOriginId) ? "市场已装" : "我的自制");
+        var previewThumbnail = BuildThemeLiveMockupPreviewCore(
+            item,
+            accentCol,
+            isThemeLight,
+            leftCategoryText,
+            item.Id);
+        previewThumbnail.Tapped += async (_, te) =>
+        {
+            te.Handled = true;
+            await ApplyLocalThemeCardAsync();
+        };
+        ToolTipService.SetToolTip(previewThumbnail, "点击直接应用此主题");
+        mainStack.Children.Add(previewThumbnail);
+
+        // 2. 主题标题、「使用中」徽章、作者来源与简介
+        var infoStack = new StackPanel { Spacing = 3 };
+        var titleRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        var titleBlock = new TextBlock
+        {
+            Text = item.Name,
+            FontSize = 14,
+            FontWeight = FontWeights.Bold,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            MaxLines = 1
+        };
+        titleRow.Children.Add(titleBlock);
+
+        var activeBadgeText = new TextBlock
+        {
+            Text = "使用中",
+            FontSize = 9,
+            FontWeight = FontWeights.Bold,
+            Foreground = new SolidColorBrush(Colors.White)
+        };
+        var activeBadge = new Border
+        {
+            Background = new SolidColorBrush(ThemeService.EnsureReadableButtonFill(accentCol, true)),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(5, 1, 5, 1),
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = activeBadgeText
+        };
+        titleRow.Children.Add(activeBadge);
+        infoStack.Children.Add(titleRow);
+
+        string author = string.IsNullOrWhiteSpace(item.Author) ? (item.IsBuiltIn ? "Official" : "Local") : item.Author;
+        string src = item.IsBuiltIn
+            ? "官方精选预设"
+            : (!string.IsNullOrWhiteSpace(item.MarketOriginId) ? "主题市场已装" : "本地自制主题");
+        var authorBlock = new TextBlock
+        {
+            Text = $"By {author} · {src}",
+            FontSize = 11
+        };
+        infoStack.Children.Add(authorBlock);
+
+        var descBlock = new TextBlock
+        {
+            Text = string.IsNullOrWhiteSpace(item.Description) ? $"{(isThemeLight ? "浅色" : "深色")} · {item.BackdropType}" : item.Description,
+            FontSize = 12,
+            MaxLines = 2,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            Height = 32
+        };
+        infoStack.Children.Add(descBlock);
+        mainStack.Children.Add(infoStack);
+
+        // 3. 底部操作栏：预览试用 / 立即应用 /（非内置主题额外提供删除按钮）
+        var actionsRow = new Grid { ColumnSpacing = 8 };
+        actionsRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        actionsRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.3, GridUnitType.Star) });
+
+        previewBtn.Click += (_, _) =>
+        {
+            var settingsSv = FindAncestorScrollViewer(SettingsThemePanel);
+            double? savedOffset = (SettingsThemePanel.Visibility == Visibility.Visible && settingsSv != null)
+                ? settingsSv.VerticalOffset
+                : null;
+
+            _themeDraft = item.Clone();
+            ViewModel.Theme.NotifyPreviewUpdated(_themeDraft);
+            LoadThemeDraftToEditorUi();
+            ViewModel.StatusToast = $"正在预览试用主题：{item.Name}";
+
+            if (savedOffset.HasValue && settingsSv != null)
+            {
+                double target = savedOffset.Value;
+                settingsSv.ChangeView(null, target, null, disableAnimation: true);
+                DispatcherQueue.TryEnqueue(() =>
+                {
+                    settingsSv.ChangeView(null, target, null, disableAnimation: true);
+                });
+            }
+        };
+        Grid.SetColumn(previewBtn, 0);
+        actionsRow.Children.Add(previewBtn);
+
+        applyBtn.Click += async (_, _) => await ApplyLocalThemeCardAsync();
+        Grid.SetColumn(applyBtn, 1);
+        actionsRow.Children.Add(applyBtn);
+
+        if (!item.IsBuiltIn)
+        {
+            actionsRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            var delBtn = new Button
+            {
+                Width = 28,
+                Height = 28,
+                Padding = new Thickness(0),
+                CornerRadius = new CornerRadius(6),
+                Background = new SolidColorBrush(Colors.Transparent),
+                BorderThickness = new Thickness(0),
+                VerticalAlignment = VerticalAlignment.Center,
+                IsTabStop = false,
+                Tag = item.Id,
+                Content = new FontIcon
+                {
+                    Glyph = "\uE74D",
+                    FontSize = 12,
+                    Foreground = new SolidColorBrush(Color.FromArgb(255, 239, 68, 68))
+                }
+            };
+            ToolTipService.SetToolTip(delBtn, "删除此主题");
+            delBtn.Tapped += (_, te) => te.Handled = true;
+            delBtn.Click += OnDeleteCustomThemeCardClick;
+            Grid.SetColumn(delBtn, 2);
+            actionsRow.Children.Add(delBtn);
+        }
+
+        void SyncCardVisualState()
+        {
+            string activeId = ViewModel.Config.Settings.ThemeCenter.ActiveThemeId;
+            var previewProf = ViewModel.Theme.PreviewProfile;
+            bool isActive = string.Equals(item.Id, activeId, StringComparison.OrdinalIgnoreCase);
+            bool isCurrentEffective = previewProf != null
+                ? string.Equals(previewProf.Id, item.Id, StringComparison.OrdinalIgnoreCase)
+                : isActive;
+
+            var effProf = ViewModel.Theme.GetEffectiveTheme();
+            bool curUiLight = IsCurrentUiLightMode;
+            bool isLiquid = IsLiquidGlassMode(effProf);
+            bool isCrystal = IsCrystalClearMode(effProf);
+            var activeStrokeCol = ThemeService.EnsureReadableButtonFill(accentCol, true);
+
+            if (isLiquid)
+            {
+                card.Background = ThemeService.CreateLiquidGlassSurfaceBrush(accentCol, curUiLight, intensity: isCurrentEffective ? 1.25 : 1.08);
+                currentBorderBrush = isActive
+                    ? new SolidColorBrush(activeStrokeCol)
+                    : ThemeService.CreateLiquidGlassBorderBrush(accentCol, intensity: 1.05);
+            }
+            else
+            {
+                Color cardBg = isCrystal
+                    ? Colors.Transparent
+                    : (curUiLight ? Color.FromArgb(72, 255, 255, 255) : Color.FromArgb(20, 255, 255, 255));
+                Color borderCol = isActive
+                    ? activeStrokeCol
+                    : (isCrystal
+                        ? Color.FromArgb(76, 148, 163, 184)
+                        : (curUiLight ? Color.FromArgb(200, 255, 255, 255) : Color.FromArgb(38, 255, 255, 255)));
+                currentBorderBrush = new SolidColorBrush(borderCol);
+                card.Background = new SolidColorBrush(cardBg);
+            }
+            card.BorderBrush = currentBorderBrush;
+            card.BorderThickness = new Thickness(isActive ? 1.5 : 1);
+
+            Color titleCol = curUiLight ? Color.FromArgb(255, 18, 22, 28) : Color.FromArgb(255, 250, 250, 252);
+            Color subCol = curUiLight ? Color.FromArgb(255, 64, 70, 80) : Color.FromArgb(255, 175, 182, 192);
+            Color descCol = curUiLight ? Color.FromArgb(255, 42, 48, 56) : Color.FromArgb(255, 212, 218, 226);
+
+            titleBlock.Foreground = new SolidColorBrush(titleCol);
+            authorBlock.Foreground = new SolidColorBrush(subCol);
+            descBlock.Foreground = new SolidColorBrush(descCol);
+
+            activeBadge.Visibility = isActive ? Visibility.Visible : Visibility.Collapsed;
+            applyBtn.Content = isActive && previewProf == null ? "当前使用中" : "立即应用";
+
+            if (isLiquid)
+            {
+                previewBtn.ClearValue(Control.ForegroundProperty);
+                previewBtn.Background = ThemeService.CreateLiquidGlassSurfaceBrush(accentCol, curUiLight, intensity: 0.95);
+                previewBtn.BorderBrush = ThemeService.CreateLiquidGlassBorderBrush(accentCol, intensity: 0.9);
+            }
+            else if (isCrystal)
+            {
+                previewBtn.ClearValue(Control.ForegroundProperty);
+                previewBtn.Background = new SolidColorBrush(Colors.Transparent);
+                previewBtn.BorderBrush = new SolidColorBrush(Color.FromArgb(88, 148, 163, 184));
+            }
+            else if (curUiLight)
+            {
+                previewBtn.Foreground = new SolidColorBrush(Color.FromArgb(255, 15, 23, 42));
+                previewBtn.Background = new SolidColorBrush(Color.FromArgb(145, 255, 255, 255));
+                previewBtn.BorderBrush = new SolidColorBrush(Color.FromArgb(48, 15, 23, 42));
+            }
+            else
+            {
+                previewBtn.ClearValue(Control.ForegroundProperty);
+                previewBtn.ClearValue(Control.BackgroundProperty);
+                previewBtn.ClearValue(Control.BorderBrushProperty);
+            }
+        }
+
+        SyncCardVisualState();
+        card.Tag = (Action)SyncCardVisualState;
+
+        mainStack.Children.Add(actionsRow);
+        card.Child = mainStack;
+
+        card.PointerEntered += (_, _) =>
+        {
+            card.BorderBrush = new SolidColorBrush(Color.FromArgb(195, accentCol.R, accentCol.G, accentCol.B));
+        };
+        card.PointerExited += (_, _) =>
+        {
+            card.BorderBrush = currentBorderBrush;
+        };
+
+        return card;
     }
 
     private static LinearGradientBrush CreateInnerLiquidCrystalBrush(Color accent, bool isLight, double intensity = 1.0)
@@ -1376,7 +1788,7 @@ public sealed partial class MainWindow
                 VerticalAlignment = VerticalAlignment.Center,
                 Child = new TextBlock
                 {
-                    Text = item.BackdropType is "Aurora" or "CoverFlow" ? "极光" : (item.EnableParticleOverlay ? "粒子" : "动态"),
+                    Text = item.EnableAudioReactive ? "音律" : (item.EnablePointerInteraction ? "交互" : (item.BackdropType is "Aurora" or "CoverFlow" ? "极光" : (item.EnableParticleOverlay ? "粒子" : "动态"))),
                     FontSize = 9,
                     Foreground = new SolidColorBrush(readableTagTextCol),
                     FontWeight = FontWeights.SemiBold
@@ -1476,6 +1888,12 @@ public sealed partial class MainWindow
     private async void OnDeleteCustomThemeCardClick(object sender, RoutedEventArgs e)
     {
         if (sender is not Button btn || btn.Tag is not string id) return;
+
+        var settingsSv = FindAncestorScrollViewer(SettingsThemePanel);
+        double? savedOffset = (SettingsThemePanel.Visibility == Visibility.Visible && settingsSv != null)
+            ? settingsSv.VerticalOffset
+            : null;
+
         bool ok = await ViewModel.Theme.DeleteCustomThemeAsync(id);
         if (ok)
         {
@@ -1483,6 +1901,17 @@ public sealed partial class MainWindow
             RebuildThemeLibraryCardsUi();
             LoadThemeDraftToEditorUi();
             ViewModel.StatusToast = "已删除自制主题";
+
+            if (savedOffset.HasValue && settingsSv != null)
+            {
+                double target = savedOffset.Value;
+                settingsSv.UpdateLayout();
+                settingsSv.ChangeView(null, target, null, disableAnimation: true);
+                DispatcherQueue.TryEnqueue(() =>
+                {
+                    settingsSv.ChangeView(null, target, null, disableAnimation: true);
+                });
+            }
         }
     }
 
@@ -1610,28 +2039,89 @@ public sealed partial class MainWindow
         };
 
         var mainStack = new StackPanel { Spacing = 10, HorizontalAlignment = HorizontalAlignment.Stretch };
+        bool isCardBusy = false;
 
-        void PreviewThisMarketItem()
+        var previewBtn = new Button
         {
-            var settingsSv = FindAncestorScrollViewer(SettingsThemePanel);
-            double? savedOffset = (SettingsThemePanel.Visibility == Visibility.Visible && settingsSv != null)
-                ? settingsSv.VerticalOffset
-                : null;
+            Content = "预览试用",
+            Style = (Style)Application.Current.Resources["SecondaryTabButtonStyle"],
+            CornerRadius = new CornerRadius(6),
+            Padding = new Thickness(8, 5, 8, 5),
+            FontSize = 11,
+            FontWeight = FontWeights.Medium,
+            IsTabStop = false,
+            HorizontalAlignment = HorizontalAlignment.Stretch
+        };
 
-            _themeDraft = item.Theme.Clone();
-            ViewModel.Theme.NotifyPreviewUpdated(_themeDraft);
-            LoadThemeDraftToEditorUi();
-            ViewModel.StatusToast = $"正在预览试用市场主题：{t.Name}";
+        var installBtn = new Button
+        {
+            Style = (Style)Application.Current.Resources["BrandPrimaryButtonStyle"],
+            CornerRadius = new CornerRadius(6),
+            Padding = new Thickness(8, 5, 8, 5),
+            FontSize = 11,
+            FontWeight = FontWeights.SemiBold,
+            IsTabStop = false,
+            HorizontalAlignment = HorizontalAlignment.Stretch
+        };
 
-            if (savedOffset.HasValue && settingsSv != null)
+        async Task PreviewThisMarketItemAsync()
+        {
+            if (isCardBusy) return;
+            isCardBusy = true;
+            previewBtn.IsEnabled = false;
+            installBtn.IsEnabled = false;
+
+            try
             {
-                settingsSv.ChangeView(null, savedOffset.Value, null, disableAnimation: true);
+                var settingsSv = FindAncestorScrollViewer(SettingsThemePanel);
+                double? savedOffset = (SettingsThemePanel.Visibility == Visibility.Visible && settingsSv != null)
+                    ? settingsSv.VerticalOffset
+                    : null;
+
+                var draftCopy = item.Theme.Clone();
+                bool hasRemoteMedia = !string.IsNullOrWhiteSpace(item.WallpaperUrl) || !string.IsNullOrWhiteSpace(item.VideoUrl);
+                if (hasRemoteMedia)
+                {
+                    previewBtn.Content = "加载壁纸...";
+                    await ViewModel.Theme.EnsureMarketThemeAssetsAsync(item, draftCopy, forceRedownload: false,
+                        progress: (done, total, _) =>
+                        {
+                            DispatcherQueue.TryEnqueue(() =>
+                            {
+                                previewBtn.Content = total > 0
+                                    ? $"加载 {Math.Clamp((int)Math.Round(done * 100.0 / total), 0, 100)}%"
+                                    : $"加载 {done / 1024}KB";
+                            });
+                        });
+                }
+
+                _themeDraft = draftCopy;
+                ViewModel.Theme.NotifyPreviewUpdated(_themeDraft);
+                LoadThemeDraftToEditorUi();
+                ViewModel.StatusToast = $"正在预览试用市场主题：{t.Name}";
+
+                if (savedOffset.HasValue && settingsSv != null)
+                {
+                    settingsSv.ChangeView(null, savedOffset.Value, null, disableAnimation: true);
+                }
+            }
+            catch (Exception ex)
+            {
+                ViewModel.StatusToast = $"预览加载失败：{ex.Message}";
+            }
+            finally
+            {
+                isCardBusy = false;
+                previewBtn.Content = "预览试用";
+                previewBtn.IsEnabled = true;
+                installBtn.Content = ViewModel.Theme.IsMarketplaceThemeInstalled(item.Id) ? "更新并应用" : "安装并应用";
+                installBtn.IsEnabled = true;
             }
         }
 
-        // 1. 顶部 1:1 高拟真「微缩播放器实景预览图」（兼容远程 PreviewImageUrl 真实截图叠加，点击直接试穿）
+        // 1. 顶部 1:1 高拟真「微缩播放器实景预览图」（兼容远程 WallpaperUrl/PreviewImageUrl 异步镜像加载，点击直接试穿）
         var previewThumbnail = BuildThemeLiveMockupPreview(item, accentCol, isThemeLight);
-        previewThumbnail.Tapped += (_, _) => PreviewThisMarketItem();
+        previewThumbnail.Tapped += async (_, _) => await PreviewThisMarketItemAsync();
         ToolTipService.SetToolTip(previewThumbnail, "点击预览图即可在主窗口实时试穿该主题效果");
         mainStack.Children.Add(previewThumbnail);
 
@@ -1683,48 +2173,58 @@ public sealed partial class MainWindow
         actionsRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         actionsRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.3, GridUnitType.Star) });
 
-        var previewBtn = new Button
-        {
-            Content = "预览试用",
-            Style = (Style)Application.Current.Resources["SecondaryTabButtonStyle"],
-            CornerRadius = new CornerRadius(6),
-            Padding = new Thickness(8, 5, 8, 5),
-            FontSize = 11,
-            FontWeight = FontWeights.Medium,
-            IsTabStop = false,
-            HorizontalAlignment = HorizontalAlignment.Stretch
-        };
-        previewBtn.Click += (_, _) => PreviewThisMarketItem();
+        previewBtn.Click += async (_, _) => await PreviewThisMarketItemAsync();
         Grid.SetColumn(previewBtn, 0);
         actionsRow.Children.Add(previewBtn);
 
-        var installBtn = new Button
-        {
-            Style = (Style)Application.Current.Resources["BrandPrimaryButtonStyle"],
-            CornerRadius = new CornerRadius(6),
-            Padding = new Thickness(8, 5, 8, 5),
-            FontSize = 11,
-            FontWeight = FontWeights.SemiBold,
-            IsTabStop = false,
-            HorizontalAlignment = HorizontalAlignment.Stretch
-        };
         installBtn.Click += async (_, _) =>
         {
-            var settingsSv = FindAncestorScrollViewer(SettingsThemePanel);
-            double? savedOffset = (SettingsThemePanel.Visibility == Visibility.Visible && settingsSv != null)
-                ? settingsSv.VerticalOffset
-                : null;
+            if (isCardBusy) return;
+            isCardBusy = true;
+            previewBtn.IsEnabled = false;
+            installBtn.IsEnabled = false;
+            installBtn.Content = "准备安装...";
 
-            var saved = await ViewModel.Theme.InstallMarketplaceThemeAsync(item);
-            _themeDraft = saved.Clone();
-            RebuildThemeLibraryCardsUi();
-            LoadThemeDraftToEditorUi();
-            RefreshMarketplaceCardsInPlace();
-            ViewModel.StatusToast = $"已成功安装并应用：{saved.Name}";
-
-            if (savedOffset.HasValue && settingsSv != null)
+            try
             {
-                settingsSv.ChangeView(null, savedOffset.Value, null, disableAnimation: true);
+                var settingsSv = FindAncestorScrollViewer(SettingsThemePanel);
+                double? savedOffset = (SettingsThemePanel.Visibility == Visibility.Visible && settingsSv != null)
+                    ? settingsSv.VerticalOffset
+                    : null;
+
+                var saved = await ViewModel.Theme.InstallMarketplaceThemeAsync(item,
+                    progress: (done, total, _) =>
+                    {
+                        DispatcherQueue.TryEnqueue(() =>
+                        {
+                            installBtn.Content = total > 0
+                                ? $"下载 {Math.Clamp((int)Math.Round(done * 100.0 / total), 0, 100)}%"
+                                : $"下载 {done / 1024}KB";
+                        });
+                    });
+
+                _themeDraft = saved.Clone();
+                RebuildThemeLibraryCardsUi();
+                LoadThemeDraftToEditorUi();
+                RefreshMarketplaceCardsInPlace();
+                ViewModel.StatusToast = $"已成功安装并应用：{saved.Name}";
+
+                if (savedOffset.HasValue && settingsSv != null)
+                {
+                    settingsSv.ChangeView(null, savedOffset.Value, null, disableAnimation: true);
+                }
+            }
+            catch (Exception ex)
+            {
+                ViewModel.StatusToast = $"安装主题失败：{ex.Message}";
+                await ShowThemeFileDialogErrorAsync("安装在线主题失败", ex.Message);
+            }
+            finally
+            {
+                isCardBusy = false;
+                previewBtn.IsEnabled = true;
+                installBtn.IsEnabled = true;
+                installBtn.Content = ViewModel.Theme.IsMarketplaceThemeInstalled(item.Id) ? "更新并应用" : "安装并应用";
             }
         };
         Grid.SetColumn(installBtn, 1);
@@ -1814,12 +2314,63 @@ public sealed partial class MainWindow
         return card;
     }
 
-    /// <summary>
-    /// 根据主题真实参数 1:1 自动渲染微缩桌面播放器实景预览图（含三色流体极光、散点粒子、毛玻璃侧栏、歌单卡片、灵动岛/贴底栏与黑胶唱盘，同时兼容网络 PreviewImageUrl）
-    /// </summary>
-    private static Border BuildThemeLiveMockupPreview(MarketplaceThemeItem item, Color accentCol, bool isThemeLight)
+    private async Task LoadMarketBitmapWithMirrorsAsync(Image targetImage, string url)
     {
-        var t = item.Theme;
+        try
+        {
+            byte[]? bytes = await ViewModel.Theme.DownloadPreviewBytesAsync(url);
+            if (bytes == null || bytes.Length == 0) return;
+
+            DispatcherQueue.TryEnqueue(async () =>
+            {
+                try
+                {
+                    using var stream = new InMemoryRandomAccessStream();
+                    await stream.WriteAsync(bytes.AsBuffer());
+                    stream.Seek(0);
+                    var bmp = new BitmapImage();
+                    await bmp.SetSourceAsync(stream);
+                    targetImage.Source = bmp;
+                }
+                catch
+                {
+                }
+            });
+        }
+        catch
+        {
+        }
+    }
+
+    /// <summary>
+    /// 根据主题真实参数 1:1 自动渲染微缩桌面播放器实景预览图（含远程壁纸衬底、三色流体极光、散点粒子、毛玻璃侧栏、歌单卡片、灵动岛/贴底栏与黑胶唱盘，同时兼容网络 PreviewImageUrl）
+    /// </summary>
+    private Border BuildThemeLiveMockupPreview(MarketplaceThemeItem item, Color accentCol, bool isThemeLight)
+    {
+        string dlText = item.Downloads >= 10000 ? $"🔥 {item.Downloads / 10000.0:F1}w" : $"↓ {item.Downloads}";
+        return BuildThemeLiveMockupPreviewCore(
+            item.Theme,
+            accentCol,
+            isThemeLight,
+            item.Category,
+            item.Id,
+            item.WallpaperUrl,
+            item.PreviewImageUrl,
+            dlText,
+            item.VideoUrl);
+    }
+
+    private Border BuildThemeLiveMockupPreviewCore(
+        CustomThemeProfile t,
+        Color accentCol,
+        bool isThemeLight,
+        string leftCategoryText,
+        string? seedKey = null,
+        string? remoteWallpaperUrl = null,
+        string? remotePreviewImageUrl = null,
+        string? downloadsBadgeText = null,
+        string? remoteVideoUrl = null)
+    {
         var winBg = ThemeService.ParseColorOrDefault(t.WindowBgColorHex,
             isThemeLight ? Color.FromArgb(255, 246, 249, 253) : Color.FromArgb(255, 11, 15, 25));
         var accentEnd = t.EnableAccentGradient && ThemeService.TryParseColor(t.AccentGradientEndHex, out var parsedEnd)
@@ -1850,6 +2401,39 @@ public sealed partial class MainWindow
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(outerFrame, SkipAdaptiveTextTag);
 
         var sceneRoot = new Grid { CornerRadius = new CornerRadius(8) };
+
+        // ==================== 第 0 层：优先加载本地已保存壁纸缩略图；否则若附带远程壁纸 URL 则镜像加载作为底层透出衬底 ====================
+        bool hasLocalWallpaper = !string.IsNullOrWhiteSpace(t.BackgroundImagePath) && System.IO.File.Exists(t.BackgroundImagePath);
+        if (hasLocalWallpaper)
+        {
+            try
+            {
+                var wallThumb = new Image
+                {
+                    Stretch = Stretch.UniformToFill,
+                    HorizontalAlignment = HorizontalAlignment.Stretch,
+                    VerticalAlignment = VerticalAlignment.Stretch,
+                    IsHitTestVisible = false,
+                    Source = new BitmapImage(new Uri(System.IO.Path.GetFullPath(t.BackgroundImagePath))) { DecodePixelWidth = 420 }
+                };
+                sceneRoot.Children.Add(wallThumb);
+            }
+            catch
+            {
+            }
+        }
+        else if (!string.IsNullOrWhiteSpace(remoteWallpaperUrl) && string.IsNullOrWhiteSpace(remotePreviewImageUrl))
+        {
+            var wallThumb = new Image
+            {
+                Stretch = Stretch.UniformToFill,
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                VerticalAlignment = VerticalAlignment.Stretch,
+                IsHitTestVisible = false
+            };
+            sceneRoot.Children.Add(wallThumb);
+            _ = LoadMarketBitmapWithMirrorsAsync(wallThumb, remoteWallpaperUrl);
+        }
 
         // ==================== 第 1 层：三色流体极光 / 封面流光径向晕染 ====================
         if (t.BackdropType is "Aurora" or "CoverFlow")
@@ -1912,7 +2496,7 @@ public sealed partial class MainWindow
                     _ => accentCol
                 };
 
-            int seed = Math.Abs((item.Id ?? t.Name).GetHashCode());
+            int seed = Math.Abs((seedKey ?? t.Id ?? t.Name).GetHashCode());
             var rng = new Random(seed);
             for (int p = 0; p < 12; p++)
             {
@@ -1960,6 +2544,145 @@ public sealed partial class MainWindow
                 particleCanvas.Children.Add(dot);
             }
             sceneRoot.Children.Add(particleCanvas);
+        }
+
+        // ==================== 第 2.5 层：微缩音频律动装饰预览层（镜像频谱柱 / 全息脉冲环 / 丝绸声波） ====================
+        if (t.EnableAudioReactive)
+        {
+            string vizStyle = string.IsNullOrWhiteSpace(t.AudioReactiveStyle) ? "SpectrumBars" : t.AudioReactiveStyle;
+            if (string.Equals(vizStyle, "PulseRings", StringComparison.OrdinalIgnoreCase))
+            {
+                var ringCanvas = new Canvas
+                {
+                    Width = 96,
+                    Height = 96,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Margin = new Thickness(26, 6, 0, 10),
+                    IsHitTestVisible = false
+                };
+
+                var outerRing = new Microsoft.UI.Xaml.Shapes.Ellipse
+                {
+                    Width = 74,
+                    Height = 74,
+                    Stroke = new SolidColorBrush(Color.FromArgb(145, accentCol.R, accentCol.G, accentCol.B)),
+                    StrokeThickness = 1.4
+                };
+                Canvas.SetLeft(outerRing, 11);
+                Canvas.SetTop(outerRing, 11);
+                ringCanvas.Children.Add(outerRing);
+
+                var innerRing = new Microsoft.UI.Xaml.Shapes.Ellipse
+                {
+                    Width = 48,
+                    Height = 48,
+                    Stroke = accentGradBrush,
+                    StrokeThickness = 1.8
+                };
+                Canvas.SetLeft(innerRing, 24);
+                Canvas.SetTop(innerRing, 24);
+                ringCanvas.Children.Add(innerRing);
+
+                double[] rayHeights = [9, 14, 11, 16, 10, 15, 12, 17, 9, 13, 15, 11];
+                for (int r = 0; r < rayHeights.Length; r++)
+                {
+                    double deg = r * (360.0 / rayHeights.Length);
+                    double rad = deg * Math.PI / 180.0;
+                    double rh = rayHeights[r];
+                    var ray = new Border
+                    {
+                        Width = 2.2,
+                        Height = rh,
+                        CornerRadius = new CornerRadius(1.1),
+                        Background = accentGradBrush,
+                        Opacity = 0.85,
+                        RenderTransformOrigin = new Windows.Foundation.Point(0.5, 1.0),
+                        RenderTransform = new RotateTransform { Angle = deg }
+                    };
+                    Canvas.SetLeft(ray, 48 + 25 * Math.Sin(rad) - 1.1);
+                    Canvas.SetTop(ray, 48 - 25 * Math.Cos(rad) - rh);
+                    ringCanvas.Children.Add(ray);
+                }
+
+                sceneRoot.Children.Add(ringCanvas);
+            }
+            else if (string.Equals(vizStyle, "SilkWave", StringComparison.OrdinalIgnoreCase))
+            {
+                var waveHost = new Grid
+                {
+                    VerticalAlignment = VerticalAlignment.Bottom,
+                    HorizontalAlignment = HorizontalAlignment.Stretch,
+                    Margin = new Thickness(12, 0, 12, 24),
+                    Height = 28,
+                    IsHitTestVisible = false
+                };
+                var backRow = new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    Spacing = 2.5,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Bottom,
+                    Opacity = 0.45
+                };
+                var frontRow = new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    Spacing = 2.5,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Bottom,
+                    Margin = new Thickness(4, 0, 0, 0),
+                    Opacity = 0.78
+                };
+                double[] silkHeightsA = [10, 14, 19, 23, 21, 16, 12, 15, 22, 26, 20, 14, 11, 17, 21, 15, 11, 9];
+                double[] silkHeightsB = [8, 12, 16, 18, 14, 10, 14, 19, 22, 17, 13, 16, 20, 16, 12, 10, 13, 9];
+                for (int s = 0; s < silkHeightsA.Length; s++)
+                {
+                    backRow.Children.Add(new Border
+                    {
+                        Width = 10,
+                        Height = silkHeightsA[s],
+                        CornerRadius = new CornerRadius(5, 5, 0, 0),
+                        Background = accentGradBrush
+                    });
+                    frontRow.Children.Add(new Border
+                    {
+                        Width = 10,
+                        Height = silkHeightsB[s],
+                        CornerRadius = new CornerRadius(5, 5, 0, 0),
+                        Background = new SolidColorBrush(Color.FromArgb(190, accentCol.R, accentCol.G, accentCol.B))
+                    });
+                }
+                waveHost.Children.Add(backRow);
+                waveHost.Children.Add(frontRow);
+                sceneRoot.Children.Add(waveHost);
+            }
+            else
+            {
+                var barsRow = new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    Spacing = 3,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Bottom,
+                    Margin = new Thickness(14, 0, 14, 24),
+                    Opacity = 0.85,
+                    IsHitTestVisible = false
+                };
+                double[] specHeights = [7, 10, 14, 12, 18, 22, 16, 25, 28, 28, 25, 16, 22, 18, 12, 14, 10, 7];
+                foreach (double bh in specHeights)
+                {
+                    barsRow.Children.Add(new Border
+                    {
+                        Width = 4,
+                        Height = bh,
+                        VerticalAlignment = VerticalAlignment.Bottom,
+                        CornerRadius = new CornerRadius(2, 2, 1, 1),
+                        Background = accentGradBrush
+                    });
+                }
+                sceneRoot.Children.Add(barsRow);
+            }
         }
 
         // ==================== 第 3 层：1:1 微缩播放器实景骨架（侧栏 + 顶栏 + 歌单卡片 + 灵动岛/贴底栏） ====================
@@ -2225,28 +2948,23 @@ public sealed partial class MainWindow
         mockupShell.Children.Add(appWindowBox);
         sceneRoot.Children.Add(mockupShell);
 
-        // ==================== 第 4 层：若远程 JSON 配置了真实预览图 URL 则自动无感覆盖渲染 ====================
-        if (!string.IsNullOrWhiteSpace(item.PreviewImageUrl) &&
-            (item.PreviewImageUrl.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
-             item.PreviewImageUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase)))
+        // ==================== 第 4 层：若远程 JSON 配置了真实预览图 URL 则通过镜像通道异步覆盖渲染 ====================
+        if (!string.IsNullOrWhiteSpace(remotePreviewImageUrl) &&
+            (remotePreviewImageUrl.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+             remotePreviewImageUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase)))
         {
-            try
+            var prevImg = new Image
             {
-                sceneRoot.Children.Add(new Image
-                {
-                    Source = new BitmapImage(new Uri(item.PreviewImageUrl)),
-                    Stretch = Stretch.UniformToFill,
-                    HorizontalAlignment = HorizontalAlignment.Stretch,
-                    VerticalAlignment = VerticalAlignment.Stretch
-                });
-            }
-            catch
-            {
-                // URL 异常时静默保留底层 1:1 矢量实景预览图
-            }
+                Stretch = Stretch.UniformToFill,
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                VerticalAlignment = VerticalAlignment.Stretch,
+                IsHitTestVisible = false
+            };
+            sceneRoot.Children.Add(prevImg);
+            _ = LoadMarketBitmapWithMirrorsAsync(prevImg, remotePreviewImageUrl);
         }
 
-        // ==================== 第 5 层：顶部悬浮磨砂分类/明暗/动态特效角标 + 右下热度 ====================
+        // ==================== 第 5 层：顶部悬浮磨砂分类/明暗/动态特效或材质角标 + 可选下载热度 ====================
         var topOverlay = new Grid
         {
             VerticalAlignment = VerticalAlignment.Top,
@@ -2260,7 +2978,7 @@ public sealed partial class MainWindow
             Background = new SolidColorBrush(Color.FromArgb(155, 9, 13, 22)),
             CornerRadius = new CornerRadius(4),
             Padding = new Thickness(5, 1.5, 5, 1.5),
-            Child = new TextBlock { Text = item.Category, FontSize = 9.5, Foreground = new SolidColorBrush(Colors.White), FontWeight = FontWeights.SemiBold }
+            Child = new TextBlock { Text = leftCategoryText, FontSize = 9.5, Foreground = new SolidColorBrush(Colors.White), FontWeight = FontWeights.SemiBold }
         });
         leftPills.Children.Add(new Border
         {
@@ -2278,7 +2996,39 @@ public sealed partial class MainWindow
         topOverlay.Children.Add(leftPills);
 
         var rightInfoStack = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, HorizontalAlignment = HorizontalAlignment.Right };
-        if (t.HasDynamicEffect)
+        bool isVideoTheme = !string.IsNullOrWhiteSpace(remoteVideoUrl) ||
+                            !string.IsNullOrWhiteSpace(t.BackgroundVideoPath) ||
+                            string.Equals(t.BackdropType, "Video", StringComparison.OrdinalIgnoreCase);
+        bool isWallpaperTheme = !isVideoTheme && (hasLocalWallpaper ||
+                                                  !string.IsNullOrWhiteSpace(remoteWallpaperUrl) ||
+                                                  string.Equals(t.BackdropType, "Image", StringComparison.OrdinalIgnoreCase));
+        if (t.EnableAudioReactive || t.EnablePointerInteraction)
+        {
+            string interactLabel = (t.EnableAudioReactive, t.EnablePointerInteraction) switch
+            {
+                (true, true) => "🎵 音律交互",
+                (true, false) => "🎵 音频律动",
+                _ => "✨ 指针交互"
+            };
+            rightInfoStack.Children.Add(new Border
+            {
+                Background = accentGradBrush,
+                CornerRadius = new CornerRadius(4),
+                Padding = new Thickness(5, 1.5, 5, 1.5),
+                Child = new TextBlock { Text = interactLabel, FontSize = 9, Foreground = new SolidColorBrush(Colors.White), FontWeight = FontWeights.SemiBold }
+            });
+        }
+        else if (isVideoTheme || isWallpaperTheme)
+        {
+            rightInfoStack.Children.Add(new Border
+            {
+                Background = accentGradBrush,
+                CornerRadius = new CornerRadius(4),
+                Padding = new Thickness(5, 1.5, 5, 1.5),
+                Child = new TextBlock { Text = isVideoTheme ? "动态视频" : "光学壁纸", FontSize = 9, Foreground = new SolidColorBrush(Colors.White), FontWeight = FontWeights.SemiBold }
+            });
+        }
+        else if (t.BackdropType is "Aurora" or "CoverFlow" || t.EnableParticleOverlay)
         {
             string fxLabel = (t.BackdropType is "Aurora" or "CoverFlow", t.EnableParticleOverlay) switch
             {
@@ -2294,15 +3044,34 @@ public sealed partial class MainWindow
                 Child = new TextBlock { Text = fxLabel, FontSize = 9, Foreground = new SolidColorBrush(Colors.White), FontWeight = FontWeights.SemiBold }
             });
         }
-
-        string dlText = item.Downloads >= 10000 ? $"🔥 {item.Downloads / 10000.0:F1}w" : $"↓ {item.Downloads}";
-        rightInfoStack.Children.Add(new Border
+        else
         {
-            Background = new SolidColorBrush(Color.FromArgb(145, 9, 13, 22)),
-            CornerRadius = new CornerRadius(4),
-            Padding = new Thickness(4.5, 1.5, 4.5, 1.5),
-            Child = new TextBlock { Text = dlText, FontSize = 9, Foreground = new SolidColorBrush(Colors.White) }
-        });
+            string matLabel = t.BackdropType switch
+            {
+                "Acrylic" => "亚克力",
+                "Solid" => "纯色质感",
+                "MicaAlt" => "云母 Alt",
+                _ => "原生云母"
+            };
+            rightInfoStack.Children.Add(new Border
+            {
+                Background = new SolidColorBrush(Color.FromArgb(145, 15, 23, 42)),
+                CornerRadius = new CornerRadius(4),
+                Padding = new Thickness(5, 1.5, 5, 1.5),
+                Child = new TextBlock { Text = matLabel, FontSize = 9, Foreground = new SolidColorBrush(Colors.White), FontWeight = FontWeights.Medium }
+            });
+        }
+
+        if (!string.IsNullOrWhiteSpace(downloadsBadgeText))
+        {
+            rightInfoStack.Children.Add(new Border
+            {
+                Background = new SolidColorBrush(Color.FromArgb(145, 9, 13, 22)),
+                CornerRadius = new CornerRadius(4),
+                Padding = new Thickness(4.5, 1.5, 4.5, 1.5),
+                Child = new TextBlock { Text = downloadsBadgeText, FontSize = 9, Foreground = new SolidColorBrush(Colors.White) }
+            });
+        }
         topOverlay.Children.Add(rightInfoStack);
 
         sceneRoot.Children.Add(topOverlay);
@@ -2339,8 +3108,11 @@ public sealed partial class MainWindow
 
     private void UpdateMarketFeedsStatusUi()
     {
+        bool useOfficial = ViewModel.Config.Settings.ThemeCenter.UseOfficialMarketRepo;
         int feedCount = ViewModel.Config.Settings.ThemeCenter.MarketFeedUrls.Count;
-        string text = $"已订阅 {feedCount} 个外部源";
+        string text = useOfficial
+            ? (feedCount > 0 ? $"已连接官方仓库 + {feedCount} 个外部源" : "已连接官方主题仓库")
+            : $"已订阅 {feedCount} 个外部源";
         if (PageFeedStatusText != null) PageFeedStatusText.Text = text;
     }
 
@@ -2372,8 +3144,74 @@ public sealed partial class MainWindow
 
     private async void OnRefreshMarketFeedsClick(object sender, RoutedEventArgs e)
     {
-        await LoadAndRenderMarketplaceCardsAsync(forceRefresh: true);
-        ViewModel.StatusToast = "已刷新主题市场在线订阅源！";
+        if (_isRefreshingMarketFeeds) return;
+        _isRefreshingMarketFeeds = true;
+
+        var settingsSv = FindAncestorScrollViewer(SettingsThemePanel);
+        double? savedSettingsOffset = (SettingsThemePanel.Visibility == Visibility.Visible && settingsSv != null)
+            ? settingsSv.VerticalOffset
+            : null;
+        var modalSv = FindAncestorScrollViewer(ModalMarketCardsGrid);
+        double? savedModalOffset = (ThemeModalMarketBodyGrid?.Visibility == Visibility.Visible && modalSv != null)
+            ? modalSv.VerticalOffset
+            : null;
+
+        // 使用 IsHitTestVisible + Opacity 防重入，避免 IsEnabled=false 导致焦点自动跳到底部口令输入框引发 ScrollViewer 滚动
+        if (PageRefreshMarketBtn != null)
+        {
+            PageRefreshMarketBtn.IsHitTestVisible = false;
+            PageRefreshMarketBtn.Opacity = 0.6;
+            PageRefreshMarketBtn.Content = "刷新中...";
+        }
+        if (ModalRefreshMarketBtn != null)
+        {
+            ModalRefreshMarketBtn.IsHitTestVisible = false;
+            ModalRefreshMarketBtn.Opacity = 0.6;
+            ModalRefreshMarketBtn.Content = "刷新中...";
+        }
+
+        try
+        {
+            await LoadAndRenderMarketplaceCardsAsync(forceRefresh: true);
+            settingsSv?.UpdateLayout();
+            modalSv?.UpdateLayout();
+
+            void RestoreScrollPositions()
+            {
+                if (savedSettingsOffset.HasValue && settingsSv != null && SettingsThemePanel.Visibility == Visibility.Visible)
+                {
+                    settingsSv.ChangeView(null, savedSettingsOffset.Value, null, disableAnimation: true);
+                }
+                if (savedModalOffset.HasValue && modalSv != null && ThemeModalMarketBodyGrid?.Visibility == Visibility.Visible)
+                {
+                    modalSv.ChangeView(null, savedModalOffset.Value, null, disableAnimation: true);
+                }
+            }
+
+            RestoreScrollPositions();
+            DispatcherQueue.TryEnqueue(RestoreScrollPositions);
+
+            string? err = ViewModel.Theme.LastRemoteRefreshError;
+            ViewModel.StatusToast = string.IsNullOrWhiteSpace(err)
+                ? $"已刷新主题仓库（在线 {ViewModel.Theme.LastRemoteFeedCount} 款，共 {_marketItems.Count} 款主题）"
+                : $"主题仓库连接异常：{err}";
+        }
+        finally
+        {
+            _isRefreshingMarketFeeds = false;
+            if (PageRefreshMarketBtn != null)
+            {
+                PageRefreshMarketBtn.Content = "刷新主题仓库";
+                PageRefreshMarketBtn.IsHitTestVisible = true;
+                PageRefreshMarketBtn.Opacity = 1.0;
+            }
+            if (ModalRefreshMarketBtn != null)
+            {
+                ModalRefreshMarketBtn.Content = "刷新主题仓库";
+                ModalRefreshMarketBtn.IsHitTestVisible = true;
+                ModalRefreshMarketBtn.Opacity = 1.0;
+            }
+        }
     }
 
     // ==================== 主题分享口令与在线订阅源交互 ====================
@@ -2579,6 +3417,17 @@ public sealed partial class MainWindow
         ThemeParticleSpeedText.Text = $"{_themeDraft.ParticleSpeed:0.0}x";
         PageParticleSpeedText.Text = $"{_themeDraft.ParticleSpeed:0.0}x";
 
+        // 实时音频律动与指针交互控制
+        ThemeEnableAudioReactiveToggle.IsOn = _themeDraft.EnableAudioReactive;
+        PageEnableAudioReactiveToggle.IsOn = _themeDraft.EnableAudioReactive;
+        double aSens = Math.Clamp(_themeDraft.AudioSensitivity * 100, 40, 220);
+        ThemeAudioSensitivitySlider.Value = aSens;
+        PageAudioSensitivitySlider.Value = aSens;
+        ThemeAudioSensitivityText.Text = $"{_themeDraft.AudioSensitivity:0.0}x";
+        PageAudioSensitivityText.Text = $"{_themeDraft.AudioSensitivity:0.0}x";
+        ThemeEnablePointerInteractToggle.IsOn = _themeDraft.EnablePointerInteraction;
+        PageEnablePointerInteractToggle.IsOn = _themeDraft.EnablePointerInteraction;
+
         // 3. 强调色与流光双色渐变
         UseCustomAccentStatesToggle.IsOn = _themeDraft.UseCustomAccentStates;
         PageUseCustomAccentStatesToggle.IsOn = _themeDraft.UseCustomAccentStates;
@@ -2691,6 +3540,21 @@ public sealed partial class MainWindow
         SyncParticles(PageParticleTypeButtonsPanel);
         SyncParticles(ModalParticleTypeButtonsPanel);
 
+        // 实时音频律动风格按钮
+        void SyncAudioStyles(StackPanel? p)
+        {
+            if (p == null) return;
+            foreach (var child in p.Children)
+            {
+                if (child is Button btn && btn.Tag is string tag)
+                {
+                    ApplyDynamicAccentButtonState(btn, string.Equals(tag, _themeDraft.AudioReactiveStyle, StringComparison.OrdinalIgnoreCase));
+                }
+            }
+        }
+        SyncAudioStyles(PageAudioStyleButtonsPanel);
+        SyncAudioStyles(ModalAudioStyleButtonsPanel);
+
         // 渐变角度按钮
         void SyncAngles(StackPanel? p)
         {
@@ -2790,6 +3654,9 @@ public sealed partial class MainWindow
 
         ThemeParticleDetailBox.Visibility = _themeDraft.EnableParticleOverlay ? Visibility.Visible : Visibility.Collapsed;
         PageParticleDetailBox.Visibility = _themeDraft.EnableParticleOverlay ? Visibility.Visible : Visibility.Collapsed;
+
+        ThemeAudioReactiveDetailBox.Visibility = _themeDraft.EnableAudioReactive ? Visibility.Visible : Visibility.Collapsed;
+        PageAudioReactiveDetailBox.Visibility = _themeDraft.EnableAudioReactive ? Visibility.Visible : Visibility.Collapsed;
 
         double miniRowOpacity = _themeDraft.SyncMiniPlayer ? 1.0 : 0.45;
         CustomMiniPlayerBgRow.Opacity = miniRowOpacity;
@@ -3328,7 +4195,7 @@ public sealed partial class MainWindow
     {
         draft.BackgroundBlur = 0.0;
         draft.BackgroundMaskOpacity = 0.0;
-        draft.EnableAdaptiveWallpaperText = true;
+        draft.EnableAdaptiveWallpaperText = false;
         draft.CardVisualStyle = "LiquidGlass";
         draft.CardCornerRadius = 16.0;
         draft.ButtonCornerRadius = 12.0;
@@ -3414,6 +4281,8 @@ public sealed partial class MainWindow
             case "EnableCustomMiniPlayerBg": _themeDraft.EnableCustomMiniPlayerBg = isOn; break;
             case "SyncImmersiveLyricHighlight": _themeDraft.SyncImmersiveLyricHighlight = isOn; break;
             case "SyncDesktopLyric": _themeDraft.SyncDesktopLyric = isOn; break;
+            case "EnableAudioReactive": _themeDraft.EnableAudioReactive = isOn; break;
+            case "EnablePointerInteraction": _themeDraft.EnablePointerInteraction = isOn; break;
         }
 
         _isLoadingThemeCenterUi = true;
@@ -3423,6 +4292,10 @@ public sealed partial class MainWindow
         PageEnableAccentGradToggle.IsOn = _themeDraft.EnableAccentGradient;
         ThemeEnableParticleToggle.IsOn = _themeDraft.EnableParticleOverlay;
         PageEnableParticleToggle.IsOn = _themeDraft.EnableParticleOverlay;
+        ThemeEnableAudioReactiveToggle.IsOn = _themeDraft.EnableAudioReactive;
+        PageEnableAudioReactiveToggle.IsOn = _themeDraft.EnableAudioReactive;
+        ThemeEnablePointerInteractToggle.IsOn = _themeDraft.EnablePointerInteraction;
+        PageEnablePointerInteractToggle.IsOn = _themeDraft.EnablePointerInteraction;
         ThemeAdaptiveWallpaperTextToggle.IsOn = _themeDraft.EnableAdaptiveWallpaperText;
         PageAdaptiveWallpaperTextToggle.IsOn = _themeDraft.EnableAdaptiveWallpaperText;
 
@@ -3567,6 +4440,12 @@ public sealed partial class MainWindow
                 if (Math.Abs(_themeDraft.ParticleSpeed - next) >= 0.001) { _themeDraft.ParticleSpeed = next; changed = true; }
                 break;
             }
+            case "AudioSensitivity":
+            {
+                double next = Math.Round(val / 100.0, 2);
+                if (Math.Abs(_themeDraft.AudioSensitivity - next) >= 0.001) { _themeDraft.AudioSensitivity = next; changed = true; }
+                break;
+            }
             case "TitleBarOpacity":
             {
                 double next = Math.Round(val);
@@ -3671,6 +4550,14 @@ public sealed partial class MainWindow
                 ThemeParticleSpeedText.Text = PageParticleSpeedText.Text = $"{_themeDraft.ParticleSpeed:0.0}x";
                 break;
             }
+            case "AudioSensitivity":
+            {
+                double s = Math.Clamp(_themeDraft.AudioSensitivity * 100, 40, 220);
+                SetMirror(ThemeAudioSensitivitySlider, s);
+                SetMirror(PageAudioSensitivitySlider, s);
+                ThemeAudioSensitivityText.Text = PageAudioSensitivityText.Text = $"{_themeDraft.AudioSensitivity:0.0}x";
+                break;
+            }
             case "TitleBarOpacity":
                 SetMirror(TitleBarOpacitySlider, _themeDraft.TitleBarOpacity);
                 SetMirror(PageTitleBarOpacitySlider, _themeDraft.TitleBarOpacity);
@@ -3764,7 +4651,7 @@ public sealed partial class MainWindow
 
         bool doAccent = false, doTitleBar = false, doNavPane = false, doContentCards = false;
         bool doPlayBar = false, doWindowBg = false, doMask = false, doAurora = false;
-        bool doParticles = false, doCardRadius = false, doBtnRadius = false, doMini = false, doLyric = false;
+        bool doParticles = false, doAudioViz = false, doCardRadius = false, doBtnRadius = false, doMini = false, doLyric = false;
 
         foreach (var k in _pendingFastPreviewKeys)
         {
@@ -3788,6 +4675,8 @@ public sealed partial class MainWindow
                     doAurora = true; break;
                 case "ParticleSpeed" or "ParticleDensity" or "ParticleColorHex":
                     doParticles = true; break;
+                case "AudioSensitivity":
+                    doAudioViz = true; break;
                 case "CardCornerRadius":
                     doCardRadius = true; break;
                 case "ButtonCornerRadius":
@@ -3817,6 +4706,10 @@ public sealed partial class MainWindow
             if (adapted.EnableParticleOverlay && string.IsNullOrWhiteSpace(adapted.ParticleColorHex))
             {
                 RebuildParticlePoolIfNeeded(adapted, accent, isLight);
+            }
+            if (adapted.EnableAudioReactive || adapted.EnablePointerInteraction)
+            {
+                RebuildAudioVisualizerPoolIfNeeded(adapted, accent, isLight);
             }
             SyncLyricLinesTypographyAndEmptyState();
             _miniPlayerWindow?.ApplyThemeProfile(_themeDraft);
@@ -3858,6 +4751,11 @@ public sealed partial class MainWindow
         if (doParticles)
         {
             RebuildParticlePoolIfNeeded(adapted, accent, isLight);
+            UpdateDynamicEnginePowerState();
+        }
+
+        if (doAudioViz)
+        {
             UpdateDynamicEnginePowerState();
         }
 
@@ -3967,12 +4865,22 @@ public sealed partial class MainWindow
         }
     }
 
-    // 形态/质感/粒子/角度按钮点击事件
+    // 形态/质感/粒子/音频可视化/角度按钮点击事件
     private void OnParticleTypeBtnClick(object sender, RoutedEventArgs e)
     {
         if (sender is Button btn && btn.Tag is string tag)
         {
             _themeDraft.ParticleType = tag;
+            SyncOptionButtonsActiveState();
+            PushDraftLivePreview();
+        }
+    }
+
+    private void OnAudioReactiveStyleBtnClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button btn && btn.Tag is string tag)
+        {
+            _themeDraft.AudioReactiveStyle = tag;
             SyncOptionButtonsActiveState();
             PushDraftLivePreview();
         }

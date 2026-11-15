@@ -1,5 +1,8 @@
+using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO.Compression;
+using System.Net.Http.Headers;
 using System.Runtime.InteropServices.WindowsRuntime;
 using System.Text;
 using System.Text.Json;
@@ -15,15 +18,49 @@ using Windows.UI;
 namespace AlgerMusicPlayer.WinUI.Services.System;
 
 /// <summary>
-/// 主题中心与创意市场核心服务（负责主题管理、双色渐变画刷染色、封面多色流光提取、壁纸模糊、在线主题市场拉取与口令分享码互传）
+/// 主题中心与创意市场核心服务（负责主题管理、双色渐变画刷染色、封面多色流光提取、壁纸模糊、在线主题仓库拉取与口令分享码互传）
 /// </summary>
 public class ThemeService
 {
     public const string ShareCodePrefix = "ALGER-THEME://";
+    public const string OfficialMarketFeedUrl = "https://raw.githubusercontent.com/TencenTiM/AlgerMusicPlayer-Themes/main/index.json";
+
+    private static readonly string[] GitHubMirrorPrefixes =
+    [
+        "",
+        "https://ghfast.top/",
+        "https://gh-proxy.com/",
+        "https://ghproxy.net/"
+    ];
 
     private readonly ConfigService _config;
     private readonly string _wallpaperDir;
     private static readonly HttpClient SharedHttp = new() { Timeout = TimeSpan.FromSeconds(10) };
+    private static readonly HttpClient MarketHttp = CreateMarketHttpClient();
+
+    private static HttpClient CreateMarketHttpClient()
+    {
+        var client = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("AlgerMusicPlayer-WinUI3-ThemeMarket");
+        client.DefaultRequestHeaders.CacheControl = new CacheControlHeaderValue
+        {
+            NoCache = true,
+            NoStore = true
+        };
+        return client;
+    }
+
+    private static readonly ConcurrentDictionary<string, byte[]> PreviewBytesCache = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// 最近一次从在线主题仓库/外部订阅源拉取成功的主题数量
+    /// </summary>
+    public int LastRemoteFeedCount { get; private set; }
+
+    /// <summary>
+    /// 最近一次强刷主题仓库时的错误说明（成功则为空）
+    /// </summary>
+    public string? LastRemoteRefreshError { get; private set; }
 
     private static readonly JsonSerializerOptions ExportJsonOptions = new()
     {
@@ -66,6 +103,18 @@ public class ThemeService
         _config = config;
         _wallpaperDir = Path.Combine(_config.AppDataDirectory, "Themes", "Wallpapers");
         Directory.CreateDirectory(_wallpaperDir);
+
+        // 一次性将历史自定义主题默认关闭动态反色字体，统一为固定字色（用户仍可随时在设置中手动重新打开）
+        var tc = _config.Settings.ThemeCenter;
+        if (!tc.AdaptiveTextDefaultOffMigrated)
+        {
+            tc.AdaptiveTextDefaultOffMigrated = true;
+            foreach (var theme in tc.CustomThemes)
+            {
+                theme.EnableAdaptiveWallpaperText = false;
+            }
+            _config.SaveSettingsSync();
+        }
     }
 
     public string WallpaperDirectory => _wallpaperDir;
@@ -259,8 +308,10 @@ public class ThemeService
             adapted.WindowBgColorHex = ToHex(HslToColor(themeHue, tintSat, 0.966));
             if (TryParseColor(adapted.BackgroundMaskColorHex, out var maskCol) && RgbToHsl(maskCol.R, maskCol.G, maskCol.B).L < 0.50)
             {
+                bool isClearGlass = string.Equals(adapted.CardVisualStyle, "LiquidGlass", StringComparison.OrdinalIgnoreCase) ||
+                                    string.Equals(adapted.CardVisualStyle, "CrystalClear", StringComparison.OrdinalIgnoreCase);
                 adapted.BackgroundMaskColorHex = ToHex(HslToColor(themeHue, tintSat * 0.75, 0.96));
-                adapted.BackgroundMaskOpacity = adapted.EnableAdaptiveWallpaperText
+                adapted.BackgroundMaskOpacity = (adapted.EnableAdaptiveWallpaperText || isClearGlass)
                     ? Math.Min(adapted.BackgroundMaskOpacity, 54)
                     : Math.Clamp(adapted.BackgroundMaskOpacity, 24, 54);
             }
@@ -1069,7 +1120,7 @@ public class ThemeService
             BackgroundBlur = useAsWallpaper ? 0.0 : 10.0,
             BackgroundMaskColorHex = ToHex(winBg),
             BackgroundMaskOpacity = useAsWallpaper ? 0.0 : (preferLight ? 42.0 : 52.0),
-            EnableAdaptiveWallpaperText = true,
+            EnableAdaptiveWallpaperText = false,
             AuroraColor1Hex = ToHex(accent),
             AuroraColor2Hex = ToHex(secondAccent),
             AuroraColor3Hex = ToHex(HslToColor((bgH + 290) % 360, 0.68, 0.52)),
@@ -1132,23 +1183,55 @@ public class ThemeService
         return destPath;
     }
 
-    // ==================== 主题市场服务（内置创意工坊 + 在线远程订阅源合并） ====================
+    // ==================== 主题市场服务（官方 GitHub 仓库 + 本地创意精选 + 外部订阅源合并） ====================
 
     /// <summary>
-    /// 获取主题市场列表（合并内置精选目录与用户配置的远程 JSON 订阅源）
+    /// 获取主题市场列表（优先展示内置官方主题仓库与外部订阅源拉取的主题，并合并内置创意精选）
     /// </summary>
     public async Task<List<MarketplaceThemeItem>> GetMarketplaceItemsAsync(bool forceRefreshRemote = false)
     {
-        var result = new List<MarketplaceThemeItem>(ThemeMarketplaceCatalog.GetCuratedMarketItems());
-
-        var feedUrls = _config.Settings.ThemeCenter.MarketFeedUrls;
-        if (feedUrls.Count > 0)
+        var feedUrls = new List<string>();
+        if (_config.Settings.ThemeCenter.UseOfficialMarketRepo)
         {
-            if (forceRefreshRemote || _cachedRemoteMarketItems == null)
+            feedUrls.Add(OfficialMarketFeedUrl);
+        }
+        foreach (var raw in _config.Settings.ThemeCenter.MarketFeedUrls)
+        {
+            string u = raw?.Trim() ?? string.Empty;
+            if (!string.IsNullOrWhiteSpace(u) &&
+                u.StartsWith("http", StringComparison.OrdinalIgnoreCase) &&
+                !feedUrls.Any(x => string.Equals(x, u, StringComparison.OrdinalIgnoreCase)))
             {
-                _cachedRemoteMarketItems = await FetchRemoteFeedsAsync(feedUrls);
+                feedUrls.Add(u);
             }
+        }
 
+        if (feedUrls.Count > 0 && (forceRefreshRemote || _cachedRemoteMarketItems == null))
+        {
+            var (remoteItems, succeededFeeds, firstErr) = await FetchRemoteFeedsAsync(feedUrls, bustCache: forceRefreshRemote);
+            if (succeededFeeds > 0)
+            {
+                _cachedRemoteMarketItems = remoteItems;
+                LastRemoteFeedCount = remoteItems.Count;
+                LastRemoteRefreshError = null;
+            }
+            else
+            {
+                _cachedRemoteMarketItems ??= [];
+                LastRemoteFeedCount = _cachedRemoteMarketItems.Count;
+                LastRemoteRefreshError = firstErr ?? "无法连接到 GitHub 主题仓库及镜像线路";
+            }
+        }
+        else if (feedUrls.Count == 0)
+        {
+            _cachedRemoteMarketItems = [];
+            LastRemoteFeedCount = 0;
+            LastRemoteRefreshError = null;
+        }
+
+        var result = new List<MarketplaceThemeItem>();
+        if (_cachedRemoteMarketItems != null)
+        {
             foreach (var remoteItem in _cachedRemoteMarketItems)
             {
                 if (!result.Any(x => string.Equals(x.Id, remoteItem.Id, StringComparison.OrdinalIgnoreCase)))
@@ -1158,12 +1241,261 @@ public class ThemeService
             }
         }
 
+        foreach (var curated in ThemeMarketplaceCatalog.GetCuratedMarketItems())
+        {
+            if (!result.Any(x => string.Equals(x.Id, curated.Id, StringComparison.OrdinalIgnoreCase)))
+            {
+                result.Add(curated);
+            }
+        }
+
         return result;
     }
 
-    private static async Task<List<MarketplaceThemeItem>> FetchRemoteFeedsAsync(IEnumerable<string> urls)
+    private static bool ShouldUseGitHubMirrors(string url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)) return false;
+        string host = uri.Host;
+        return host.Equals("raw.githubusercontent.com", StringComparison.OrdinalIgnoreCase) ||
+               host.Equals("github.com", StringComparison.OrdinalIgnoreCase) ||
+               host.EndsWith(".githubusercontent.com", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string AppendCacheBuster(string url)
+    {
+        string sep = url.Contains('?') ? "&" : "?";
+        return $"{url}{sep}t={DateTimeOffset.UtcNow.ToUnixTimeSeconds()}";
+    }
+
+    private static string ResolveFeedRelativeUrl(string feedUrlWithoutQuery, string? candidateUrl)
+    {
+        if (string.IsNullOrWhiteSpace(candidateUrl)) return string.Empty;
+        string raw = candidateUrl.Trim();
+        if (raw.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+            raw.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            return raw;
+        }
+
+        if (Uri.TryCreate(feedUrlWithoutQuery, UriKind.Absolute, out var baseUri) &&
+            Uri.TryCreate(baseUri, raw.TrimStart('/').Replace('\\', '/'), out var resolved))
+        {
+            return resolved.AbsoluteUri;
+        }
+        return raw;
+    }
+
+    private static string StripQueryFromUrl(string url)
+    {
+        int qIdx = url.IndexOf('?');
+        return qIdx >= 0 ? url[..qIdx] : url;
+    }
+
+    private static string MakeSafeMarketFileId(string id)
+    {
+        var invalid = Path.GetInvalidFileNameChars();
+        var sb = new StringBuilder(id.Length);
+        foreach (char c in id)
+        {
+            sb.Append(invalid.Contains(c) || char.IsWhiteSpace(c) ? '_' : c);
+        }
+        string clean = sb.ToString().Trim('_');
+        return string.IsNullOrWhiteSpace(clean) ? Guid.NewGuid().ToString("N")[..8] : clean;
+    }
+
+    private static string ExtractExtensionFromUrl(string url, string fallbackExt)
+    {
+        string clean = StripQueryFromUrl(url);
+        if (Uri.TryCreate(clean, UriKind.Absolute, out var uri))
+        {
+            string ext = Path.GetExtension(uri.AbsolutePath);
+            if (!string.IsNullOrWhiteSpace(ext) && ext.Length <= 8) return ext.ToLowerInvariant();
+        }
+        else
+        {
+            string ext = Path.GetExtension(clean);
+            if (!string.IsNullOrWhiteSpace(ext) && ext.Length <= 8) return ext.ToLowerInvariant();
+        }
+        return fallbackExt;
+    }
+
+    private static async Task<(string? Body, string? LastError)> FetchStringWithMirrorsAsync(
+        string url, bool bustCache, CancellationToken token)
+    {
+        string targetUrl = bustCache ? AppendCacheBuster(url) : url;
+        string[] prefixes = ShouldUseGitHubMirrors(targetUrl) ? GitHubMirrorPrefixes : [""];
+        string? lastErr = null;
+
+        foreach (string prefix in prefixes)
+        {
+            token.ThrowIfCancellationRequested();
+            string reqUrl = prefix + targetUrl;
+            int timeoutSec = string.IsNullOrEmpty(prefix) ? 6 : 12;
+            try
+            {
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(token);
+                cts.CancelAfter(TimeSpan.FromSeconds(timeoutSec));
+                using var resp = await MarketHttp.GetAsync(reqUrl, HttpCompletionOption.ResponseContentRead, cts.Token);
+                resp.EnsureSuccessStatusCode();
+                string text = await resp.Content.ReadAsStringAsync(cts.Token);
+                if (!string.IsNullOrWhiteSpace(text))
+                {
+                    return (text, null);
+                }
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                lastErr = ex.Message;
+            }
+        }
+        return (null, lastErr);
+    }
+
+    /// <summary>
+    /// 通过多线路 GitHub 镜像加速拉取主题预览缩略图字节并做内存缓存
+    /// </summary>
+    public async Task<byte[]?> DownloadPreviewBytesAsync(string url, CancellationToken token = default)
+    {
+        if (string.IsNullOrWhiteSpace(url) || !url.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        if (PreviewBytesCache.TryGetValue(url, out var cached))
+            return cached;
+
+        string[] prefixes = ShouldUseGitHubMirrors(url) ? GitHubMirrorPrefixes : [""];
+        foreach (string prefix in prefixes)
+        {
+            token.ThrowIfCancellationRequested();
+            string reqUrl = prefix + url;
+            int timeoutSec = string.IsNullOrEmpty(prefix) ? 6 : 12;
+            try
+            {
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(token);
+                cts.CancelAfter(TimeSpan.FromSeconds(timeoutSec));
+                using var resp = await MarketHttp.GetAsync(reqUrl, HttpCompletionOption.ResponseContentRead, cts.Token);
+                resp.EnsureSuccessStatusCode();
+                byte[] bytes = await resp.Content.ReadAsByteArrayAsync(cts.Token);
+                if (bytes.Length >= 64)
+                {
+                    if (PreviewBytesCache.Count >= 64)
+                    {
+                        PreviewBytesCache.Clear();
+                    }
+                    PreviewBytesCache[url] = bytes;
+                    return bytes;
+                }
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch
+            {
+            }
+        }
+        return null;
+    }
+
+    private static async Task DownloadFileWithMirrorsAsync(
+        string url,
+        string destPath,
+        Action<long, long, string>? progress,
+        CancellationToken token)
+    {
+        string? dir = Path.GetDirectoryName(destPath);
+        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+
+        string[] prefixes = ShouldUseGitHubMirrors(url) ? GitHubMirrorPrefixes : [""];
+        Exception? lastErr = null;
+
+        foreach (string prefix in prefixes)
+        {
+            token.ThrowIfCancellationRequested();
+            string reqUrl = prefix + url;
+            string lineName = string.IsNullOrEmpty(prefix) ? "GitHub 直连" : new Uri(prefix).Host;
+            string tempPath = $"{destPath}.{Guid.NewGuid().ToString("N")[..6]}.downloading";
+
+            try
+            {
+                using var connectCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+                connectCts.CancelAfter(TimeSpan.FromSeconds(10));
+                using var resp = await MarketHttp.GetAsync(reqUrl, HttpCompletionOption.ResponseHeadersRead, connectCts.Token);
+                resp.EnsureSuccessStatusCode();
+
+                string? mediaType = resp.Content.Headers.ContentType?.MediaType;
+                if (!string.IsNullOrWhiteSpace(mediaType) &&
+                    mediaType.Contains("text/html", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException($"{lineName} 返回了 HTML 错误页面");
+                }
+
+                long total = resp.Content.Headers.ContentLength ?? -1;
+                await using (var src = await resp.Content.ReadAsStreamAsync(token))
+                await using (var dst = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None, 65536, true))
+                {
+                    var buffer = new byte[65536];
+                    long done = 0;
+                    var sw = Stopwatch.StartNew();
+                    while (true)
+                    {
+                        using var stallCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+                        stallCts.CancelAfter(TimeSpan.FromSeconds(20));
+                        int read;
+                        try
+                        {
+                            read = await src.ReadAsync(buffer, stallCts.Token);
+                        }
+                        catch (OperationCanceledException) when (!token.IsCancellationRequested)
+                        {
+                            throw new TimeoutException($"{lineName} 下载停滞");
+                        }
+                        if (read == 0) break;
+
+                        await dst.WriteAsync(buffer.AsMemory(0, read), token);
+                        done += read;
+                        if (sw.ElapsedMilliseconds >= 120)
+                        {
+                            progress?.Invoke(done, total, lineName);
+                            sw.Restart();
+                        }
+                    }
+
+                    if (done <= 0 || (total > 0 && done != total))
+                    {
+                        throw new InvalidOperationException($"{lineName} 下载不完整 ({done}/{total})");
+                    }
+                    progress?.Invoke(done, total, lineName);
+                }
+
+                File.Move(tempPath, destPath, overwrite: true);
+                return;
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
+                throw;
+            }
+            catch (Exception ex)
+            {
+                lastErr = ex;
+                try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
+            }
+        }
+
+        throw new InvalidOperationException($"壁纸资源下载失败（{lastErr?.Message ?? "所有线路均不可用"}）");
+    }
+
+    private static async Task<(List<MarketplaceThemeItem> Items, int SucceededFeeds, string? FirstError)> FetchRemoteFeedsAsync(
+        IReadOnlyList<string> urls, bool bustCache)
     {
         var collected = new List<MarketplaceThemeItem>();
+        int succeededFeeds = 0;
+        string? firstErr = null;
+
         foreach (var rawUrl in urls)
         {
             string url = rawUrl.Trim();
@@ -1171,25 +1503,75 @@ public class ThemeService
 
             try
             {
-                string json = await SharedHttp.GetStringAsync(url);
-                if (string.IsNullOrWhiteSpace(json)) continue;
+                var (json, fetchErr) = await FetchStringWithMirrorsAsync(url, bustCache, CancellationToken.None);
+                if (string.IsNullOrWhiteSpace(json))
+                {
+                    firstErr ??= fetchErr;
+                    continue;
+                }
+
+                string feedBaseUrl = StripQueryFromUrl(url);
+                void NormalizeItem(MarketplaceThemeItem item)
+                {
+                    if (string.IsNullOrWhiteSpace(item.Id))
+                    {
+                        item.Id = string.IsNullOrWhiteSpace(item.Theme.Id)
+                            ? Guid.NewGuid().ToString("N")[..12]
+                            : item.Theme.Id;
+                    }
+                    item.Theme.Id = string.IsNullOrWhiteSpace(item.Theme.Id) ? item.Id : item.Theme.Id;
+                    item.Theme.MarketOriginId = item.Id;
+
+                    // 将相对仓库路径解析为完整 URL
+                    item.WallpaperUrl = ResolveFeedRelativeUrl(feedBaseUrl, item.WallpaperUrl);
+                    item.VideoUrl = ResolveFeedRelativeUrl(feedBaseUrl, item.VideoUrl);
+                    item.PreviewImageUrl = ResolveFeedRelativeUrl(feedBaseUrl, item.PreviewImageUrl);
+
+                    // 兼容直接写在 BackgroundImagePath / BackgroundVideoPath 里的远程/相对地址
+                    if (string.IsNullOrWhiteSpace(item.WallpaperUrl) &&
+                        !string.IsNullOrWhiteSpace(item.Theme.BackgroundImagePath) &&
+                        !Path.IsPathRooted(item.Theme.BackgroundImagePath))
+                    {
+                        item.WallpaperUrl = ResolveFeedRelativeUrl(feedBaseUrl, item.Theme.BackgroundImagePath);
+                        item.Theme.BackgroundImagePath = string.Empty;
+                    }
+                    if (string.IsNullOrWhiteSpace(item.VideoUrl) &&
+                        !string.IsNullOrWhiteSpace(item.Theme.BackgroundVideoPath) &&
+                        !Path.IsPathRooted(item.Theme.BackgroundVideoPath))
+                    {
+                        item.VideoUrl = ResolveFeedRelativeUrl(feedBaseUrl, item.Theme.BackgroundVideoPath);
+                        item.Theme.BackgroundVideoPath = string.Empty;
+                    }
+                }
 
                 string trimmed = json.TrimStart();
                 if (trimmed.StartsWith('['))
                 {
                     var arr = JsonSerializer.Deserialize<List<MarketplaceThemeItem>>(json, ExportJsonOptions);
-                    if (arr != null) collected.AddRange(arr);
+                    if (arr != null)
+                    {
+                        succeededFeeds++;
+                        foreach (var item in arr)
+                        {
+                            if (item?.Theme == null) continue;
+                            NormalizeItem(item);
+                            collected.Add(item);
+                        }
+                    }
                 }
                 else
                 {
                     // 优先尝试解析为 MarketplaceFeedManifest，其次支持直接指向单个 .algertheme.json 主题链接
                     var manifest = JsonSerializer.Deserialize<MarketplaceFeedManifest>(json, ExportJsonOptions);
-                    if (manifest?.Items is { Count: > 0 })
+                    if (manifest?.Items != null && (manifest.Items.Count > 0 || !string.IsNullOrWhiteSpace(manifest.FeedName)))
                     {
+                        succeededFeeds++;
                         foreach (var item in manifest.Items)
                         {
+                            if (item?.Theme == null) continue;
                             if (string.IsNullOrWhiteSpace(item.SourceName))
                                 item.SourceName = manifest.FeedName;
+                            NormalizeItem(item);
                             collected.Add(item);
                         }
                     }
@@ -1198,9 +1580,10 @@ public class ThemeService
                         var singleTheme = JsonSerializer.Deserialize<CustomThemeProfile>(json, ExportJsonOptions);
                         if (singleTheme != null && !string.IsNullOrWhiteSpace(singleTheme.Name))
                         {
+                            succeededFeeds++;
                             string id = string.IsNullOrWhiteSpace(singleTheme.Id) ? Guid.NewGuid().ToString("N") : singleTheme.Id;
                             singleTheme.MarketOriginId = id;
-                            collected.Add(new MarketplaceThemeItem
+                            var item = new MarketplaceThemeItem
                             {
                                 Id = id,
                                 Category = singleTheme.HasDynamicEffect ? "动态极光" : "社区订阅",
@@ -1208,23 +1591,78 @@ public class ThemeService
                                 Tags = ["在线订阅", singleTheme.BackdropType],
                                 Downloads = 100,
                                 Theme = singleTheme
-                            });
+                            };
+                            NormalizeItem(item);
+                            collected.Add(item);
                         }
                     }
                 }
             }
-            catch
+            catch (Exception ex)
             {
-                // 单个订阅源网络异常时静默跳过，不影响本地市场可用性
+                firstErr ??= ex.Message;
             }
         }
-        return collected;
+        return (collected, succeededFeeds, firstErr);
     }
 
     /// <summary>
-    /// 从主题市场一键安装并激活指定主题（若已安装同源主题则覆盖更新）
+    /// 确保在线市场主题关联的远程壁纸/视频/内嵌图片已下载落盘到本地壁纸目录
     /// </summary>
-    public async Task<CustomThemeProfile> InstallMarketplaceThemeAsync(MarketplaceThemeItem marketItem)
+    public async Task EnsureMarketThemeAssetsAsync(
+        MarketplaceThemeItem marketItem,
+        CustomThemeProfile targetProfile,
+        bool forceRedownload = false,
+        Action<long, long, string>? progress = null,
+        CancellationToken token = default)
+    {
+        string safeId = MakeSafeMarketFileId(string.IsNullOrWhiteSpace(marketItem.Id) ? targetProfile.Id : marketItem.Id);
+
+        if (!string.IsNullOrWhiteSpace(marketItem.WallpaperUrl))
+        {
+            string ext = ExtractExtensionFromUrl(marketItem.WallpaperUrl, ".jpg");
+            string destPath = Path.Combine(_wallpaperDir, $"market_{safeId}{ext}");
+            if (forceRedownload || !File.Exists(destPath) || new FileInfo(destPath).Length == 0)
+            {
+                await DownloadFileWithMirrorsAsync(marketItem.WallpaperUrl, destPath, progress, token);
+            }
+            targetProfile.BackgroundImagePath = destPath;
+            targetProfile.BackdropType = "Image";
+        }
+        else if (!string.IsNullOrWhiteSpace(targetProfile.EmbeddedImageBase64))
+        {
+            byte[] imgBytes = Convert.FromBase64String(targetProfile.EmbeddedImageBase64);
+            string ext = string.IsNullOrWhiteSpace(targetProfile.EmbeddedImageExt) ? ".png" : targetProfile.EmbeddedImageExt!;
+            if (!ext.StartsWith('.')) ext = "." + ext;
+            string destPath = Path.Combine(_wallpaperDir, $"market_{safeId}{ext.ToLowerInvariant()}");
+            await File.WriteAllBytesAsync(destPath, imgBytes, token);
+            targetProfile.BackgroundImagePath = destPath;
+            targetProfile.BackdropType = "Image";
+        }
+
+        if (!string.IsNullOrWhiteSpace(marketItem.VideoUrl))
+        {
+            string ext = ExtractExtensionFromUrl(marketItem.VideoUrl, ".mp4");
+            string destPath = Path.Combine(_wallpaperDir, $"market_video_{safeId}{ext}");
+            if (forceRedownload || !File.Exists(destPath) || new FileInfo(destPath).Length == 0)
+            {
+                await DownloadFileWithMirrorsAsync(marketItem.VideoUrl, destPath, progress, token);
+            }
+            targetProfile.BackgroundVideoPath = destPath;
+            targetProfile.BackdropType = "Video";
+        }
+
+        targetProfile.EmbeddedImageBase64 = null;
+        targetProfile.EmbeddedImageExt = null;
+    }
+
+    /// <summary>
+    /// 从主题市场一键下载资源、安装并激活指定主题（若已安装同源主题则重新下载更新）
+    /// </summary>
+    public async Task<CustomThemeProfile> InstallMarketplaceThemeAsync(
+        MarketplaceThemeItem marketItem,
+        Action<long, long, string>? progress = null,
+        CancellationToken token = default)
     {
         var list = _config.Settings.ThemeCenter.CustomThemes;
         var existing = list.FirstOrDefault(x =>
@@ -1237,6 +1675,7 @@ public class ThemeService
         installCopy.Id = existing?.Id ?? (string.IsNullOrWhiteSpace(marketItem.Id) ? Guid.NewGuid().ToString("N") : marketItem.Id);
         installCopy.CreatedAt = DateTime.Now;
 
+        await EnsureMarketThemeAssetsAsync(marketItem, installCopy, forceRedownload: existing != null, progress, token);
         return await SaveCustomThemeAsync(installCopy);
     }
 

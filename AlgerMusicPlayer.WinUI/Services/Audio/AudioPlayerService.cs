@@ -77,8 +77,9 @@ public class AudioPlayerService : IDisposable
         ? TimeSpan.FromSeconds(_mpvService.DurationSeconds)
         : (_waveReader?.TotalTime ?? TimeSpan.FromMilliseconds(CurrentSong?.DurationMs ?? 0));
     public float PeakLevel => _activeBackend == "mpv"
-        ? (IsPlaying ? 0.55f : 0f)
+        ? (IsPlaying ? Math.Max(0.15f, ReactiveAnalyzer.CurrentOverallLevel) : 0f)
         : (_eqProvider?.CurrentPeakLevel ?? 0f);
+    public AudioReactiveAnalyzer ReactiveAnalyzer { get; } = new();
     public DateTime? SleepTimerEndTime { get; private set; }
     public int LyricOffsetMs { get; set; }
     public float PlaybackRate { get; private set; } = 1.0f;
@@ -2845,7 +2846,8 @@ public class AudioPlayerService : IDisposable
 
         var eqProvider = new EqualizerSampleProvider(sampleProvider, _configService.Settings.Equalizer)
         {
-            PlaybackRate = PlaybackRate
+            PlaybackRate = PlaybackRate,
+            ReactiveAnalyzer = ReactiveAnalyzer
         };
 
         var multichannelGainProvider = new MultichannelGainSampleProvider(eqProvider, _configService.Settings.Multichannel);
@@ -3744,6 +3746,7 @@ public class AudioPlayerService : IDisposable
         _loadCts?.Cancel();
         StopInternal();
         _mpvService.Dispose();
+        ReactiveAnalyzer.Dispose();
         GC.SuppressFinalize(this);
     }
 }

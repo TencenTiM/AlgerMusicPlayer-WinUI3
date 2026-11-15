@@ -173,6 +173,15 @@
                 Visibility="Collapsed" />
         </Grid>
 
+        <!-- 全屏实时音频律动可视化与指针追光层（原生合成器驱动，非拦截点击） -->
+        <Canvas
+            x:Name="GlobalAudioVisualizerCanvas"
+            Grid.Row="0"
+            Grid.RowSpan="3"
+            Canvas.ZIndex="-2"
+            IsHitTestVisible="False"
+            Visibility="Collapsed" />
+
         <!-- 全屏独立动态粒子氛围层（可叠加在云母、亚克力、纯色、壁纸、极光等任意背景之上） -->
         <Canvas
             x:Name="GlobalParticleOverlayCanvas"
@@ -5600,7 +5609,7 @@
                                                     <StackPanel Spacing="12" HorizontalAlignment="Stretch">
                                                         <Grid>
                                                             <TextBlock Text="官方精选预设（含动态极光、封面流光与粒子氛围）" FontSize="15" FontWeight="Medium" />
-                                                            <TextBlock Text="点击卡片即可一键应用" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" HorizontalAlignment="Right" VerticalAlignment="Center" />
+                                                            <TextBlock Text="点击预览图或按钮即可实时试用与一键应用" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" HorizontalAlignment="Right" VerticalAlignment="Center" />
                                                         </Grid>
                                                         <Grid x:Name="PageBuiltInThemesGrid" ColumnSpacing="12" RowSpacing="12" HorizontalAlignment="Stretch" />
                                                     </StackPanel>
@@ -5666,6 +5675,8 @@
                                                     <Grid ColumnSpacing="12">
                                                         <StackPanel x:Name="PageMarketFilterStack" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
                                                             <Button Content="全部精选" Tag="all" CornerRadius="14" Padding="11,5" FontSize="12" Click="OnMarketCategoryFilterClick" />
+                                                            <Button Content="音频交互" Tag="音频交互" CornerRadius="14" Padding="11,5" FontSize="12" Click="OnMarketCategoryFilterClick" />
+                                                            <Button Content="光学壁纸" Tag="光学壁纸" CornerRadius="14" Padding="11,5" FontSize="12" Click="OnMarketCategoryFilterClick" />
                                                             <Button Content="动态极光" Tag="动态极光" CornerRadius="14" Padding="11,5" FontSize="12" Click="OnMarketCategoryFilterClick" />
                                                             <Button Content="粒子氛围" Tag="粒子氛围" CornerRadius="14" Padding="11,5" FontSize="12" Click="OnMarketCategoryFilterClick" />
                                                             <Button Content="极简浅色" Tag="极简浅色" CornerRadius="14" Padding="11,5" FontSize="12" Click="OnMarketCategoryFilterClick" />
@@ -5677,7 +5688,7 @@
 
                                                         <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right" VerticalAlignment="Center">
                                                             <TextBox x:Name="PageMarketSearchBox" Width="200" PlaceholderText="搜索市场主题/作者/标签..." FontSize="12" TextChanged="OnMarketSearchTextChanged" />
-                                                            <Button Content="刷新在线源" Style="{StaticResource SecondaryTabButtonStyle}" CornerRadius="8" Padding="12,6" FontSize="12" Click="OnRefreshMarketFeedsClick" />
+                                                            <Button x:Name="PageRefreshMarketBtn" Content="刷新主题仓库" IsTabStop="False" Style="{StaticResource SecondaryTabButtonStyle}" CornerRadius="8" Padding="12,6" FontSize="12" Click="OnRefreshMarketFeedsClick" />
                                                         </StackPanel>
                                                     </Grid>
                                                 </Border>
@@ -5896,8 +5907,8 @@
 
                                                         <Grid Padding="0,2,0,0">
                                                             <StackPanel Spacing="2" VerticalAlignment="Center">
-                                                                <TextBlock Text="壁纸智能可读性（字色固定 · 玻璃自适应）" FontSize="13" FontWeight="Medium" />
-                                                                <TextBlock Text="文字颜色跟随深浅基调保持统一，根据卡片背后的壁纸明暗自动调节玻璃雾化浓度，兼顾通透与清晰" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                                                <TextBlock Text="壁纸局部动态反色字体" FontSize="13" FontWeight="Medium" />
+                                                                <TextBlock Text="关闭时保持深浅基调统一固定字色；开启后将根据壁纸局部明暗交界自动切换黑白字体" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                                                             </StackPanel>
                                                             <ToggleSwitch x:Name="PageAdaptiveWallpaperTextToggle" Tag="EnableAdaptiveWallpaperText" HorizontalAlignment="Right" VerticalAlignment="Center" MinWidth="0" OnContent="已开启" OffContent="关闭" Toggled="OnTaggedThemeSwitchToggled" />
                                                         </Grid>
@@ -5938,7 +5949,7 @@
                                                 </Border>
 
                                                 <!-- 独立动态粒子氛围叠加层（可叠加在云母、极光、图片、视频等任意背景之上） -->
-                                                <Border Style="{StaticResource SettingItemLastRowStyle}">
+                                                <Border Style="{StaticResource SettingItemRowStyle}">
                                                     <StackPanel Spacing="12" HorizontalAlignment="Stretch">
                                                         <Grid>
                                                             <StackPanel Spacing="2" VerticalAlignment="Center">
@@ -5992,6 +6003,49 @@
                                                             </Grid>
                                                         </StackPanel>
                                                     </StackPanel>
+                                                </Border>
+
+                                                <!-- 实时音频频谱可视化与节奏律动响应 -->
+                                                <Border Style="{StaticResource SettingItemRowStyle}">
+                                                    <StackPanel Spacing="12" HorizontalAlignment="Stretch">
+                                                        <Grid>
+                                                            <StackPanel Spacing="2" VerticalAlignment="Center">
+                                                                <TextBlock Text="实时音频频率律动与背景频谱" FontSize="15" FontWeight="Medium" />
+                                                                <TextBlock Text="捕获当前播放音频的 32 段低中高实时频率与鼓点瞬态脉冲，驱动镜像频谱柱、全息声环或丝绸波浪联动" FontSize="13" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                                            </StackPanel>
+                                                            <ToggleSwitch x:Name="PageEnableAudioReactiveToggle" Tag="EnableAudioReactive" HorizontalAlignment="Right" MinWidth="0" OffContent="" OnContent="" Toggled="OnTaggedThemeSwitchToggled" />
+                                                        </Grid>
+
+                                                        <StackPanel x:Name="PageAudioReactiveDetailBox" Spacing="12" Visibility="Collapsed">
+                                                            <StackPanel x:Name="PageAudioStyleButtonsPanel" Orientation="Horizontal" Spacing="8">
+                                                                <Button Content="📊 镜像频谱柱" Tag="SpectrumBars" CornerRadius="8" Padding="12,5" FontSize="12" Click="OnAudioReactiveStyleBtnClick" />
+                                                                <Button Content="⭕ 全息脉冲环" Tag="PulseRings" CornerRadius="8" Padding="12,5" FontSize="12" Click="OnAudioReactiveStyleBtnClick" />
+                                                                <Button Content="🌊 流光丝绸波" Tag="SilkWave" CornerRadius="8" Padding="12,5" FontSize="12" Click="OnAudioReactiveStyleBtnClick" />
+                                                            </StackPanel>
+
+                                                            <Grid ColumnSpacing="10">
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="Auto" />
+                                                                    <ColumnDefinition Width="*" />
+                                                                    <ColumnDefinition Width="48" />
+                                                                </Grid.ColumnDefinitions>
+                                                                <TextBlock Grid.Column="0" Text="音频响应灵敏度" FontSize="13" VerticalAlignment="Center" />
+                                                                <Slider x:Name="PageAudioSensitivitySlider" Tag="AudioSensitivity" Grid.Column="1" Minimum="40" Maximum="220" StepFrequency="5" Value="100" ValueChanged="OnTaggedThemeSliderChanged" />
+                                                                <TextBlock x:Name="PageAudioSensitivityText" Grid.Column="2" Text="1.0x" FontSize="13" HorizontalAlignment="Right" VerticalAlignment="Center" />
+                                                            </Grid>
+                                                        </StackPanel>
+                                                    </StackPanel>
+                                                </Border>
+
+                                                <!-- 鼠标指针追踪光晕与物理扰动 -->
+                                                <Border Style="{StaticResource SettingItemLastRowStyle}">
+                                                    <Grid>
+                                                        <StackPanel Spacing="2" VerticalAlignment="Center">
+                                                            <TextBlock Text="鼠标指针追踪光晕与交互物理场" FontSize="15" FontWeight="Medium" />
+                                                            <TextBlock Text="非拦截穿透响应鼠标轨迹，生成柔顺追光球并在悬停区域轻拂飘浮粒子" FontSize="13" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                                        </StackPanel>
+                                                        <ToggleSwitch x:Name="PageEnablePointerInteractToggle" Tag="EnablePointerInteraction" HorizontalAlignment="Right" MinWidth="0" OffContent="" OnContent="" Toggled="OnTaggedThemeSwitchToggled" />
+                                                    </Grid>
                                                 </Border>
                                                 </StackPanel>
                                             </Grid>
@@ -7008,7 +7062,7 @@
                                                     </Grid.ColumnDefinitions>
                                                     <StackPanel Grid.Column="0" VerticalAlignment="Center" Spacing="2">
                                                         <TextBlock Text="作者（WinUI 3 原生重构版）" FontSize="15" FontWeight="Medium" />
-                                                        <TextBlock Text="TencenTiM 点个star🌟呗" FontSize="13" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                                        <TextBlock Text="如果你喜欢这个项目可以在GitHub上 点个star🌟" FontSize="13" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                                                     </StackPanel>
                                                     <HyperlinkButton Grid.Column="1" Content="前往 Github" NavigateUri="https://github.com/TencenTiM/AlgerMusicPlayer-WinUI3" Foreground="{StaticResource BrandAccentBrush}" Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}" CornerRadius="8" Padding="14,6" VerticalAlignment="Center" />
                                                 </Grid>
@@ -8259,6 +8313,7 @@
                                 Text="播放列表"
                                 FontSize="14"
                                 FontWeight="Medium"
+                                Foreground="{ThemeResource TextFillColorPrimaryBrush}"
                                 VerticalAlignment="Center" />
                             <TextBlock
                                 x:Name="QueueDrawerCountText"
@@ -8345,6 +8400,7 @@
                                         Glyph="&#xE76F;"
                                         FontSize="12"
                                         Opacity="0.4"
+                                        Foreground="{ThemeResource TextFillColorPrimaryBrush}"
                                         VerticalAlignment="Center"
                                         ToolTipService.ToolTip="拖动调整顺序" />
 
@@ -8371,6 +8427,7 @@
                                                 Visibility="{x:Bind PlayingIndicatorVisibility, Mode=OneWay}" />
                                             <TextBlock
                                                 FontSize="14"
+                                                Foreground="{ThemeResource TextFillColorPrimaryBrush}"
                                                 MaxLines="1"
                                                 TextTrimming="CharacterEllipsis"
                                                 Visibility="{x:Bind NotPlayingVisibility, Mode=OneWay}">
@@ -11073,8 +11130,8 @@
 
                                                     <Grid Padding="0,2,0,0">
                                                         <StackPanel Spacing="2" VerticalAlignment="Center">
-                                                            <TextBlock Text="壁纸智能可读性（字色固定 · 玻璃自适应）" FontSize="12" FontWeight="Medium" />
-                                                            <TextBlock Text="字色跟随深浅基调统一，按壁纸明暗自动调节玻璃雾化浓度" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                                            <TextBlock Text="壁纸局部动态反色字体" FontSize="12" FontWeight="Medium" />
+                                                            <TextBlock Text="关闭时字色统一固定；开启后随壁纸明暗交界自动切换黑白字体" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                                                         </StackPanel>
                                                         <ToggleSwitch x:Name="ThemeAdaptiveWallpaperTextToggle" Tag="EnableAdaptiveWallpaperText" HorizontalAlignment="Right" VerticalAlignment="Center" MinWidth="0" OnContent="已开启" OffContent="关闭" Toggled="OnTaggedThemeSwitchToggled" />
                                                     </Grid>
@@ -11167,6 +11224,51 @@
                                                             </StackPanel>
                                                         </Grid>
                                                     </StackPanel>
+                                                </StackPanel>
+                                            </Border>
+
+                                            <!-- 实时音频频率律动与鼠标交互场 -->
+                                            <Border
+                                                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                                BorderThickness="1"
+                                                CornerRadius="10"
+                                                Padding="14,12">
+                                                <StackPanel Spacing="10">
+                                                    <Grid>
+                                                        <StackPanel Spacing="2" VerticalAlignment="Center">
+                                                            <TextBlock Text="实时音频律动（镜像频谱柱/全息脉冲环/丝绸波）" FontSize="13" FontWeight="SemiBold" />
+                                                            <TextBlock Text="随歌曲高低频 FFT 与鼓点实时呼吸联动全屏特效" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                                        </StackPanel>
+                                                        <ToggleSwitch x:Name="ThemeEnableAudioReactiveToggle" Tag="EnableAudioReactive" HorizontalAlignment="Right" MinWidth="0" OffContent="关闭" OnContent="开启" Toggled="OnTaggedThemeSwitchToggled" />
+                                                    </Grid>
+                                                    <StackPanel x:Name="ThemeAudioReactiveDetailBox" Spacing="10" Visibility="Collapsed">
+                                                        <StackPanel x:Name="ModalAudioStyleButtonsPanel" Orientation="Horizontal" Spacing="6">
+                                                            <Button Content="📊 镜像频谱" Tag="SpectrumBars" CornerRadius="6" Padding="10,4" FontSize="11" Click="OnAudioReactiveStyleBtnClick" />
+                                                            <Button Content="⭕ 脉冲声环" Tag="PulseRings" CornerRadius="6" Padding="10,4" FontSize="11" Click="OnAudioReactiveStyleBtnClick" />
+                                                            <Button Content="🌊 丝绸波浪" Tag="SilkWave" CornerRadius="6" Padding="10,4" FontSize="11" Click="OnAudioReactiveStyleBtnClick" />
+                                                        </StackPanel>
+                                                        <Grid ColumnSpacing="8">
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="Auto" />
+                                                                <ColumnDefinition Width="*" />
+                                                                <ColumnDefinition Width="38" />
+                                                            </Grid.ColumnDefinitions>
+                                                            <TextBlock Grid.Column="0" Text="灵敏度" FontSize="12" VerticalAlignment="Center" />
+                                                            <Slider x:Name="ThemeAudioSensitivitySlider" Tag="AudioSensitivity" Grid.Column="1" Minimum="40" Maximum="220" StepFrequency="5" Value="100" ValueChanged="OnTaggedThemeSliderChanged" />
+                                                            <TextBlock x:Name="ThemeAudioSensitivityText" Grid.Column="2" Text="1.0x" FontSize="11" HorizontalAlignment="Right" VerticalAlignment="Center" />
+                                                        </Grid>
+                                                    </StackPanel>
+
+                                                    <Border Height="1" Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
+
+                                                    <Grid>
+                                                        <StackPanel Spacing="2" VerticalAlignment="Center">
+                                                            <TextBlock Text="鼠标指针追光与物理扰动交互" FontSize="13" FontWeight="SemiBold" />
+                                                            <TextBlock Text="跟随光标柔光光晕并轻拂飘落粒子散开" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                                        </StackPanel>
+                                                        <ToggleSwitch x:Name="ThemeEnablePointerInteractToggle" Tag="EnablePointerInteraction" HorizontalAlignment="Right" MinWidth="0" OffContent="关闭" OnContent="开启" Toggled="OnTaggedThemeSwitchToggled" />
+                                                    </Grid>
                                                 </StackPanel>
                                             </Border>
                                         </StackPanel>
@@ -11675,6 +11777,8 @@
                             <Grid ColumnSpacing="12">
                                 <StackPanel x:Name="ModalMarketFilterStack" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
                                     <Button Content="全部精选" Tag="all" CornerRadius="14" Padding="11,5" FontSize="12" Click="OnMarketCategoryFilterClick" />
+                                    <Button Content="音频交互" Tag="音频交互" CornerRadius="14" Padding="11,5" FontSize="12" Click="OnMarketCategoryFilterClick" />
+                                    <Button Content="光学壁纸" Tag="光学壁纸" CornerRadius="14" Padding="11,5" FontSize="12" Click="OnMarketCategoryFilterClick" />
                                     <Button Content="动态极光" Tag="动态极光" CornerRadius="14" Padding="11,5" FontSize="12" Click="OnMarketCategoryFilterClick" />
                                     <Button Content="粒子氛围" Tag="粒子氛围" CornerRadius="14" Padding="11,5" FontSize="12" Click="OnMarketCategoryFilterClick" />
                                     <Button Content="极简浅色" Tag="极简浅色" CornerRadius="14" Padding="11,5" FontSize="12" Click="OnMarketCategoryFilterClick" />
@@ -11686,7 +11790,7 @@
 
                                 <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right" VerticalAlignment="Center">
                                     <TextBox x:Name="ModalMarketSearchBox" Width="220" PlaceholderText="搜索市场主题/作者/标签..." FontSize="12" TextChanged="OnMarketSearchTextChanged" />
-                                    <Button Content="刷新在线源" Style="{StaticResource SecondaryTabButtonStyle}" CornerRadius="8" Padding="12,6" FontSize="12" Click="OnRefreshMarketFeedsClick" />
+                                    <Button x:Name="ModalRefreshMarketBtn" Content="刷新主题仓库" IsTabStop="False" Style="{StaticResource SecondaryTabButtonStyle}" CornerRadius="8" Padding="12,6" FontSize="12" Click="OnRefreshMarketFeedsClick" />
                                 </StackPanel>
                             </Grid>
                         </Border>

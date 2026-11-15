@@ -70,7 +70,7 @@ public class CustomThemeProfile
     /// <summary>
     /// 自定义壁纸局部逐字智能反色（根据壁纸局部明暗交界精准切换深浅字体与逐字符黑白渐变）
     /// </summary>
-    public bool EnableAdaptiveWallpaperText { get; set; } = true;
+    public bool EnableAdaptiveWallpaperText { get; set; } = false;
 
     // ---- 1.1 动态流体极光参数 (Aurora / CoverFlow) ----
     public string AuroraColor1Hex { get; set; } = "#10B981";
@@ -199,12 +199,35 @@ public class CustomThemeProfile
     public bool SyncDesktopLyric { get; set; } = true;
     public string LyricHighlightColorHex { get; set; } = string.Empty;
 
+    // ==================== 6. 实时音频频谱律动与指针物理交互 ====================
+    /// <summary>
+    /// 是否开启基于实时音频 FFT 频谱与鼓点脉冲的背景/光球/底栏动态联动
+    /// </summary>
+    public bool EnableAudioReactive { get; set; } = false;
+
+    /// <summary>
+    /// 音频律动背景可视化样式：None | SpectrumBars (48段镜像流光频谱柱) | PulseRings (全息同心声波环) | SilkWave (多层流光丝绸波带)
+    /// </summary>
+    public string AudioReactiveStyle { get; set; } = "None";
+
+    /// <summary>
+    /// 音频律动采集灵敏度 (0.3 ~ 2.5，默认 1.0)
+    /// </summary>
+    public double AudioSensitivity { get; set; } = 1.0;
+
+    /// <summary>
+    /// 是否开启鼠标指针交互物理场（指针追光光晕 + 附近粒子脉冲排斥/牵引微旋）
+    /// </summary>
+    public bool EnablePointerInteraction { get; set; } = false;
+
     [JsonIgnore]
     public bool HasDynamicEffect =>
         BackdropType is "Aurora" or "Video" or "CoverFlow" ||
         EnableParticleOverlay ||
         EnablePlayBarRhythmGlow ||
-        CoverArtShape == "VinylSpin";
+        CoverArtShape == "VinylSpin" ||
+        EnableAudioReactive ||
+        EnablePointerInteraction;
 
     public CustomThemeProfile Clone(bool asNewCustom = false)
     {
@@ -296,7 +319,12 @@ public class CustomThemeProfile
             MiniPlayerOpacity = MiniPlayerOpacity,
             SyncImmersiveLyricHighlight = SyncImmersiveLyricHighlight,
             SyncDesktopLyric = SyncDesktopLyric,
-            LyricHighlightColorHex = LyricHighlightColorHex
+            LyricHighlightColorHex = LyricHighlightColorHex,
+
+            EnableAudioReactive = EnableAudioReactive,
+            AudioReactiveStyle = AudioReactiveStyle,
+            AudioSensitivity = AudioSensitivity,
+            EnablePointerInteraction = EnablePointerInteraction
         };
     }
 
@@ -752,6 +780,8 @@ public class MarketplaceThemeItem
     public int Downloads { get; set; } = 1000;
     public string SourceName { get; set; } = "官方创意市场";
     public string PreviewImageUrl { get; set; } = string.Empty;
+    public string WallpaperUrl { get; set; } = string.Empty;
+    public string VideoUrl { get; set; } = string.Empty;
     public CustomThemeProfile Theme { get; set; } = new();
 }
 
@@ -772,6 +802,11 @@ public class ThemeCenterConfig
     public string ActiveThemeId { get; set; } = "builtin-emerald-dark";
     public string? OverrideBaseMode { get; set; } = null;
     public bool FollowSongCoverAccent { get; set; } = false;
+    public bool UseOfficialMarketRepo { get; set; } = true;
+    /// <summary>
+    /// 一次性迁移标记：将历史壁纸主题的默认动态反色字体关闭，改为统一固定字色
+    /// </summary>
+    public bool AdaptiveTextDefaultOffMigrated { get; set; } = false;
     public List<CustomThemeProfile> CustomThemes { get; set; } = [];
     public List<string> MarketFeedUrls { get; set; } = [];
 }

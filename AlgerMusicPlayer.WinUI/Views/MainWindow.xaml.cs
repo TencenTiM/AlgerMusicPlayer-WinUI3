@@ -7312,6 +7312,7 @@ public sealed partial class MainWindow : Window
                 QueueDrawerCountText.Text = $"({ViewModel.Player.Queue.Count})";
             }
 
+            SyncQueueDrawerThemeByOwnBackground();
             QueueDrawerOverlay.Visibility = Visibility.Visible;
             // 在真实可视高度下重建虚拟化容器测量，解决折叠态批量加歌导致 ScrollableHeight 冻结
             QueueListView.ItemsSource = null;

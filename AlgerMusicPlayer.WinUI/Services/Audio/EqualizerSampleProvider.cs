@@ -52,6 +52,11 @@ public class EqualizerSampleProvider : ISampleProvider
     public float CurrentPeakLevel { get; private set; }
 
     /// <summary>
+    /// 可选实时频谱与鼓点采集器（当 WASAPI 环回未激活时自动接收管线样本作为兜底数据源）
+    /// </summary>
+    public AudioReactiveAnalyzer? ReactiveAnalyzer { get; set; }
+
+    /// <summary>
     /// 1:1 对应 src/renderer/utils/audioDestinationChannel.ts resolveAudioDestinationChannelConfig
     /// </summary>
     public static AudioDestinationChannelConfig? ResolveAudioDestinationChannelConfig(int? sourceChannelCount, int maxChannelCount)
@@ -193,6 +198,7 @@ public class EqualizerSampleProvider : ISampleProvider
         }
 
         CurrentPeakLevel = maxAbs;
+        ReactiveAnalyzer?.PushPipelineSamples(buffer, offset, samplesRead, _channels, WaveFormat.SampleRate);
         return samplesRead;
     }
 }

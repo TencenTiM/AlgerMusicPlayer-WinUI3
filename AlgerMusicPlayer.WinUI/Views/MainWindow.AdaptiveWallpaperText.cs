@@ -501,9 +501,24 @@ public sealed partial class MainWindow
                                 string.Equals(profile.PlayBarLayoutMode, "FloatingIsland", StringComparison.OrdinalIgnoreCase);
         UpdatePlayBarFloatingShadow(wantIslandShadow);
 
-        if (!ctx.UseWallpaperAdaptiveText && _bareTextStates.Count > 0)
+        if (!ctx.UseWallpaperAdaptiveText)
         {
-            RestoreAllBareTextOverrides();
+            if (_titleBarVeilApplied)
+            {
+                if (_titleBarHadLocalBackground && _titleBarOriginalBackground is Brush originalBg)
+                    AppTitleBar.Background = originalBg;
+                else
+                    AppTitleBar.ClearValue(Panel.BackgroundProperty);
+
+                _titleBarVeilApplied = false;
+                _titleBarOriginalBackground = null;
+                _titleBarVeilBrush = null;
+            }
+
+            if (_bareTextStates.Count > 0)
+            {
+                RestoreAllBareTextOverrides();
+            }
         }
 
         // 3. 扫描可见树：为液态玻璃卡片挂载原生 DWM 水滴边缘折射环，并对壁纸上的文字做局部高对比度适配
@@ -570,7 +585,8 @@ public sealed partial class MainWindow
     {
         if (ReferenceEquals(node, GlobalWindowBaseBgLayer) ||
             ReferenceEquals(node, GlobalParticleOverlayCanvas) ||
-            ReferenceEquals(node, MiniPreviewWindowOuter))
+            ReferenceEquals(node, MiniPreviewWindowOuter) ||
+            ReferenceEquals(node, QueueDrawerOverlay))
         {
             return;
         }
