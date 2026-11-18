@@ -1,0 +1,48 @@
+<ResourceDictionary
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:AlgerMusicPlayer.WinUI.Controls">
+
+    <!-- 通用液态玻璃面板默认模板：顺序固定为 GlassLayer -> 1px 克制边缘光 + 顶部微弱内高光 -> ContentPresenter -->
+    <Style TargetType="controls:GlassPanel">
+        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+        <Setter Property="VerticalContentAlignment" Value="Stretch" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="controls:GlassPanel">
+                    <Grid>
+                        <Border
+                            x:Name="GlassLayer"
+                            CornerRadius="{TemplateBinding CornerRadius}"
+                            IsHitTestVisible="False" />
+                        <Border
+                            x:Name="EdgeHighlightBorder"
+                            CornerRadius="{TemplateBinding CornerRadius}"
+                            BorderThickness="1"
+                            IsHitTestVisible="False">
+                            <Border.BorderBrush>
+                                <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                                    <GradientStop Color="#80FFFFFF" Offset="0" />
+                                    <GradientStop Color="#14FFFFFF" Offset="0.4" />
+                                    <GradientStop Color="#14FFFFFF" Offset="0.6" />
+                                    <GradientStop Color="#38FFFFFF" Offset="1" />
+                                </LinearGradientBrush>
+                            </Border.BorderBrush>
+                            <Border.Background>
+                                <LinearGradientBrush StartPoint="0.5,0" EndPoint="0.5,1">
+                                    <GradientStop Color="#14FFFFFF" Offset="0" />
+                                    <GradientStop Color="#00FFFFFF" Offset="0.35" />
+                                </LinearGradientBrush>
+                            </Border.Background>
+                        </Border>
+                        <ContentPresenter
+                            Padding="{TemplateBinding Padding}"
+                            HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}"
+                            VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}" />
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+</ResourceDictionary>

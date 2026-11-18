@@ -1,0 +1,102 @@
+<ResourceDictionary
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:LiquidGlass.WinUI.Controls">
+
+    <ControlTemplate x:Key="LiquidGlassFiveLayerPanelTemplate" TargetType="local:LiquidGlassPanel">
+        <Grid CornerRadius="{TemplateBinding CornerRadius}">
+            <!-- 第 1 层：Backdrop 背景高斯模糊 -->
+            <Border x:Name="PART_Backdrop"
+                    IsHitTestVisible="False"
+                    CornerRadius="{TemplateBinding CornerRadius}" />
+            <!-- 第 2 层：Tint 中性微梯度着色 -->
+            <Border x:Name="PART_Tint"
+                    IsHitTestVisible="False"
+                    CornerRadius="{TemplateBinding CornerRadius}" />
+            <!-- 第 3 层：Reflection 斜向环境反射 + 边缘定向光学折射宿主 -->
+            <Border x:Name="PART_Reflection"
+                    IsHitTestVisible="False"
+                    CornerRadius="{TemplateBinding CornerRadius}" />
+            <Grid x:Name="PART_RefractionHost"
+                  IsHitTestVisible="False" />
+            <!-- 第 4 层：Highlight 外圈镜面高光与内深度 -->
+            <Border x:Name="PART_Highlight"
+                    IsHitTestVisible="False"
+                    CornerRadius="{TemplateBinding CornerRadius}" />
+            <!-- 第 5 层：Content 清晰前景交互内容 -->
+            <ContentPresenter x:Name="PART_Content"
+                              Content="{TemplateBinding Content}"
+                              ContentTemplate="{TemplateBinding ContentTemplate}"
+                              ContentTransitions="{TemplateBinding ContentTransitions}"
+                              Padding="{TemplateBinding Padding}"
+                              HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}"
+                              VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}" />
+        </Grid>
+    </ControlTemplate>
+
+    <Style TargetType="local:LiquidGlassPanel">
+        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+        <Setter Property="VerticalContentAlignment" Value="Stretch" />
+        <Setter Property="CornerRadius" Value="24" />
+        <Setter Property="Template" Value="{StaticResource LiquidGlassFiveLayerPanelTemplate}" />
+    </Style>
+
+    <Style TargetType="local:LiquidGlassDock">
+        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+        <Setter Property="VerticalContentAlignment" Value="Stretch" />
+        <Setter Property="CornerRadius" Value="42" />
+        <Setter Property="Template" Value="{StaticResource LiquidGlassFiveLayerPanelTemplate}" />
+    </Style>
+
+    <Style TargetType="local:LiquidGlassFolder">
+        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+        <Setter Property="VerticalContentAlignment" Value="Stretch" />
+        <Setter Property="CornerRadius" Value="24" />
+        <Setter Property="Template" Value="{StaticResource LiquidGlassFiveLayerPanelTemplate}" />
+    </Style>
+
+    <Style TargetType="local:LiquidGlassSurface">
+        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+        <Setter Property="VerticalContentAlignment" Value="Stretch" />
+        <Setter Property="CornerRadius" Value="16" />
+        <Setter Property="Template" Value="{StaticResource LiquidGlassFiveLayerPanelTemplate}" />
+    </Style>
+
+    <Style TargetType="local:LiquidGlassButton">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="Padding" Value="14,8" />
+        <Setter Property="HorizontalContentAlignment" Value="Center" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="CornerRadius" Value="18" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="local:LiquidGlassButton">
+                    <Grid CornerRadius="{TemplateBinding CornerRadius}">
+                        <Border x:Name="PART_Backdrop"
+                                IsHitTestVisible="False"
+                                CornerRadius="{TemplateBinding CornerRadius}" />
+                        <Border x:Name="PART_Tint"
+                                IsHitTestVisible="False"
+                                CornerRadius="{TemplateBinding CornerRadius}" />
+                        <Border x:Name="PART_Reflection"
+                                IsHitTestVisible="False"
+                                CornerRadius="{TemplateBinding CornerRadius}" />
+                        <Grid x:Name="PART_RefractionHost"
+                              IsHitTestVisible="False" />
+                        <Border x:Name="PART_Highlight"
+                                IsHitTestVisible="False"
+                                CornerRadius="{TemplateBinding CornerRadius}" />
+                        <ContentPresenter x:Name="ContentPresenter"
+                                          Content="{TemplateBinding Content}"
+                                          ContentTemplate="{TemplateBinding ContentTemplate}"
+                                          ContentTransitions="{TemplateBinding ContentTransitions}"
+                                          Padding="{TemplateBinding Padding}"
+                                          HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                          VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}" />
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+</ResourceDictionary>

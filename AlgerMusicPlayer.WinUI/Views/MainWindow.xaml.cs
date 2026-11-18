@@ -83,6 +83,11 @@ public sealed partial class MainWindow : Window
         _multichannelService = App.Services.GetRequiredService<MultichannelManagerService>();
         InitializeComponent();
 
+        // 步骤 1：尽早初始化全局共享背景采样源，确保先于任何 GlassPanel 应用模板
+        GlassHub.SetGpuAccelerationEnabled(ViewModel.Config.Settings.EnableGpuAcceleration);
+        GlassHub.Init(RootLayout, GlassBackdropSource);
+        SyncNavPaneGlassWidth();
+
         // 在独立离屏隐藏窗口上初始化落雪音源 JS 宿主（不进入 MainWindow 视觉树，确保主窗口满帧高刷合成）
         _ = App.Services.GetRequiredService<AlgerMusicPlayer.WinUI.Services.Unblock.LxScriptHostService>()
             .InitializeOffscreenAsync(DispatcherQueue);
@@ -1230,9 +1235,78 @@ public sealed partial class MainWindow : Window
         ScheduleUpdateTitleBarPassthroughRegions();
     }
 
+    /// <summary>
+    /// 粘性液态玻璃顶栏尺寸变化时，动态同步下方滚动容器顶部内边距，防止初始内容被遮挡并保证滚动穿行折射。
+    /// </summary>
+    private void OnStickyTopGlassBarSizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        double h = e.NewSize.Height;
+        if (h <= 0)
+        {
+            return;
+        }
+
+        if (ReferenceEquals(sender, SettingsTopGlassBarHost) && SettingsScrollBodyGrid != null)
+        {
+            SettingsScrollBodyGrid.Padding = new Thickness(4, Math.Ceiling(h) + 16, 16, 96);
+        }
+        else if (ReferenceEquals(sender, SearchTopGlassBarHost))
+        {
+            var pad = new Thickness(0, Math.Ceiling(h) + 14, 10, 96);
+            if (SearchSongsListView != null) SearchSongsListView.Padding = pad;
+            if (SearchPlaylistsGrid != null) SearchPlaylistsGrid.Padding = pad;
+            if (SearchAlbumsGrid != null) SearchAlbumsGrid.Padding = pad;
+            if (SearchArtistsGrid != null) SearchArtistsGrid.Padding = pad;
+            if (SearchMvsGrid != null) SearchMvsGrid.Padding = pad;
+            if (SearchBiliListView != null) SearchBiliListView.Padding = pad;
+            if (PlatformSearchSongsListView != null) PlatformSearchSongsListView.Padding = pad;
+        }
+        else if (ReferenceEquals(sender, ThirdPartyTopGlassBarHost))
+        {
+            var pad = new Thickness(0, Math.Ceiling(h) + 14, 8, 96);
+            if (ThirdPartyPlaylistsScrollViewer != null) ThirdPartyPlaylistsScrollViewer.Padding = pad;
+            if (ThirdPartySongsListView != null) ThirdPartySongsListView.Padding = pad;
+        }
+        else if (ReferenceEquals(sender, HistoryFavTopGlassBarHost))
+        {
+            var pad = new Thickness(0, Math.Ceiling(h) + 14, 10, 96);
+            if (FavoriteSongsListView != null) FavoriteSongsListView.Padding = pad;
+            if (HistorySongsListView != null) HistorySongsListView.Padding = pad;
+            if (LocalCustomPlaylistsGrid != null) LocalCustomPlaylistsGrid.Padding = pad;
+        }
+    }
+
+    private void OnMainNavViewPaneOpening(NavigationView sender, object args)
+    {
+        SyncNavPaneGlassWidth(isPaneOpenOverride: true);
+        ScheduleUpdateTitleBarPassthroughRegions();
+    }
+
+    private void OnMainNavViewPaneClosing(NavigationView sender, NavigationViewPaneClosingEventArgs args)
+    {
+        SyncNavPaneGlassWidth(isPaneOpenOverride: false);
+        ScheduleUpdateTitleBarPassthroughRegions();
+    }
+
     private void OnMainNavViewPaneStateChanged(NavigationView sender, object args)
     {
+        SyncNavPaneGlassWidth();
         ScheduleUpdateTitleBarPassthroughRegions();
+    }
+
+    private void SyncNavPaneGlassWidth(bool? isPaneOpenOverride = null)
+    {
+        if (NavPaneGlassPanel == null || MainNavView == null)
+        {
+            return;
+        }
+
+        bool isOpen = isPaneOpenOverride ?? MainNavView.IsPaneOpen;
+        double targetPaneWidth = isOpen
+            ? (MainNavView.OpenPaneLength > 0 ? MainNavView.OpenPaneLength : 208.0)
+            : (MainNavView.CompactPaneLength > 0 ? MainNavView.CompactPaneLength : 48.0);
+        // 左侧圆角向左伸出 24px（Margin="-24,0,0,0"），总宽度同步增加 24px
+        NavPaneGlassPanel.Width = targetPaneWidth + 24.0;
     }
 
     private void OnTopSearchBoxLoaded(object sender, RoutedEventArgs e)
@@ -3105,8 +3179,10 @@ public sealed partial class MainWindow : Window
         NewPlaylistPrivateSwitch.IsOn = false;
 
         AddToPlaylistDrawerOverlay.Visibility = Visibility.Visible;
+        AddToPlaylistDrawerOverlay.UpdateLayout();
+        ScheduleAdaptiveWallpaperTextPass(immediate: true);
         PlayEntranceAnimation(AddToPlaylistBackdrop, 0, 0, 200);
-        PlayEntranceAnimation(AddToPlaylistDrawerPanel, 340, 0, 260);
+        PlayEntranceAnimation(AddToPlaylistDrawerHostGrid, 340, 0, 260);
 
         await SelectAddToPlaylistTargetAsync(_addToPlaylistTargetPlatform);
     }
@@ -3185,8 +3261,9 @@ public sealed partial class MainWindow : Window
     private async Task HideAddToPlaylistDrawerAnimatedAsync()
     {
         if (AddToPlaylistDrawerOverlay.Visibility != Visibility.Visible) return;
-        await PlayExitAnimationAsync(AddToPlaylistDrawerPanel, 340, 0, 180);
+        await PlayExitAnimationAsync(AddToPlaylistDrawerHostGrid, 340, 0, 180);
         AddToPlaylistDrawerOverlay.Visibility = Visibility.Collapsed;
+        ScheduleAdaptiveWallpaperTextPass();
     }
 
     private async void OnAddToPlaylistBackdropTapped(object sender, TappedRoutedEventArgs e)
@@ -4282,10 +4359,19 @@ public sealed partial class MainWindow : Window
 
     private static void ApplyDynamicAccentButtonState(Button btn, bool isAccent)
     {
+        var targetStyle = (Style)Application.Current.Resources[isAccent ? "BrandPrimaryButtonStyle" : "SecondaryTabButtonStyle"];
+        if (ReferenceEquals(btn.Style, targetStyle) &&
+            btn.ReadLocalValue(Control.BackgroundProperty) == DependencyProperty.UnsetValue &&
+            btn.ReadLocalValue(Control.ForegroundProperty) == DependencyProperty.UnsetValue &&
+            btn.ReadLocalValue(Control.BorderBrushProperty) == DependencyProperty.UnsetValue)
+        {
+            return;
+        }
+
         btn.ClearValue(Control.BackgroundProperty);
         btn.ClearValue(Control.ForegroundProperty);
         btn.ClearValue(Control.BorderBrushProperty);
-        btn.Style = (Style)Application.Current.Resources[isAccent ? "BrandPrimaryButtonStyle" : "SecondaryTabButtonStyle"];
+        btn.Style = targetStyle;
     }
 
     private void SwitchLocalMusicViewModeUi(string mode)
@@ -6431,6 +6517,7 @@ public sealed partial class MainWindow : Window
         Grid.SetRow(ImmersiveLyricOverlay, 0);
         if (!isOverlayOpen)
         {
+            BottomPlayBarHostGrid.Visibility = Visibility.Visible;
             BottomPlayBarBorder.Visibility = Visibility.Visible;
             Grid.SetRowSpan(ImmersiveLyricOverlay, 3);
             try
@@ -6447,7 +6534,9 @@ public sealed partial class MainWindow : Window
 
         bool showMiniPlayBar = !cfg.HideMiniPlayBar;
         MusicFullSimplePlayBar.Visibility = showMiniPlayBar ? Visibility.Visible : Visibility.Collapsed;
-        BottomPlayBarBorder.Visibility = showMiniPlayBar ? Visibility.Collapsed : Visibility.Visible;
+        var barVis = showMiniPlayBar ? Visibility.Collapsed : Visibility.Visible;
+        BottomPlayBarHostGrid.Visibility = barVis;
+        BottomPlayBarBorder.Visibility = barVis;
         Grid.SetRowSpan(ImmersiveLyricOverlay, showMiniPlayBar ? 3 : 2);
         try
         {
@@ -7239,8 +7328,36 @@ public sealed partial class MainWindow : Window
         ViewModel.IsDesktopLyricOpen = true;
     }
 
+    private void OnQueueDrawerFrostUnderlaySizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (sender is not FrameworkElement fe || e.NewSize.Width <= 2 || e.NewSize.Height <= 2)
+        {
+            return;
+        }
+
+        // 对 46px 硬件高斯模糊层施加精确 23px 圆角裁剪，彻底防止半透明边缘或方形角刺出 26px 玻璃外框
+        var visual = ElementCompositionPreview.GetElementVisual(fe);
+        var comp = visual.Compositor;
+        var geom = comp.CreateRoundedRectangleGeometry();
+        geom.Size = new Vector2((float)e.NewSize.Width, (float)e.NewSize.Height);
+        geom.CornerRadius = new Vector2(23f, 23f);
+        visual.Clip = comp.CreateGeometricClip(geom);
+    }
+
+    private void SyncQueueDrawerIslandHeight()
+    {
+        if (QueueDrawerHostGrid == null)
+        {
+            return;
+        }
+
+        double winH = RootLayout != null && RootLayout.ActualHeight > 200 ? RootLayout.ActualHeight : 860;
+        QueueDrawerHostGrid.Height = Math.Clamp(winH - 184, 360, 556);
+    }
+
     private void SyncQueueDrawerCountAndViewport()
     {
+        SyncQueueDrawerIslandHeight();
         if (QueueDrawerCountText != null)
         {
             QueueDrawerCountText.Text = $"({ViewModel.Player.Queue.Count})";
@@ -7281,8 +7398,9 @@ public sealed partial class MainWindow : Window
     private async Task HideQueueDrawerAnimatedAsync()
     {
         if (QueueDrawerOverlay.Visibility != Visibility.Visible) return;
-        await PlayExitAnimationAsync(QueueDrawerPanel, 300, 0, 180);
+        await PlayExitAnimationAsync(QueueDrawerHostGrid, 24, 14, 170);
         QueueDrawerOverlay.Visibility = Visibility.Collapsed;
+        ScheduleAdaptiveWallpaperTextPass();
     }
 
     private async void OnQueueDrawerBackdropTapped(object sender, TappedRoutedEventArgs e)
@@ -7312,15 +7430,17 @@ public sealed partial class MainWindow : Window
                 QueueDrawerCountText.Text = $"({ViewModel.Player.Queue.Count})";
             }
 
+            SyncQueueDrawerIslandHeight();
             SyncQueueDrawerThemeByOwnBackground();
             QueueDrawerOverlay.Visibility = Visibility.Visible;
             // 在真实可视高度下重建虚拟化容器测量，解决折叠态批量加歌导致 ScrollableHeight 冻结
             QueueListView.ItemsSource = null;
             QueueListView.ItemsSource = ViewModel.Player.Queue;
             QueueDrawerOverlay.UpdateLayout();
+            ScheduleAdaptiveWallpaperTextPass(immediate: true);
 
             PlayEntranceAnimation(QueueDrawerBackdrop, 0, 0, 200);
-            PlayEntranceAnimation(QueueDrawerPanel, 300, 0, 260);
+            PlayEntranceAnimation(QueueDrawerHostGrid, 28, 18, 250);
             DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, ScrollQueueToCurrentSong);
         }
     }
@@ -7430,7 +7550,11 @@ public sealed partial class MainWindow : Window
         if (!_appWindow.IsVisible) return;
         if (!args.DidSizeChange && !args.DidPositionChange && !args.DidPresenterChange) return;
 
-        DispatcherQueue?.TryEnqueue(ScheduleUpdateTitleBarPassthroughRegions);
+        DispatcherQueue?.TryEnqueue(() =>
+        {
+            ScheduleUpdateTitleBarPassthroughRegions();
+            SyncQueueDrawerIslandHeight();
+        });
 
         if (_appWindow.Presenter is OverlappedPresenter overlapped)
         {
@@ -7487,6 +7611,7 @@ public sealed partial class MainWindow : Window
         {
             _discoverBannerTimer?.Stop();
             _opticalGlassRenderer.Dispose();
+            _liquidSceneProvider.Dispose();
             SingleInstanceGuard.ExternalActivationRequested -= OnExternalActivationRequested;
             SingleInstanceGuard.Release();
             RemoveSystemTrayIcon();
@@ -7501,6 +7626,7 @@ public sealed partial class MainWindow : Window
         {
             _discoverBannerTimer?.Stop();
             _opticalGlassRenderer.Dispose();
+            _liquidSceneProvider.Dispose();
             SingleInstanceGuard.ExternalActivationRequested -= OnExternalActivationRequested;
             SingleInstanceGuard.Release();
             RemoveSystemTrayIcon();
@@ -7584,7 +7710,9 @@ public sealed partial class MainWindow : Window
     private void ForceExitApplication()
     {
         _isForceExiting = true;
+        _glassHub.Dispose();
         _opticalGlassRenderer.Dispose();
+        _liquidSceneProvider.Dispose();
         SingleInstanceGuard.ExternalActivationRequested -= OnExternalActivationRequested;
         SingleInstanceGuard.Release();
         RemoveSystemTrayIcon();
@@ -7982,10 +8110,15 @@ public sealed partial class MainWindow : Window
     private async void OnGpuAccelerationToggled(object sender, RoutedEventArgs e)
     {
         if (!_isInitialized) return;
-        ViewModel.Config.Settings.EnableGpuAcceleration = GpuAccelerationToggle.IsOn;
+        bool enabled = GpuAccelerationToggle.IsOn;
+        ViewModel.Config.Settings.EnableGpuAcceleration = enabled;
+        GlassHub.SetGpuAccelerationEnabled(enabled);
+        await ApplyThemeProfileToMainWindowAsync(ViewModel.Theme.GetEffectiveTheme());
         GpuRestartHintText.Visibility = Visibility.Visible;
         await ViewModel.Config.SaveSettingsAsync();
-        ViewModel.StatusToast = "GPU 硬件加速设置已保存（重启应用后生效）";
+        ViewModel.StatusToast = enabled
+            ? "已开启 GPU 硬件加速（液态玻璃着色器与动效已实时启用）"
+            : "已关闭 GPU 硬件加速（已实时切换为轻量低功耗渲染）";
     }
 
     private async void OnQualitySelectionChanged(object sender, SelectionChangedEventArgs e)

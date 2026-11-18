@@ -878,13 +878,32 @@ public partial class MainViewModel : ObservableObject
 
     public void RefreshCacheStats()
     {
-        var (musicBytes, lyricBytes, totalBytes, musicCount, lyricCount, usagePct) = Config.GetCacheSizeStatsFull();
-        double musicMb = musicBytes / (1024.0 * 1024.0);
-        double lyricKb = lyricBytes / 1024.0;
-        double totalMb = totalBytes / (1024.0 * 1024.0);
-        CacheUsagePercent = usagePct;
-        CacheStatsText = $"已用 {totalMb:F2} MB / 上限 {Config.Settings.DiskCacheMaxSizeMB} MB（音频: {musicMb:F2} MB · 歌词: {lyricKb:F1} KB）";
-        CacheFilesDetailText = $"音频缓存文件: {musicCount} 个 · 歌词缓存文件: {lyricCount} 个";
+        var uiDispatcher = _dispatcher ?? DispatcherQueue.GetForCurrentThread();
+        _ = Task.Run(() =>
+        {
+            var (musicBytes, lyricBytes, totalBytes, musicCount, lyricCount, usagePct) = Config.GetCacheSizeStatsFull();
+            double musicMb = musicBytes / (1024.0 * 1024.0);
+            double lyricKb = lyricBytes / 1024.0;
+            double totalMb = totalBytes / (1024.0 * 1024.0);
+            string statsText = $"已用 {totalMb:F2} MB / 上限 {Config.Settings.DiskCacheMaxSizeMB} MB（音频: {musicMb:F2} MB · 歌词: {lyricKb:F1} KB）";
+            string detailText = $"音频缓存文件: {musicCount} 个 · 歌词缓存文件: {lyricCount} 个";
+
+            void Apply()
+            {
+                CacheUsagePercent = usagePct;
+                CacheStatsText = statsText;
+                CacheFilesDetailText = detailText;
+            }
+
+            if (uiDispatcher != null)
+            {
+                uiDispatcher.TryEnqueue(Apply);
+            }
+            else
+            {
+                RunOnUi(Apply);
+            }
+        });
     }
 
     public async Task LoadDonorsAsync()
@@ -3546,6 +3565,49 @@ public partial class MainViewModel : ObservableObject
         }
     }
 
+    /// <summary>
+    /// 在 UI 线程中将播放器解析到的真实时长回填到各列表内同 ID 且缺少时长的歌曲项
+    /// </summary>
+    private void SyncSongDurationAcrossLists(string? songId, long durationMs)
+    {
+        if (string.IsNullOrEmpty(songId) || durationMs <= 0) return;
+
+        IEnumerable<SongItem>[] lists =
+        [
+            Player.Queue,
+            DetailSongs,
+            FilteredDetailSongs,
+            DailyRecommendSongs,
+            DailyPreviewSongs,
+            HomeNewSongs,
+            SearchSongs,
+            PlatformSearchSongs,
+            ThirdPartySongs,
+            HistorySongs,
+            FavoriteSongs,
+            LocalSongs,
+            FilteredLocalSongs,
+            CurrentFolderSongs,
+            FilteredDiscoverNewSongs,
+            _allDiscoverNewSongs,
+            Config.PlayHistory,
+            Config.LocalFavorites,
+            Config.SavedQueue,
+            Config.CustomPlaylists.SelectMany(static cp => cp.Tracks ?? [])
+        ];
+
+        foreach (var list in lists)
+        {
+            foreach (var s in list)
+            {
+                if (s.DurationMs <= 0 && s.Id == songId)
+                {
+                    s.DurationMs = durationMs;
+                }
+            }
+        }
+    }
+
     private void OnPlayerSongChanged(SongItem? song)
     {
         RunOnUi(() =>
@@ -3567,7 +3629,7 @@ public partial class MainViewModel : ObservableObject
         CurrentPlatformBadge = AudioPlayerService.FormatPlatformBadgeDisplay(song.ResolvedPlatform ?? song.Source);
         CurrentQualityBadge = Player.GetEffectiveQualityBadge(song);
         DurationSeconds = Math.Max(1, song.DurationMs / 1000.0);
-        DurationText = song.DurationText;
+        DurationText = song.DurationMs > 0 ? song.DurationText : "00:00";
         LyricOffsetText = "0.0s";
     }
 
@@ -3610,6 +3672,13 @@ public partial class MainViewModel : ObservableObject
             {
                 DurationSeconds = dur.TotalSeconds;
                 DurationText = $"{(int)dur.TotalMinutes:D2}:{dur.Seconds:D2}";
+                var curSong = Player.CurrentSong;
+                long realMs = (long)Math.Round(dur.TotalMilliseconds);
+                if (curSong != null && curSong.DurationMs <= 0 && realMs > 1000)
+                {
+                    curSong.DurationMs = realMs;
+                    SyncSongDurationAcrossLists(curSong.Id, realMs);
+                }
             }
             PositionText = $"{(int)pos.TotalMinutes:D2}:{pos.Seconds:D2}";
         });

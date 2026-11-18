@@ -1,5 +1,7 @@
 using System.Numerics;
 using System.Runtime.CompilerServices;
+using LiquidGlass.WinUI.Materials;
+using LiquidGlass.WinUI.Rendering;
 using AlgerMusicPlayer.WinUI.Models;
 using AlgerMusicPlayer.WinUI.Services.System;
 using Microsoft.UI.Composition;
@@ -7,6 +9,7 @@ using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Hosting;
 using Microsoft.UI.Xaml.Media;
 using Windows.Foundation;
@@ -57,10 +60,14 @@ public sealed partial class MainWindow
         // 挂载于卡片内部 Grid 第 0 层的纯视觉底层宿主（使折射与水滴唇边完全垫在进度条、封面、文字正下方）
         public Border? UnderlayHost;
         public Panel? UnderlayParentPanel;
+        public Grid? WrapperGrid;
+        public UIElement? WrappedOriginalChild;
+        public bool CreatedEmptyBorderChild;
         public bool CardShadowApplied;
 
-        public OpticalGlassAttachment? LensAttachment;
+        public OpticalLiquidGlassRenderer.LensAttachment? LensAttachment;
         public LiquidGlassCompositionBrush? OwnGlassBrush;
+        public LiquidGlassPreset Preset = LiquidGlassPreset.FrostedFolder;
         public double CachedIntensity = 1.0;
         public bool ForceDarkSurface;
 
@@ -74,6 +81,9 @@ public sealed partial class MainWindow
         public BackgroundSizing OriginalSizing;
         public bool CornerRadiusTouched;
         public CornerRadius OriginalCornerRadius;
+        public bool BorderBrushAssigned;
+        public bool LastBorderIsLight;
+        public LiquidGlassPreset LastBorderPreset;
     }
 
     private sealed class BareTextOverrideState
@@ -88,14 +98,24 @@ public sealed partial class MainWindow
     }
 
     private readonly OpticalLiquidGlassRenderer _opticalGlassRenderer = new();
+    private readonly LiquidGlassSceneProvider _liquidSceneProvider = new();
+    private readonly GlassHub _glassHub = new();
+    private long _lastDynamicSdfRefreshMs;
+    private int _mountedCardRefractiveCount;
+    private bool _isGlassScrollVsyncAttached;
+    private long _lastGlassScrollTickMs;
+    private long _lastScrollTreeDiscoverMs;
+    private double _lastRenderedAuroraPhase = double.NaN;
+    private double _lastRenderedPShiftX;
+    private double _lastRenderedPShiftY;
+    private TimeSpan _lastDynamicRenderTime = TimeSpan.MinValue;
+    private string _preloadingWallpaperPath = string.Empty;
     // 使用强引用字典（按 CsWinRT 原生 IInspectable 指针哈希匹配），彻底杜绝无 x:Name 控件的瞬态托管 RCW 被 Gen0 GC 回收导致切主题漏还原白字与子视觉层
     private readonly Dictionary<DependencyObject, VeilSurfaceState> _veilSurfaceStates = new();
     private readonly Dictionary<FrameworkElement, BareTextOverrideState> _bareTextStates = new();
     private readonly ConditionalWeakTable<ScrollViewer, object> _hookedAdaptiveScrollViewers = new();
     private readonly ConditionalWeakTable<FrameworkElement, object> _hookedGlassSizeElements = new();
 
-    // 底部悬浮灵动岛空气感体积阴影
-    private ThemeShadow? _floatingIslandShadow;
     private bool _playBarShadowApplied;
 
     private bool _titleBarVeilApplied;
@@ -115,9 +135,8 @@ public sealed partial class MainWindow
         !string.IsNullOrWhiteSpace(_activeAdaptiveRenderedProfile.BackgroundImagePath) &&
         GlobalWallpaperImage.Visibility == Visibility.Visible;
 
-    private bool IsLiquidLensPassActive =>
-        _activeAdaptiveRenderedProfile != null &&
-        IsLiquidGlassMode(_activeAdaptiveRenderedProfile);
+    // 步骤 6：全局改用 XAML GlassPanel + 共享 GlassBackdropSource，停用旧版离屏光带与 Win2D 卡片透镜覆盖，保持背景原汁原味
+    private static bool IsLiquidLensPassActive => false;
 
     private bool IsWallpaperAdaptiveTextPassActive =>
         HasActiveCustomWallpaperImage &&
@@ -208,8 +227,18 @@ public sealed partial class MainWindow
     /// </summary>
     private void RestoreAllAdaptiveWallpaperTexts(bool? explicitTargetIsLight = null)
     {
+        DetachGlassScrollVsync();
+        GlassSpringAnimator.IsEnabled = false;
+        _glassHub.DetachDockPassUnder();
+        _glassHub.DetachOverlaySurfaceGlass();
+        HideOverlayDrawerGlassLayer(QueueDrawerPanel);
+        HideOverlayDrawerGlassLayer(AddToPlaylistDrawerPanel);
         _adaptiveTextThrottleTimer?.Stop();
         _adaptivePassPending = false;
+        _lastRenderedAuroraPhase = double.NaN;
+        _lastDynamicRenderTime = TimeSpan.MinValue;
+        SetUnderlyingXamlAuroraOrbsSuppressed(false);
+        _liquidSceneProvider.SetScreenAuroraVisibility(false);
 
         foreach (var (target, state) in _veilSurfaceStates)
         {
@@ -217,18 +246,7 @@ public sealed partial class MainWindow
             state.LensAttachment?.DetachAndDispose(lensHost);
             state.LensAttachment = null;
 
-            if (state.UnderlayHost != null && state.UnderlayParentPanel != null)
-            {
-                try
-                {
-                    state.UnderlayParentPanel.Children.Remove(state.UnderlayHost);
-                }
-                catch
-                {
-                }
-                state.UnderlayHost = null;
-                state.UnderlayParentPanel = null;
-            }
+            CleanupLensHostContainer(target, state);
 
             if (state.IsBorderBrushOverridden && target is Border bBorder)
             {
@@ -241,6 +259,7 @@ public sealed partial class MainWindow
                     bBorder.ClearValue(Border.BorderBrushProperty);
                 }
                 state.IsBorderBrushOverridden = false;
+                state.BorderBrushAssigned = false;
             }
 
             if (state.CardShadowApplied && target is UIElement shadowEl)
@@ -394,29 +413,9 @@ public sealed partial class MainWindow
 
     private void UpdatePlayBarFloatingShadow(bool enableShadow)
     {
-        if (!enableShadow)
-        {
-            RestorePlayBarFloatingShadow();
-            return;
-        }
-
-        if (_playBarShadowApplied)
-            return;
-
-        try
-        {
-            if (_floatingIslandShadow == null)
-            {
-                _floatingIslandShadow = new ThemeShadow();
-                _floatingIslandShadow.Receivers.Add(GlobalWindowBaseBgLayer);
-            }
-            BottomPlayBarBorder.Shadow = _floatingIslandShadow;
-            BottomPlayBarBorder.Translation = new Vector3(0f, 0f, 20f);
-            _playBarShadowApplied = true;
-        }
-        catch
-        {
-        }
+        // 对照 Alger 液态玻璃规范第 2 节：不使用跨树硬边缘 ThemeShadow（改由清晰边缘高光呈现层次，降低合成开销）
+        _ = enableShadow;
+        RestorePlayBarFloatingShadow();
     }
 
     private void RestorePlayBarFloatingShadow()
@@ -488,6 +487,26 @@ public sealed partial class MainWindow
 
         var profile = _activeAdaptiveRenderedProfile!;
         _hasActiveAdaptiveOverrides = true;
+        GlassSpringAnimator.IsEnabled = ctx.UseLiquidLens;
+        _mountedCardRefractiveCount = 0;
+
+        if (ctx.UseLiquidLens)
+        {
+            _glassHub.EnsureBackgroundInitialized(GlobalWindowBaseBgLayer);
+            if (VisualTreeHelper.GetParent(MainNavView) is Grid bodyHost)
+            {
+                _glassHub.EnsureInitialized(bodyHost);
+            }
+            EnsureLiquidSceneFrameReady(profile, ctx.IsLight, ctx.Accent);
+        }
+        else
+        {
+            DetachGlassScrollVsync();
+            _glassHub.DetachDockPassUnder();
+            _glassHub.DetachOverlaySurfaceGlass();
+            SetUnderlyingXamlAuroraOrbsSuppressed(false);
+            _liquidSceneProvider.SetScreenAuroraVisibility(false);
+        }
 
         // 1. 顶部标题栏微衬底（仅在开启壁纸智能可读性且未自定义顶栏时，为极端反差顶栏提供轻盈过渡）
         if (!profile.EnableCustomTitleBar && ctx.UseWallpaperAdaptiveText)
@@ -527,7 +546,133 @@ public sealed partial class MainWindow
             ? ps as Style
             : null;
         TraverseForGlassAndReadableTexts(RootLayout, in ctx, plateStyle, insideGlassSurface: false);
+
+        if (ctx.UseLiquidLens)
+        {
+            SyncOverlayDrawerLiquidGlassSurface(AddToPlaylistDrawerOverlay, AddToPlaylistDrawerPanel, in ctx);
+        }
+
         PruneUnloadedAdaptiveEntries(ctx.IsLight);
+    }
+
+    private bool IsPassUnderOverlayElement(DependencyObject? target) =>
+        ReferenceEquals(target, BottomPlayBarBorder);
+
+    private void SyncOverlayDrawerLiquidGlassSurface(
+        Grid? overlay,
+        Border? panel,
+        in AdaptivePassContext ctx)
+    {
+        if (overlay == null || panel == null)
+        {
+            return;
+        }
+
+        if (overlay.Visibility == Visibility.Visible)
+        {
+            Border? glassLayer = EnsureOverlayDrawerGlassLayer(panel);
+            if (glassLayer == null)
+            {
+                return;
+            }
+
+            glassLayer.Visibility = Visibility.Visible;
+            double w = panel.ActualWidth > 16 ? panel.ActualWidth : (double.IsNaN(panel.Width) ? 350 : panel.Width);
+            double h = panel.ActualHeight > 16 ? panel.ActualHeight : (double.IsNaN(panel.Height) ? 540 : panel.Height);
+            double cr = panel.CornerRadius.TopLeft;
+            Color baseTintColor = ctx.IsLight
+                ? Color.FromArgb(255, 0xEC, 0xF4, 0xF9)
+                : Color.FromArgb(255, 0x0B, 0x2B, 0x36);
+            Color tint = Color.FromArgb(
+                ctx.IsLight ? (byte)0xE0 : (byte)0xD0,
+                baseTintColor.R,
+                baseTintColor.G,
+                baseTintColor.B);
+
+            bool attachedSharedGlass = _glassHub.AttachOrUpdateOverlaySurfaceGlass(
+                glassLayer,
+                GlassSourceKind.Content,
+                GlobalWindowBaseBgLayer,
+                VisualTreeHelper.GetParent(MainNavView) as Grid,
+                RootLayout,
+                w,
+                h,
+                cr,
+                blurAmount: 36f,
+                saturation: 1.8f,
+                tintWithAlpha: tint);
+
+            if (panel.Background is LiquidGlassCompositionBrush panelLgb)
+            {
+                float wantTintOpacity = attachedSharedGlass
+                    ? 0.08f
+                    : (ctx.IsLight ? 0.88f : 0.815f);
+                panelLgb.UpdateOpticalParameters(
+                    ctx.Accent,
+                    ctx.IsLight,
+                    1.0,
+                    LiquidGlassPreset.ClearDock,
+                    customBlurAmount: 36f,
+                    customTintOpacity: wantTintOpacity,
+                    customTintColor: baseTintColor);
+            }
+        }
+        else
+        {
+            HideOverlayDrawerGlassLayer(panel);
+        }
+    }
+
+    private Border? EnsureOverlayDrawerGlassLayer(Border panel)
+    {
+        if (panel.Child is not Grid innerGrid)
+        {
+            return null;
+        }
+
+        foreach (var child in innerGrid.Children)
+        {
+            if (child is Border b && string.Equals(b.Name, "LiquidGlassOverlaySurfaceLayer", StringComparison.Ordinal))
+            {
+                return b;
+            }
+        }
+
+        var layer = new Border
+        {
+            Name = "LiquidGlassOverlaySurfaceLayer",
+            IsHitTestVisible = false,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch
+        };
+        AutomationProperties.SetAutomationId(layer, SkipAdaptiveTextTag);
+        Grid.SetRow(layer, 0);
+        Grid.SetColumn(layer, 0);
+        Grid.SetRowSpan(layer, 99);
+        Grid.SetColumnSpan(layer, 99);
+        var bt = panel.BorderThickness;
+        var pad = panel.Padding;
+        layer.Margin = new Thickness(-(pad.Left + bt.Left), -(pad.Top + bt.Top), -(pad.Right + bt.Right), -(pad.Bottom + bt.Bottom));
+        innerGrid.Children.Insert(0, layer);
+        return layer;
+    }
+
+    private void HideOverlayDrawerGlassLayer(Border? panel)
+    {
+        if (panel?.Child is not Grid innerGrid)
+        {
+            return;
+        }
+
+        foreach (var child in innerGrid.Children)
+        {
+            if (child is Border b && string.Equals(b.Name, "LiquidGlassOverlaySurfaceLayer", StringComparison.Ordinal))
+            {
+                _glassHub.DetachOverlaySurfaceGlass(b);
+                b.Visibility = Visibility.Collapsed;
+                break;
+            }
+        }
     }
 
     private void PruneUnloadedAdaptiveEntries(bool isLightUi)
@@ -565,6 +710,7 @@ public sealed partial class MainWindow
                     UIElement? lensHost = (UIElement?)state.UnderlayHost ?? fe;
                     state.LensAttachment?.DetachAndDispose(lensHost);
                     state.LensAttachment = null;
+                    CleanupLensHostContainer(target, state);
                     staleSurfaces ??= new List<DependencyObject>();
                     staleSurfaces.Add(target);
                 }
@@ -605,9 +751,20 @@ public sealed partial class MainWindow
             _hookedAdaptiveScrollViewers.Add(sv, new object());
             sv.ViewChanged += (_, _) =>
             {
-                if (IsAdaptiveWallpaperTextActive)
+                if (IsLiquidLensPassActive)
                 {
-                    // 壁纸与边缘折射已由 DWM BackdropBrush 240Hz 硬件实时完成；此处仅轻量同步新滚入视口的虚拟化卡片与文字明暗
+                    _lastGlassScrollTickMs = Environment.TickCount64;
+                    EnsureGlassScrollVsyncAttached();
+
+                    long nowMs = Environment.TickCount64;
+                    if (IsWallpaperAdaptiveTextPassActive || (nowMs - _lastScrollTreeDiscoverMs) >= 160)
+                    {
+                        _lastScrollTreeDiscoverMs = nowMs;
+                        ScheduleAdaptiveWallpaperTextPass();
+                    }
+                }
+                else if (IsAdaptiveWallpaperTextActive)
+                {
                     ScheduleAdaptiveWallpaperTextPass();
                 }
             };
@@ -622,6 +779,14 @@ public sealed partial class MainWindow
             {
                 return;
             }
+        }
+
+        // 为可见独立小按钮/筛选 chip 挂载物理弹簧交互（不阻塞 Click/Toggle）
+        if (ctx.UseLiquidLens && node is ButtonBase btnBase &&
+            btnBase.ActualWidth is >= 18 and <= 380 &&
+            btnBase.ActualHeight is >= 18 and <= 84)
+        {
+            GlassSpringAnimator.Attach(btnBase, pressScale: 0.94f, hoverScale: 1.03f);
         }
 
         // 跳过不透明实心按钮（如主色选中按钮）、输入框、下拉框内部文字，绝不破坏固定白字或白底输入字色
@@ -670,23 +835,134 @@ public sealed partial class MainWindow
 
     private static readonly SolidColorBrush s_transparentBorderBrush = new(Color.FromArgb(0, 0, 0, 0));
 
+    private static void CleanupLensHostContainer(DependencyObject target, VeilSurfaceState state)
+    {
+        if (state.WrapperGrid != null && target is Border wrappedBorder)
+        {
+            try
+            {
+                if (state.UnderlayHost != null)
+                {
+                    state.WrapperGrid.Children.Remove(state.UnderlayHost);
+                }
+                if (state.WrappedOriginalChild != null)
+                {
+                    state.WrapperGrid.Children.Remove(state.WrappedOriginalChild);
+                }
+                if (ReferenceEquals(wrappedBorder.Child, state.WrapperGrid))
+                {
+                    wrappedBorder.Child = state.WrappedOriginalChild;
+                }
+            }
+            catch
+            {
+            }
+            state.WrapperGrid = null;
+            state.WrappedOriginalChild = null;
+            state.UnderlayHost = null;
+            state.UnderlayParentPanel = null;
+            return;
+        }
+
+        if (state.CreatedEmptyBorderChild && target is Border emptyBorder)
+        {
+            try
+            {
+                if (ReferenceEquals(emptyBorder.Child, state.UnderlayHost))
+                {
+                    emptyBorder.Child = null;
+                }
+            }
+            catch
+            {
+            }
+            state.CreatedEmptyBorderChild = false;
+            state.UnderlayHost = null;
+            return;
+        }
+
+        if (state.UnderlayHost != null && state.UnderlayParentPanel != null)
+        {
+            try
+            {
+                state.UnderlayParentPanel.Children.Remove(state.UnderlayHost);
+            }
+            catch
+            {
+            }
+            state.UnderlayHost = null;
+            state.UnderlayParentPanel = null;
+        }
+    }
+
     private static FrameworkElement EnsureOrUpdateLensHostElement(FrameworkElement fe, VeilSurfaceState state)
     {
-        if (fe is Border cardBorder && cardBorder.Child is Grid innerGrid)
+        if (fe is Border cardBorder)
         {
-            if (state.UnderlayHost == null || !ReferenceEquals(state.UnderlayParentPanel, innerGrid))
+            bool hasHostAttached = false;
+            if (state.CreatedEmptyBorderChild && ReferenceEquals(cardBorder.Child, state.UnderlayHost))
             {
-                if (state.UnderlayHost != null && state.UnderlayParentPanel != null)
+                hasHostAttached = true;
+            }
+            else if (cardBorder.Child is Grid innerGrid)
+            {
+                if (state.UnderlayHost == null || !ReferenceEquals(state.UnderlayParentPanel, innerGrid))
                 {
-                    try
+                    if (state.UnderlayHost != null && state.UnderlayParentPanel != null)
                     {
-                        state.UnderlayParentPanel.Children.Remove(state.UnderlayHost);
+                        try
+                        {
+                            state.UnderlayParentPanel.Children.Remove(state.UnderlayHost);
+                        }
+                        catch
+                        {
+                        }
                     }
-                    catch
-                    {
-                    }
-                }
 
+                    var host = new Border
+                    {
+                        IsHitTestVisible = false,
+                        Background = null,
+                        HorizontalAlignment = HorizontalAlignment.Stretch,
+                        VerticalAlignment = VerticalAlignment.Stretch
+                    };
+                    AutomationProperties.SetAutomationId(host, SkipAdaptiveTextTag);
+                    Grid.SetRow(host, 0);
+                    Grid.SetColumn(host, 0);
+                    Grid.SetRowSpan(host, 99);
+                    Grid.SetColumnSpan(host, 99);
+
+                    innerGrid.Children.Insert(0, host);
+                    state.UnderlayHost = host;
+                    state.UnderlayParentPanel = innerGrid;
+                }
+                hasHostAttached = true;
+            }
+            else if (cardBorder.Child == null)
+            {
+                if (state.UnderlayHost == null || !state.CreatedEmptyBorderChild)
+                {
+                    var host = new Border
+                    {
+                        IsHitTestVisible = false,
+                        Background = null,
+                        HorizontalAlignment = HorizontalAlignment.Stretch,
+                        VerticalAlignment = VerticalAlignment.Stretch
+                    };
+                    AutomationProperties.SetAutomationId(host, SkipAdaptiveTextTag);
+                    cardBorder.Child = host;
+                    state.UnderlayHost = host;
+                    state.CreatedEmptyBorderChild = true;
+                }
+                hasHostAttached = true;
+            }
+            else if (cardBorder.Child is UIElement nonGridChild)
+            {
+                var wrapper = new Grid
+                {
+                    HorizontalAlignment = HorizontalAlignment.Stretch,
+                    VerticalAlignment = VerticalAlignment.Stretch
+                };
                 var host = new Border
                 {
                     IsHitTestVisible = false,
@@ -695,29 +971,41 @@ public sealed partial class MainWindow
                     VerticalAlignment = VerticalAlignment.Stretch
                 };
                 AutomationProperties.SetAutomationId(host, SkipAdaptiveTextTag);
-                Grid.SetRow(host, 0);
-                Grid.SetColumn(host, 0);
-                Grid.SetRowSpan(host, 99);
-                Grid.SetColumnSpan(host, 99);
 
-                innerGrid.Children.Insert(0, host);
+                cardBorder.Child = null;
+                wrapper.Children.Add(host);
+                wrapper.Children.Add(nonGridChild);
+                cardBorder.Child = wrapper;
+
+                state.WrapperGrid = wrapper;
+                state.WrappedOriginalChild = nonGridChild;
                 state.UnderlayHost = host;
-                state.UnderlayParentPanel = innerGrid;
+                state.UnderlayParentPanel = wrapper;
+                hasHostAttached = true;
             }
 
-            var pad = cardBorder.Padding;
-            var bt = cardBorder.BorderThickness;
-            var wantMargin = new Thickness(
-                -(pad.Left + bt.Left),
-                -(pad.Top + bt.Top),
-                -(pad.Right + bt.Right),
-                -(pad.Bottom + bt.Bottom));
-            if (state.UnderlayHost.Margin != wantMargin)
+            if (hasHostAttached && state.UnderlayHost != null)
             {
-                state.UnderlayHost.Margin = wantMargin;
+                if (state.CreatedEmptyBorderChild)
+                {
+                    state.UnderlayHost.Margin = new Thickness(0);
+                }
+                else
+                {
+                    var pad = cardBorder.Padding;
+                    var bt = cardBorder.BorderThickness;
+                    var wantMargin = new Thickness(
+                        -(pad.Left + bt.Left),
+                        -(pad.Top + bt.Top),
+                        -(pad.Right + bt.Right),
+                        -(pad.Bottom + bt.Bottom));
+                    if (state.UnderlayHost.Margin != wantMargin)
+                    {
+                        state.UnderlayHost.Margin = wantMargin;
+                    }
+                }
+                return state.UnderlayHost;
             }
-
-            return state.UnderlayHost;
         }
 
         return fe;
@@ -728,7 +1016,7 @@ public sealed partial class MainWindow
         if (!ctx.UseLiquidLens)
             return false;
 
-        // 左侧导航栏、紧凑胶囊按钮与章节文字标题保持轻盈纯净（章节标题已由逐字对比度引擎自适应变白/变深，无需再套矩形贴纸框）
+        // 左侧导航栏、紧凑胶囊按钮与章节文字标题不走 SDF 边缘强拉拽
         if (fe is NavigationView or NavigationViewItem or Button)
             return false;
 
@@ -740,6 +1028,12 @@ public sealed partial class MainWindow
             return false;
 
         bool isHeroCard = ReferenceEquals(fe, DailyHeroCardBorder) || ReferenceEquals(fe, FmHeroCardBorder);
+        bool isClearDock = IsPassUnderOverlayElement(fe);
+        // 避免大型外层区块盒（如 PageMarketCard 容纳 55 张市场卡）阻断内部单张卡片挂载 SDF 折射
+        if (!isHeroCard && !isClearDock && fe.ActualHeight > 420)
+            return false;
+
+        LiquidGlassPreset targetPreset = isClearDock ? LiquidGlassPreset.ClearDock : LiquidGlassPreset.FrostedFolder;
         Brush? effective = fe.GetValue(bgProp) as Brush;
 
         _veilSurfaceStates.TryGetValue(fe, out var existingState);
@@ -749,28 +1043,36 @@ public sealed partial class MainWindow
         if (!isHeroCard && !alreadyManagedByUs && effective is not LiquidGlassCompositionBrush)
             return false;
 
-        if (fe.ActualWidth < 40 || fe.ActualHeight < 40)
+        double minH = isClearDock ? 26 : 40;
+        if (fe.ActualWidth < 40 || fe.ActualHeight < minH)
             return true;
 
         VeilSurfaceState state = existingState ?? TrackVeilSurface(fe, bgProp);
         state.ForceDarkSurface = isHeroCard;
-        state.CachedIntensity = ReferenceEquals(fe, BottomPlayBarBorder)
-            ? 1.15
+        state.Preset = targetPreset;
+        state.CachedIntensity = isClearDock
+            ? 1.05
             : isHeroCard
-                ? 1.16
-                : 1.08;
+                ? 1.08
+                : 1.02;
 
-        // 首页双英雄大卡在液态玻璃模式下赋予实时清澈水晶画刷
+        // 首页双英雄大卡在液态玻璃模式下赋予 FrostedFolder 中心磨砂双通道画刷
         if (isHeroCard)
         {
             bool surfLight = false;
-            if (state.OwnGlassBrush == null || state.OwnGlassBrush.IsLight != surfLight)
+            if (state.OwnGlassBrush == null ||
+                state.OwnGlassBrush.IsLight != surfLight ||
+                state.OwnGlassBrush.Preset != LiquidGlassPreset.FrostedFolder)
             {
                 state.OwnGlassBrush = new LiquidGlassCompositionBrush(
                     ctx.Accent,
                     surfLight,
                     intensity: state.CachedIntensity,
-                    blurAmount: 0.45f);
+                    preset: LiquidGlassPreset.FrostedFolder);
+                if (state.IsBackgroundOverriddenByUs)
+                {
+                    fe.SetValue(bgProp, state.OwnGlassBrush);
+                }
             }
 
             if (!state.IsBackgroundOverriddenByUs)
@@ -780,24 +1082,64 @@ public sealed partial class MainWindow
             }
         }
 
-        // 隐藏卡片自带的平面 1px XAML 灰白描边，完全交由原生 3D 水滴立体唇边呈现（切回普通主题时 100% 还原）
-        if (fe is Border glassBorder && !state.IsBorderBrushOverridden)
+        // 隐藏卡片自带的平面 1px XAML 灰白描边，完全交由原生 2.5dp 切线菲涅尔冷光呈现（仅在参数变更时分配一次，避免滚屏 GC）
+        if (fe is Border glassBorder)
         {
-            var origBb = glassBorder.ReadLocalValue(Border.BorderBrushProperty);
-            state.HadOriginalLocalBorderBrush = origBb != DependencyProperty.UnsetValue;
-            state.OriginalLocalBorderBrush = origBb;
-            glassBorder.BorderBrush = s_transparentBorderBrush;
-            state.IsBorderBrushOverridden = true;
+            bool surfLightForBorder = !state.ForceDarkSurface && ctx.IsLight;
+            if (!state.IsBorderBrushOverridden)
+            {
+                var origBb = glassBorder.ReadLocalValue(Border.BorderBrushProperty);
+                state.HadOriginalLocalBorderBrush = origBb != DependencyProperty.UnsetValue;
+                state.OriginalLocalBorderBrush = origBb;
+                state.IsBorderBrushOverridden = true;
+                state.BorderBrushAssigned = false;
+            }
+
+            if (!state.BorderBrushAssigned ||
+                state.LastBorderIsLight != surfLightForBorder ||
+                state.LastBorderPreset != targetPreset)
+            {
+                glassBorder.BorderBrush = ThemeService.CreateLiquidGlassBorderBrush(
+                    Color.FromArgb(0, 0, 0, 0),
+                    state.CachedIntensity,
+                    surfLightForBorder,
+                    targetPreset);
+                state.BorderBrushAssigned = true;
+                state.LastBorderIsLight = surfLightForBorder;
+                state.LastBorderPreset = targetPreset;
+            }
+
+            if (glassBorder.BorderThickness == default)
+            {
+                glassBorder.BorderThickness = new Thickness(1);
+            }
         }
 
         ApplySmoothRoundedGlassClip(fe, state);
 
-        double radius = ResolveElementCornerRadius(fe);
-        if (radius >= 4.0)
+        if (!isClearDock && fe.ActualHeight <= 380 && fe.ActualWidth <= 600)
         {
-            state.LensAttachment ??= new OpticalGlassAttachment();
+            GlassSpringAnimator.Attach(fe, pressScale: 0.985f, hoverScale: 1.01f);
+        }
+
+        bool isPassUnderOverlay = IsPassUnderOverlayElement(fe);
+        var (preWinX, preWinY) = ResolveWindowOffset(fe);
+        bool inViewport = (preWinY + fe.ActualHeight >= -40.0) && (preWinY <= ctx.WinH + 40.0);
+        bool allowWin2DSurface = isClearDock || isHeroCard || (inViewport && _mountedCardRefractiveCount < 6);
+
+        double radius = ResolveElementCornerRadius(fe);
+        if (radius >= 4.0 && allowWin2DSurface)
+        {
+            if (!isClearDock && !isHeroCard)
+            {
+                _mountedCardRefractiveCount++;
+            }
+
+            state.LensAttachment ??= new OpticalLiquidGlassRenderer.LensAttachment();
             bool surfLight = !state.ForceDarkSurface && ctx.IsLight;
             FrameworkElement lensHost = EnsureOrUpdateLensHostElement(fe, state);
+            var (winX, winY) = ResolveWindowOffset(lensHost);
+            var sceneBmp = _liquidSceneProvider.BackgroundSceneBitmap;
             _opticalGlassRenderer.AttachOrUpdateLensVisual(
                 lensHost,
                 state.LensAttachment,
@@ -805,16 +1147,40 @@ public sealed partial class MainWindow
                 surfLight,
                 state.CachedIntensity,
                 fe.ActualWidth,
-                fe.ActualHeight);
+                fe.ActualHeight,
+                targetPreset,
+                sceneBmp,
+                winX,
+                winY);
+
+            if (isPassUnderOverlay &&
+                state.LensAttachment.Win2DState.CustomUnderlayLayer != null &&
+                VisualTreeHelper.GetParent(MainNavView) is Grid bodyHostGrid)
+            {
+                _glassHub.AttachOrUpdateDockPassUnderRefraction(
+                    state.LensAttachment.Win2DState.CustomUnderlayLayer,
+                    bodyHostGrid,
+                    RootLayout,
+                    fe.ActualWidth,
+                    fe.ActualHeight,
+                    radius,
+                    winX,
+                    winY,
+                    surfLight);
+            }
         }
         else if (state.LensAttachment != null)
         {
-            // 例如底部播放栏从悬浮灵动岛切为贴底直角（CornerRadius=0）时，自动移除圆角折射环
+            if (isPassUnderOverlay)
+            {
+                _glassHub.DetachDockPassUnder(state.LensAttachment.Win2DState.CustomUnderlayLayer);
+            }
             UIElement? lensHost = (UIElement?)state.UnderlayHost ?? fe;
             state.LensAttachment.DetachAndDispose(lensHost);
             state.LensAttachment = null;
         }
 
+        _ = preWinX;
         return true;
     }
 
@@ -957,15 +1323,15 @@ public sealed partial class MainWindow
                 border.BackgroundSizing = BackgroundSizing.OuterBorderEdge;
             }
 
-            // 为大尺寸液态玻璃卡片赋予饱满的 24px 水滴圆角（对标效果图大斜面圆角，歌单小卡保持原有紧凑圆角）
-            if (fe.ActualWidth >= 280 && fe.ActualHeight >= 110 && border.CornerRadius.TopLeft is >= 8 and < 24)
+            // 为内容区卡片升级为饱满的 22px 水滴圆角，使 18px 圆角凸透镜折射弧线完整展现
+            if (fe.ActualWidth >= 180 && fe.ActualHeight >= 56 && border.CornerRadius.TopLeft is >= 8 and < 22)
             {
                 if (!state.CornerRadiusTouched)
                 {
                     state.OriginalCornerRadius = border.CornerRadius;
                     state.CornerRadiusTouched = true;
                 }
-                border.CornerRadius = new CornerRadius(24);
+                border.CornerRadius = new CornerRadius(22);
             }
         }
 
@@ -984,6 +1350,8 @@ public sealed partial class MainWindow
                     {
                         bool surfLight = !st.ForceDarkSurface && IsCurrentUiLightMode;
                         FrameworkElement lensHost = EnsureOrUpdateLensHostElement(el, st);
+                        var (winX, winY) = ResolveWindowOffset(lensHost);
+                        var sceneBmp = _liquidSceneProvider.BackgroundSceneBitmap;
                         _opticalGlassRenderer.AttachOrUpdateLensVisual(
                             lensHost,
                             st.LensAttachment,
@@ -991,7 +1359,27 @@ public sealed partial class MainWindow
                             surfLight,
                             st.CachedIntensity,
                             el.ActualWidth,
-                            el.ActualHeight);
+                            el.ActualHeight,
+                            st.Preset,
+                            sceneBmp,
+                            winX,
+                            winY);
+
+                        if (IsPassUnderOverlayElement(el) &&
+                            st.LensAttachment.Win2DState.CustomUnderlayLayer != null &&
+                            VisualTreeHelper.GetParent(MainNavView) is Grid bodyHostGrid)
+                        {
+                            _glassHub.AttachOrUpdateDockPassUnderRefraction(
+                                st.LensAttachment.Win2DState.CustomUnderlayLayer,
+                                bodyHostGrid,
+                                RootLayout,
+                                el.ActualWidth,
+                                el.ActualHeight,
+                                rad,
+                                winX,
+                                winY,
+                                surfLight);
+                        }
                     }
                 }
             };
@@ -1041,6 +1429,311 @@ public sealed partial class MainWindow
         };
         _veilSurfaceStates[element] = created;
         return created;
+    }
+
+    private (float WinX, float WinY) ResolveWindowOffset(FrameworkElement el)
+    {
+        try
+        {
+            var pt = el.TransformToVisual(RootLayout).TransformPoint(new Point(0, 0));
+            return ((float)pt.X, (float)pt.Y);
+        }
+        catch
+        {
+            return (0f, 0f);
+        }
+    }
+
+    private void EnsureGlassScrollVsyncAttached()
+    {
+        if (_isGlassScrollVsyncAttached)
+            return;
+
+        CompositionTarget.Rendering += OnLiquidGlassScrollVsyncRendering;
+        _isGlassScrollVsyncAttached = true;
+    }
+
+    private void DetachGlassScrollVsync()
+    {
+        if (!_isGlassScrollVsyncAttached)
+            return;
+
+        CompositionTarget.Rendering -= OnLiquidGlassScrollVsyncRendering;
+        _isGlassScrollVsyncAttached = false;
+    }
+
+    private void OnLiquidGlassScrollVsyncRendering(object? sender, object args)
+    {
+        if (!IsLiquidLensPassActive || !IsMainWindowActivelyVisible())
+        {
+            DetachGlassScrollVsync();
+            return;
+        }
+
+        TimeSpan rt = args is RenderingEventArgs rea ? rea.RenderingTime : TimeSpan.Zero;
+        bool dynamicAlreadyRenderedThisTick = rt != TimeSpan.Zero && rt == _lastDynamicRenderTime;
+        if (!dynamicAlreadyRenderedThisTick)
+        {
+            // BottomPlayBarBorder 的穿底封面折射已由 GlassHub CompositionVisualSurface 在 DWM 硬件线程 0ms 驱动；
+            // 此处仅刷新发生了位移的可视卡片，零冗杂重绘
+            RefreshMountedLiquidLensVisuals(dockOnly: false, onlyMoved: true);
+        }
+
+        if (Environment.TickCount64 - _lastGlassScrollTickMs > 220)
+        {
+            DetachGlassScrollVsync();
+            ScheduleAdaptiveWallpaperTextPass();
+        }
+    }
+
+    private void EnsureLiquidSceneFrameReady(CustomThemeProfile profile, bool isLight, Color accent)
+    {
+        double w = RootLayout.ActualWidth;
+        double h = RootLayout.ActualHeight;
+        if (w < 80 || h < 80)
+        {
+            return;
+        }
+
+        bool isDynamicFluid = (profile.BackdropType ?? "Mica") is "Aurora" or "CoverFlow";
+        SetUnderlyingXamlAuroraOrbsSuppressed(isDynamicFluid);
+
+        double pShiftX = 0, pShiftY = 0;
+        if (profile.EnablePointerInteraction && _pointerCoordsInitialized)
+        {
+            pShiftX = Math.Clamp((_curPointerX - w * 0.5) / w, -0.5, 0.5) * 44.0;
+            pShiftY = Math.Clamp((_curPointerY - h * 0.5) / h, -0.5, 0.5) * 32.0;
+        }
+
+        if (string.Equals(profile.BackdropType, "Image", StringComparison.OrdinalIgnoreCase) &&
+            !string.IsNullOrWhiteSpace(profile.BackgroundImagePath) &&
+            !string.Equals(_preloadingWallpaperPath, profile.BackgroundImagePath, StringComparison.OrdinalIgnoreCase))
+        {
+            _preloadingWallpaperPath = profile.BackgroundImagePath;
+            _ = PreloadLiquidWallpaperAsync(profile.BackgroundImagePath);
+        }
+
+        try
+        {
+            var device = _opticalGlassRenderer.SharedCanvasDevice;
+            _liquidSceneProvider.EnsureBgSceneReady(
+                device,
+                GlobalAuroraCanvas,
+                w,
+                h,
+                profile,
+                isLight,
+                accent,
+                _curAuroraC1,
+                _curAuroraC2,
+                _curAuroraC3,
+                _auroraPhase,
+                pShiftX,
+                pShiftY);
+        }
+        catch
+        {
+        }
+    }
+
+    private async Task PreloadLiquidWallpaperAsync(string path)
+    {
+        try
+        {
+            await _liquidSceneProvider.EnsureWallpaperLoadedAsync(path);
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                if (IsLiquidLensPassActive)
+                {
+                    ScheduleAdaptiveWallpaperTextPass(immediate: false);
+                }
+            });
+        }
+        catch
+        {
+        }
+    }
+
+    private void RefreshDynamicLiquidGlassRibbonsFrame(CustomThemeProfile profile, bool isLight, Color accent, TimeSpan renderTime = default)
+    {
+        if (!IsLiquidLensPassActive)
+        {
+            return;
+        }
+
+        long now = Environment.TickCount64;
+        int minIntervalMs = (_isGlassScrollVsyncAttached || _pointerEnergy > 0.02f) ? 0 : 10;
+        if (minIntervalMs > 0 && (now - _lastDynamicSdfRefreshMs) < minIntervalMs)
+        {
+            return;
+        }
+
+        double w = Math.Max(1.0, RootLayout.ActualWidth);
+        double h = Math.Max(1.0, RootLayout.ActualHeight);
+        double pShiftX = 0, pShiftY = 0;
+        if (profile.EnablePointerInteraction && _pointerCoordsInitialized)
+        {
+            pShiftX = Math.Clamp((_curPointerX - w * 0.5) / w, -0.5, 0.5) * 44.0;
+            pShiftY = Math.Clamp((_curPointerY - h * 0.5) / h, -0.5, 0.5) * 32.0;
+        }
+
+        if (!_isGlassScrollVsyncAttached &&
+            !double.IsNaN(_lastRenderedAuroraPhase) &&
+            Math.Abs(_auroraPhase - _lastRenderedAuroraPhase) < 0.0025 &&
+            Math.Abs(pShiftX - _lastRenderedPShiftX) < 0.25 &&
+            Math.Abs(pShiftY - _lastRenderedPShiftY) < 0.25)
+        {
+            return;
+        }
+
+        _lastDynamicSdfRefreshMs = now;
+        _lastRenderedAuroraPhase = _auroraPhase;
+        _lastRenderedPShiftX = pShiftX;
+        _lastRenderedPShiftY = pShiftY;
+
+        EnsureLiquidSceneFrameReady(profile, isLight, accent);
+        RefreshMountedLiquidLensVisuals(dockOnly: false);
+        if (renderTime != TimeSpan.Zero)
+        {
+            _lastDynamicRenderTime = renderTime;
+        }
+    }
+
+    private void RefreshMountedLiquidLensVisuals(
+        bool dockOnly,
+        bool onlyMoved = false)
+    {
+        if (_veilSurfaceStates.Count == 0 || !IsLiquidLensPassActive)
+        {
+            return;
+        }
+
+        bool isUiLight = IsCurrentUiLightMode;
+        double winH = RootLayout.ActualHeight;
+        Grid? bodyHostGrid = null;
+
+        foreach (var (target, state) in _veilSurfaceStates)
+        {
+            if (state.LensAttachment == null || target is not FrameworkElement fe || !fe.IsLoaded)
+            {
+                continue;
+            }
+
+            if ((ReferenceEquals(target, QueueDrawerPanel) && QueueDrawerOverlay?.Visibility != Visibility.Visible) ||
+                (ReferenceEquals(target, AddToPlaylistDrawerPanel) && AddToPlaylistDrawerOverlay?.Visibility != Visibility.Visible))
+            {
+                continue;
+            }
+
+            bool isPassUnderOverlay = IsPassUnderOverlayElement(target);
+            if (dockOnly && !isPassUnderOverlay)
+            {
+                continue;
+            }
+
+            FrameworkElement lensHost = (FrameworkElement?)state.UnderlayHost ?? fe;
+            var (winX, winY) = ResolveWindowOffset(lensHost);
+            if (winY + fe.ActualHeight < -24 || winY > winH + 24)
+            {
+                continue;
+            }
+
+            if (onlyMoved)
+            {
+                var ws = state.LensAttachment.Win2DState;
+                bool moved = float.IsNaN(ws.LastWinX) ||
+                             float.IsNaN(ws.LastWinY) ||
+                             MathF.Abs(winX - ws.LastWinX) >= 0.35f ||
+                             MathF.Abs(winY - ws.LastWinY) >= 0.35f;
+                if (!moved)
+                {
+                    continue;
+                }
+            }
+
+            double radius = ResolveElementCornerRadius(fe);
+            if (radius < 4.0)
+            {
+                continue;
+            }
+
+            bool surfLight = !state.ForceDarkSurface && isUiLight;
+            var sceneBmp = _liquidSceneProvider.BackgroundSceneBitmap;
+
+            _opticalGlassRenderer.AttachOrUpdateLensVisual(
+                lensHost,
+                state.LensAttachment,
+                radius,
+                surfLight,
+                state.CachedIntensity,
+                fe.ActualWidth,
+                fe.ActualHeight,
+                state.Preset,
+                sceneBmp,
+                winX,
+                winY);
+
+            if (isPassUnderOverlay && state.LensAttachment.Win2DState.CustomUnderlayLayer != null)
+            {
+                bodyHostGrid ??= VisualTreeHelper.GetParent(MainNavView) as Grid;
+                if (bodyHostGrid != null)
+                {
+                    _glassHub.AttachOrUpdateDockPassUnderRefraction(
+                        state.LensAttachment.Win2DState.CustomUnderlayLayer,
+                        bodyHostGrid,
+                        RootLayout,
+                        fe.ActualWidth,
+                        fe.ActualHeight,
+                        radius,
+                        winX,
+                        winY,
+                        surfLight);
+                }
+            }
+        }
+    }
+
+    public void UpdateAllLiquidGlassPointerHighlights(Point rootPoint, bool isPointerInsideWindow)
+    {
+        if (_veilSurfaceStates.Count == 0)
+        {
+            return;
+        }
+
+        float rx = (float)rootPoint.X;
+        float ry = (float)rootPoint.Y;
+
+        foreach (var (_, state) in _veilSurfaceStates)
+        {
+            if (state.LensAttachment == null)
+            {
+                continue;
+            }
+
+            var wState = state.LensAttachment.Win2DState;
+            if (!isPointerInsideWindow || float.IsNaN(wState.LastWinX) || float.IsNaN(wState.LastWinY))
+            {
+                _opticalGlassRenderer.UpdatePointerGlow(state.LensAttachment, 0f, 0f, false);
+                continue;
+            }
+
+            float localX = rx - wState.LastWinX;
+            float localY = ry - wState.LastWinY;
+
+            // 快速包围盒剔除，彻底消除鼠标高速移动时向全屏卡片下发 TransformToVisual 与 COM Visual 更新的开销
+            if (localX < -165f || localY < -165f ||
+                localX > (float)wState.LastWidth + 165f ||
+                localY > (float)wState.LastHeight + 165f)
+            {
+                if (wState.PointerGlowVisual is { Opacity: > 0.001f })
+                {
+                    _opticalGlassRenderer.UpdatePointerGlow(state.LensAttachment, 0f, 0f, false);
+                }
+                continue;
+            }
+
+            _opticalGlassRenderer.UpdatePointerGlow(state.LensAttachment, localX, localY, true);
+        }
     }
 
     private void ApplyTitleBarVeilGradient(in AdaptivePassContext ctx)

@@ -6,6 +6,7 @@
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
                 <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
+                <ResourceDictionary Source="ms-appx:///Themes/Generic.xaml" />
             </ResourceDictionary.MergedDictionaries>
 
             <!-- 品牌主色：纯色画刷（供全窗口文字、矢量图标、进度环、描边等原地实时变色，避免类型替换断联） -->
@@ -19,6 +20,8 @@
             <SolidColorBrush x:Key="ThemePlayBarSliderBrush" Color="#10B981" />
             <SolidColorBrush x:Key="SecondaryPillFillBrush" Color="#1864748B" />
             <SolidColorBrush x:Key="SecondaryPillBorderBrush" Color="#2494A3B8" />
+            <SolidColorBrush x:Key="GlassButtonHoverBrush" Color="#26FFFFFF" />
+            <SolidColorBrush x:Key="GlassButtonPressedBrush" Color="#38FFFFFF" />
 
             <!-- 品牌双色流光线性渐变画刷（供主操作按钮、选中态胶囊、底部圆形主播放按钮原地实时变色并呈现流光渐变） -->
             <LinearGradientBrush x:Key="BrandAccentFillBrush" StartPoint="0,0" EndPoint="1,1">
@@ -34,17 +37,20 @@
                 <GradientStop Color="#047857" Offset="1.0" />
             </LinearGradientBrush>
             <LinearGradientBrush x:Key="ThemePlayButtonBrush" StartPoint="0,0" EndPoint="1,1">
-                <GradientStop Color="#10B981" Offset="0.0" />
-                <GradientStop Color="#10B981" Offset="1.0" />
+                <GradientStop Color="#3DCBF5" Offset="0.0" />
+                <GradientStop Color="#3DCBF5" Offset="1.0" />
             </LinearGradientBrush>
             <LinearGradientBrush x:Key="ThemePlayButtonHoverBrush" StartPoint="0,0" EndPoint="1,1">
-                <GradientStop Color="#059669" Offset="0.0" />
-                <GradientStop Color="#059669" Offset="1.0" />
+                <GradientStop Color="#2BB8E3" Offset="0.0" />
+                <GradientStop Color="#2BB8E3" Offset="1.0" />
             </LinearGradientBrush>
             <LinearGradientBrush x:Key="ThemePlayButtonPressedBrush" StartPoint="0,0" EndPoint="1,1">
-                <GradientStop Color="#047857" Offset="0.0" />
-                <GradientStop Color="#047857" Offset="1.0" />
+                <GradientStop Color="#1CA2CC" Offset="0.0" />
+                <GradientStop Color="#1CA2CC" Offset="1.0" />
             </LinearGradientBrush>
+            <SolidColorBrush x:Key="QueuePlayingRowFillBrush" Color="#243DCBF5" />
+            <SolidColorBrush x:Key="QueuePlayingRowStrokeBrush" Color="#553DCBF5" />
+            <SolidColorBrush x:Key="QueueDrawerActivePlayCircleBrush" Color="#3DCBF5" />
 
             <!-- Windows 11 标准设置项卡片样式 (圆角动态跟随主题 ControlCornerRadius) -->
             <Style x:Key="FluentSettingsCardStyle" TargetType="Border">
@@ -75,12 +81,12 @@
                 <Setter Property="Padding" Value="14,12" />
             </Style>
 
-            <!-- 无边框轻量媒体图标按钮（悬停高亮底色与图标反馈动态跟随当前主题色） -->
+            <!-- 无边框轻量媒体图标按钮（默认完全透明无边框，仅悬停时出现 #26FFFFFF 玻璃底） -->
             <Style x:Key="TransportIconButtonStyle" TargetType="Button">
                 <Setter Property="Background" Value="Transparent" />
                 <Setter Property="Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}" />
                 <Setter Property="BorderBrush" Value="Transparent" />
-                <Setter Property="BorderThickness" Value="1" />
+                <Setter Property="BorderThickness" Value="0" />
                 <Setter Property="CornerRadius" Value="{ThemeResource ControlCornerRadius}" />
                 <Setter Property="Padding" Value="8,6" />
                 <Setter Property="MinWidth" Value="36" />
@@ -93,9 +99,9 @@
                         <ControlTemplate TargetType="Button">
                             <Grid
                                 x:Name="RootGrid"
-                                Background="{TemplateBinding Background}"
-                                BorderBrush="{TemplateBinding BorderBrush}"
-                                BorderThickness="{TemplateBinding BorderThickness}"
+                                Background="Transparent"
+                                BorderBrush="Transparent"
+                                BorderThickness="0"
                                 CornerRadius="{TemplateBinding CornerRadius}">
                                 <VisualStateManager.VisualStateGroups>
                                     <VisualStateGroup x:Name="CommonStates">
@@ -103,23 +109,14 @@
                                         <VisualState x:Name="PointerOver">
                                             <Storyboard>
                                                 <ObjectAnimationUsingKeyFrames Storyboard.TargetName="RootGrid" Storyboard.TargetProperty="Background">
-                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="{StaticResource BrandAccentSubtleBrush}" />
-                                                </ObjectAnimationUsingKeyFrames>
-                                                <ObjectAnimationUsingKeyFrames Storyboard.TargetName="RootGrid" Storyboard.TargetProperty="BorderBrush">
-                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="{StaticResource BrandAccentBorderSubtleBrush}" />
-                                                </ObjectAnimationUsingKeyFrames>
-                                                <ObjectAnimationUsingKeyFrames Storyboard.TargetName="ContentPresenter" Storyboard.TargetProperty="Foreground">
-                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="{StaticResource BrandAccentBrush}" />
+                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="{StaticResource GlassButtonHoverBrush}" />
                                                 </ObjectAnimationUsingKeyFrames>
                                             </Storyboard>
                                         </VisualState>
                                         <VisualState x:Name="Pressed">
                                             <Storyboard>
                                                 <ObjectAnimationUsingKeyFrames Storyboard.TargetName="RootGrid" Storyboard.TargetProperty="Background">
-                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="{StaticResource BrandAccentPressedSubtleBrush}" />
-                                                </ObjectAnimationUsingKeyFrames>
-                                                <ObjectAnimationUsingKeyFrames Storyboard.TargetName="ContentPresenter" Storyboard.TargetProperty="Foreground">
-                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="{StaticResource BrandAccentPressedBrush}" />
+                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="{StaticResource GlassButtonPressedBrush}" />
                                                 </ObjectAnimationUsingKeyFrames>
                                             </Storyboard>
                                         </VisualState>
@@ -144,7 +141,7 @@
                 </Setter>
             </Style>
 
-            <!-- 上一首 / 下一首专用按钮样式（鼠标悬停时提供主题色/流光渐变填充与纯白图标反馈） -->
+            <!-- 上一首 / 下一首专用按钮样式（默认完全透明无边框，仅悬停时出现 #26FFFFFF 玻璃底） -->
             <Style x:Key="TransportPrevNextButtonStyle" TargetType="Button">
                 <Setter Property="Width" Value="38" />
                 <Setter Property="Height" Value="38" />
@@ -152,6 +149,7 @@
                 <Setter Property="Padding" Value="0" />
                 <Setter Property="Background" Value="Transparent" />
                 <Setter Property="Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}" />
+                <Setter Property="BorderBrush" Value="Transparent" />
                 <Setter Property="BorderThickness" Value="0" />
                 <Setter Property="VerticalAlignment" Value="Center" />
                 <Setter Property="HorizontalContentAlignment" Value="Center" />
@@ -161,7 +159,7 @@
                         <ControlTemplate TargetType="Button">
                             <Grid
                                 x:Name="RootGrid"
-                                Background="{TemplateBinding Background}"
+                                Background="Transparent"
                                 CornerRadius="{TemplateBinding CornerRadius}">
                                 <VisualStateManager.VisualStateGroups>
                                     <VisualStateGroup x:Name="CommonStates">
@@ -169,20 +167,14 @@
                                         <VisualState x:Name="PointerOver">
                                             <Storyboard>
                                                 <ObjectAnimationUsingKeyFrames Storyboard.TargetName="RootGrid" Storyboard.TargetProperty="Background">
-                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="{StaticResource BrandAccentFillBrush}" />
-                                                </ObjectAnimationUsingKeyFrames>
-                                                <ObjectAnimationUsingKeyFrames Storyboard.TargetName="ContentPresenter" Storyboard.TargetProperty="Foreground">
-                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="White" />
+                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="{StaticResource GlassButtonHoverBrush}" />
                                                 </ObjectAnimationUsingKeyFrames>
                                             </Storyboard>
                                         </VisualState>
                                         <VisualState x:Name="Pressed">
                                             <Storyboard>
                                                 <ObjectAnimationUsingKeyFrames Storyboard.TargetName="RootGrid" Storyboard.TargetProperty="Background">
-                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="{StaticResource BrandAccentPressedFillBrush}" />
-                                                </ObjectAnimationUsingKeyFrames>
-                                                <ObjectAnimationUsingKeyFrames Storyboard.TargetName="ContentPresenter" Storyboard.TargetProperty="Foreground">
-                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="White" />
+                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="{StaticResource GlassButtonPressedBrush}" />
                                                 </ObjectAnimationUsingKeyFrames>
                                             </Storyboard>
                                         </VisualState>
@@ -213,7 +205,7 @@
                 <Setter Property="Height" Value="42" />
                 <Setter Property="CornerRadius" Value="21" />
                 <Setter Property="Padding" Value="0" />
-                <Setter Property="Background" Value="{StaticResource ThemePlayButtonBrush}" />
+                <Setter Property="Background" Value="{ThemeResource ThemePlayButtonBrush}" />
                 <Setter Property="Foreground" Value="White" />
                 <Setter Property="BorderThickness" Value="0" />
                 <Setter Property="HorizontalContentAlignment" Value="Center" />
@@ -223,23 +215,26 @@
                         <ControlTemplate TargetType="Button">
                             <Grid
                                 x:Name="RootGrid"
-                                Background="{StaticResource ThemePlayButtonBrush}"
-                                CornerRadius="{TemplateBinding CornerRadius}">
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="{TemplateBinding CornerRadius}"
+                                RenderTransformOrigin="0.5,0.5">
+                                <Grid.RenderTransform>
+                                    <ScaleTransform x:Name="BtnScale" ScaleX="1" ScaleY="1" />
+                                </Grid.RenderTransform>
                                 <VisualStateManager.VisualStateGroups>
                                     <VisualStateGroup x:Name="CommonStates">
                                         <VisualState x:Name="Normal" />
                                         <VisualState x:Name="PointerOver">
                                             <Storyboard>
-                                                <ObjectAnimationUsingKeyFrames Storyboard.TargetName="RootGrid" Storyboard.TargetProperty="Background">
-                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="{StaticResource ThemePlayButtonHoverBrush}" />
-                                                </ObjectAnimationUsingKeyFrames>
+                                                <DoubleAnimation Storyboard.TargetName="BtnScale" Storyboard.TargetProperty="ScaleX" To="1.08" Duration="0:0:0.12" />
+                                                <DoubleAnimation Storyboard.TargetName="BtnScale" Storyboard.TargetProperty="ScaleY" To="1.08" Duration="0:0:0.12" />
                                             </Storyboard>
                                         </VisualState>
                                         <VisualState x:Name="Pressed">
                                             <Storyboard>
-                                                <ObjectAnimationUsingKeyFrames Storyboard.TargetName="RootGrid" Storyboard.TargetProperty="Background">
-                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="{StaticResource ThemePlayButtonPressedBrush}" />
-                                                </ObjectAnimationUsingKeyFrames>
+                                                <DoubleAnimation Storyboard.TargetName="BtnScale" Storyboard.TargetProperty="ScaleX" To="0.94" Duration="0:0:0.06" />
+                                                <DoubleAnimation Storyboard.TargetName="BtnScale" Storyboard.TargetProperty="ScaleY" To="0.94" Duration="0:0:0.06" />
+                                                <DoubleAnimation Storyboard.TargetName="RootGrid" Storyboard.TargetProperty="Opacity" To="0.88" Duration="0:0:0.06" />
                                             </Storyboard>
                                         </VisualState>
                                     </VisualStateGroup>
@@ -258,9 +253,9 @@
                 </Setter>
             </Style>
 
-            <!-- 品牌主操作按钮样式（动态响应主题主色/双色流光渐变与 ButtonCornerRadius 圆角造型） -->
+            <!-- 品牌主操作按钮样式（动态响应主题主色/双色流光渐变与水滴画刷，跟随 ControlCornerRadius） -->
             <Style x:Key="BrandPrimaryButtonStyle" TargetType="Button">
-                <Setter Property="Background" Value="{StaticResource BrandAccentFillBrush}" />
+                <Setter Property="Background" Value="{ThemeResource BrandAccentFillBrush}" />
                 <Setter Property="Foreground" Value="White" />
                 <Setter Property="BorderThickness" Value="0" />
                 <Setter Property="CornerRadius" Value="{ThemeResource ControlCornerRadius}" />
@@ -272,23 +267,19 @@
                         <ControlTemplate TargetType="Button">
                             <Grid
                                 x:Name="RootGrid"
-                                Background="{StaticResource BrandAccentFillBrush}"
+                                Background="{TemplateBinding Background}"
                                 CornerRadius="{TemplateBinding CornerRadius}">
                                 <VisualStateManager.VisualStateGroups>
                                     <VisualStateGroup x:Name="CommonStates">
                                         <VisualState x:Name="Normal" />
                                         <VisualState x:Name="PointerOver">
                                             <Storyboard>
-                                                <ObjectAnimationUsingKeyFrames Storyboard.TargetName="RootGrid" Storyboard.TargetProperty="Background">
-                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="{StaticResource BrandAccentHoverFillBrush}" />
-                                                </ObjectAnimationUsingKeyFrames>
+                                                <DoubleAnimation Storyboard.TargetName="RootGrid" Storyboard.TargetProperty="Opacity" To="0.86" Duration="0:0:0.1" />
                                             </Storyboard>
                                         </VisualState>
                                         <VisualState x:Name="Pressed">
                                             <Storyboard>
-                                                <ObjectAnimationUsingKeyFrames Storyboard.TargetName="RootGrid" Storyboard.TargetProperty="Background">
-                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="{StaticResource BrandAccentPressedFillBrush}" />
-                                                </ObjectAnimationUsingKeyFrames>
+                                                <DoubleAnimation Storyboard.TargetName="RootGrid" Storyboard.TargetProperty="Opacity" To="0.72" Duration="0:0:0.06" />
                                             </Storyboard>
                                         </VisualState>
                                         <VisualState x:Name="Disabled">

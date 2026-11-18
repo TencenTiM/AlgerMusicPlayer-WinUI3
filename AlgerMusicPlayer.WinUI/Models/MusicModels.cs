@@ -392,7 +392,21 @@ public partial class SongItem : ObservableObject
     public string SafePicUrl => ImageUriHelper.Normalize(_picUrl);
     public List<ArtistItem> Artists { get; set; } = [];
     public AlbumItem Album { get; set; } = new();
-    public long DurationMs { get; set; }
+    private long _durationMs;
+    /// <summary>
+    /// 歌曲时长（毫秒），变更时通知 DurationText 更新界面展示
+    /// </summary>
+    public long DurationMs
+    {
+        get => _durationMs;
+        set
+        {
+            if (SetProperty(ref _durationMs, value))
+            {
+                OnPropertyChanged(nameof(DurationText));
+            }
+        }
+    }
     public long MvId { get; set; }
     public int Fee { get; set; }
     public List<string> Alias { get; set; } = [];
@@ -615,6 +629,8 @@ public partial class SongItem : ObservableObject
     {
         get
         {
+            if (DurationMs <= 0)
+                return "--:--";
             var ts = TimeSpan.FromMilliseconds(DurationMs);
             return ts.TotalHours >= 1
                 ? $"{(int)ts.TotalHours:D2}:{ts.Minutes:D2}:{ts.Seconds:D2}"

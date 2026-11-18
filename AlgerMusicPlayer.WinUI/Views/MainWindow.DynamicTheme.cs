@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.Numerics;
+using LiquidGlass.WinUI.Materials;
+using LiquidGlass.WinUI.Rendering;
 using AlgerMusicPlayer.WinUI.Models;
 using AlgerMusicPlayer.WinUI.Services.System;
 using Microsoft.UI;
@@ -7,6 +9,7 @@ using Microsoft.UI.Dispatching;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Hosting;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
@@ -153,9 +156,14 @@ public sealed partial class MainWindow
     private void OnRootPointerMovedForTheme(object sender, PointerRoutedEventArgs e)
     {
         var profile = ViewModel.Theme.GetEffectiveTheme();
+        var pt = e.GetCurrentPoint(RootLayout).Position;
+        if (IsLiquidGlassMode(profile))
+        {
+            UpdateAllLiquidGlassPointerHighlights(pt, true);
+        }
+
         if (!profile.EnablePointerInteraction) return;
 
-        var pt = e.GetCurrentPoint(RootLayout).Position;
         double dx = pt.X - _pointerTargetX;
         double dy = pt.Y - _pointerTargetY;
         _pointerTargetX = pt.X;
@@ -174,6 +182,11 @@ public sealed partial class MainWindow
     private void OnRootPointerExitedForTheme(object sender, PointerRoutedEventArgs e)
     {
         _isPointerInside = false;
+        var profile = ViewModel.Theme.GetEffectiveTheme();
+        if (IsLiquidGlassMode(profile))
+        {
+            UpdateAllLiquidGlassPointerHighlights(default, false);
+        }
     }
 
     private void ScheduleDynamicPowerStateCheck()
@@ -227,12 +240,13 @@ public sealed partial class MainWindow
         }
 
         // 2. 按需挂载/卸载原生 VSync 帧回调与音频分析器（自动匹配 60Hz / 120Hz / 144Hz / 165Hz / 240Hz+ 高刷显示器）
-        bool needAurora = profile.BackdropType is "Aurora" or "CoverFlow";
-        bool needParticles = profile.EnableParticleOverlay;
-        bool needVinylSpin = profile.CoverArtShape == "VinylSpin" && ViewModel.IsPlaying;
-        bool needRhythm = profile.EnablePlayBarRhythmGlow && ViewModel.IsPlaying;
-        bool needAudioReactive = profile.EnableAudioReactive;
-        bool needPointerInteract = profile.EnablePointerInteraction;
+        bool gpuEnabled = GlassHub.IsGpuAccelerationEnabled;
+        bool needAurora = gpuEnabled && (profile.BackdropType is "Aurora" or "CoverFlow");
+        bool needParticles = gpuEnabled && profile.EnableParticleOverlay;
+        bool needVinylSpin = gpuEnabled && profile.CoverArtShape == "VinylSpin" && ViewModel.IsPlaying;
+        bool needRhythm = gpuEnabled && profile.EnablePlayBarRhythmGlow && ViewModel.IsPlaying;
+        bool needAudioReactive = gpuEnabled && profile.EnableAudioReactive;
+        bool needPointerInteract = gpuEnabled && profile.EnablePointerInteraction;
 
         ViewModel.Player.ReactiveAnalyzer.SetMonitoringActive(visible && needAudioReactive, ViewModel.IsPlaying);
 
@@ -337,16 +351,22 @@ public sealed partial class MainWindow
                 _curAuroraC3 = ThemeService.AdaptAuroraColorForMode(_targetCoverC3, isLight);
             }
 
+            // 步骤 6：恢复主题中心原生极光三光斑与粒子层控制，严禁篡改背景层颜色与可见性
+            if (_auroraOrb1 != null) _auroraOrb1.Opacity = 1.0;
+            if (_auroraOrb2 != null) _auroraOrb2.Opacity = 1.0;
+            if (_auroraOrb3 != null) _auroraOrb3.Opacity = 1.0;
+            _liquidSceneProvider.SetScreenAuroraVisibility(false);
             ApplyAuroraOrbColors(profile.AuroraIntensity, isLight);
             UpdateAuroraOrbPositions(0);
         }
         else
         {
+            _liquidSceneProvider.SetScreenAuroraVisibility(false);
             GlobalAuroraCanvas.Visibility = Visibility.Collapsed;
         }
 
-        // 3. 全屏独立氛围粒子层（可叠加在任何背景之上）
-        if (profile.EnableParticleOverlay)
+        // 3. 全屏独立氛围粒子层（统一由主题中心在 GlassBackdropSource 内正常控制，供 GlassPanel 同源采样）
+        if (GlassHub.IsGpuAccelerationEnabled && profile.EnableParticleOverlay)
         {
             RebuildParticlePoolIfNeeded(profile, accent, isLight);
             GlobalParticleOverlayCanvas.Visibility = Visibility.Visible;
@@ -357,7 +377,7 @@ public sealed partial class MainWindow
         }
 
         // 4. 实时音频律动可视化与指针互动追光层（非拦截点击）
-        if (profile.EnableAudioReactive || profile.EnablePointerInteraction)
+        if (GlassHub.IsGpuAccelerationEnabled && (profile.EnableAudioReactive || profile.EnablePointerInteraction))
         {
             RebuildAudioVisualizerPoolIfNeeded(profile, accent, isLight);
             GlobalAudioVisualizerCanvas.Visibility = Visibility.Visible;
@@ -431,12 +451,31 @@ public sealed partial class MainWindow
         if (_auroraBrush1 == null || _auroraBrush2 == null || _auroraBrush3 == null) return;
 
         double factor = Math.Clamp(intensityPercent, 20, 100) / 100.0;
-        byte centerAlpha = (byte)Math.Round((isLight ? 128 : 185) * factor);
-        byte midAlpha = (byte)Math.Round((isLight ? 54 : 82) * factor);
+        byte centerAlpha = (byte)Math.Round((isLight ? 142 : 205) * factor);
+        byte midAlpha = (byte)Math.Round((isLight ? 62 : 95) * factor);
 
         SetRadialStops(_auroraBrush1, _curAuroraC1, centerAlpha, midAlpha);
         SetRadialStops(_auroraBrush2, _curAuroraC2, centerAlpha, midAlpha);
         SetRadialStops(_auroraBrush3, _curAuroraC3, (byte)(centerAlpha * 0.88), (byte)(midAlpha * 0.85));
+    }
+
+    private void SetUnderlyingXamlAuroraOrbsSuppressed(bool suppressed)
+    {
+        if (_auroraOrb1 == null || _auroraOrb2 == null || _auroraOrb3 == null)
+            return;
+
+        if (suppressed)
+        {
+            if (_auroraOrb1.Visibility != Visibility.Collapsed) _auroraOrb1.Visibility = Visibility.Collapsed;
+            if (_auroraOrb2.Visibility != Visibility.Collapsed) _auroraOrb2.Visibility = Visibility.Collapsed;
+            if (_auroraOrb3.Visibility != Visibility.Collapsed) _auroraOrb3.Visibility = Visibility.Collapsed;
+        }
+        else if (GlobalAuroraCanvas.Visibility == Visibility.Visible)
+        {
+            if (_auroraOrb1.Visibility != Visibility.Visible) _auroraOrb1.Visibility = Visibility.Visible;
+            if (_auroraOrb2.Visibility != Visibility.Visible) _auroraOrb2.Visibility = Visibility.Visible;
+            if (_auroraOrb3.Visibility != Visibility.Visible) _auroraOrb3.Visibility = Visibility.Visible;
+        }
     }
 
     private static void SetRadialStops(RadialGradientBrush brush, Color c, byte centerAlpha, byte midAlpha)
@@ -462,6 +501,11 @@ public sealed partial class MainWindow
         double sens = profile.EnableAudioReactive ? Math.Clamp(profile.AudioSensitivity, 0.4, 2.2) : 0.0;
         double audioSpeedBoost = 1.0 + Math.Min(1.6, (overall * 1.15 + beat * 0.65) * sens);
         _auroraPhase += dtSeconds * 0.42 * speed * audioSpeedBoost;
+
+        if (_auroraOrb1.Visibility == Visibility.Collapsed)
+        {
+            return;
+        }
 
         double w = Math.Max(960, RootLayout.ActualWidth);
         double h = Math.Max(640, RootLayout.ActualHeight);
@@ -810,6 +854,12 @@ public sealed partial class MainWindow
                 }
             }
             UpdateAuroraOrbPositions(dt, bass, mid, treble, overall, beat);
+            if (IsLiquidGlassMode(profile))
+            {
+                var effAccent = ThemeService.ParseColorOrDefault(profile.AccentColorHex, Color.FromArgb(255, 56, 189, 248));
+                TimeSpan renderTime = args is RenderingEventArgs rea ? rea.RenderingTime : TimeSpan.Zero;
+                RefreshDynamicLiquidGlassRibbonsFrame(profile, IsCurrentUiLightMode, effAccent, renderTime);
+            }
         }
 
         // 2. 推进全屏粒子运动与呼吸闪烁（100% 直接更新合成器 Visual，结合音频能量加速与指针排斥物理场）
@@ -922,103 +972,40 @@ public sealed partial class MainWindow
 
     private void ApplyMorphologyTypographyAndCoverDetails(CustomThemeProfile profile, Color accent, bool isLight)
     {
-        bool isCustomLayer = profile.BackdropType is "Image" or "Solid" or "Aurora" or "CoverFlow" or "Video";
         bool isLiquidGlass = IsLiquidGlassMode(profile);
-        bool isCrystalClear = IsCrystalClearMode(profile);
-        Color tintedBarSurface = ThemeService.CreateThemeTintedSurfaceColor(profile, accent, isLight, isLight ? 0.14 : 0.24);
-        Color borderMix = ThemeService.LerpColor(Colors.White, accent, isLight ? 0.26 : 0.48);
 
-        // 1. 底部播放栏形态切换（Docked | FloatingIsland | MinimalGlass）
-        string pbMode = profile.PlayBarLayoutMode ?? "Docked";
-        if (pbMode == "FloatingIsland")
+        // 1. 穿底实时折射控制：非降级模式开启 RowSpan=2 让主内容区穿过悬浮播放条，展现原生 DWM 实时弯曲与色散；
+        //    左侧栏同步底部让位防遮挡，降级模式恢复 RowSpan=1 与贴边布局。
+        bool enablePassUnder = !GlassHub.IsDegradedMode;
+        if (MainBodyHostGrid != null)
         {
-            RootLayout.RowDefinitions[2].Height = new GridLength(98);
-            BottomPlayBarBorder.Margin = new Thickness(22, 0, 22, 10);
-            BottomPlayBarBorder.CornerRadius = new CornerRadius(24);
-            BottomPlayBarBorder.BorderThickness = new Thickness(1);
-            BottomPlayBarBorder.BackgroundSizing = BackgroundSizing.OuterBorderEdge;
-            BottomPlayBarBorder.Padding = new Thickness(20, 2, 20, 6);
-
-            if (!profile.EnableCustomPlayBar)
-            {
-                if (isLiquidGlass)
-                {
-                    BottomPlayBarBorder.Background = ThemeService.CreateLiquidGlassSurfaceBrush(accent, isLight, intensity: 1.08, blurAmount: 0.85f);
-                    BottomPlayBarBorder.BorderBrush = ThemeService.CreateLiquidGlassBorderBrush(accent, intensity: 1.06);
-                }
-                else if (isCrystalClear)
-                {
-                    BottomPlayBarBorder.Background = new SolidColorBrush(Colors.Transparent);
-                    BottomPlayBarBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(76, 148, 163, 184));
-                }
-                else
-                {
-                    BottomPlayBarBorder.Background = isLight
-                        ? ThemeService.CreateFrostedGlassBrush(tintedBarSurface, tintOpacity: 0.18, luminosityOpacity: 0.28, fallbackAlpha: 62)
-                        : ThemeService.CreateFrostedGlassBrush(tintedBarSurface, tintOpacity: 0.45, luminosityOpacity: 0.58, fallbackAlpha: 132);
-                    BottomPlayBarBorder.BorderBrush = new SolidColorBrush(isLight
-                        ? Color.FromArgb(190, borderMix.R, borderMix.G, borderMix.B)
-                        : Color.FromArgb(105, accent.R, accent.G, accent.B));
-                }
-            }
+            Grid.SetRowSpan(MainBodyHostGrid, enablePassUnder ? 2 : 1);
         }
-        else if (pbMode == "MinimalGlass")
+        if (NavPaneGlassPanel != null)
         {
-            RootLayout.RowDefinitions[2].Height = new GridLength(86);
-            BottomPlayBarBorder.Margin = new Thickness(0);
-            BottomPlayBarBorder.CornerRadius = new CornerRadius(0);
-            BottomPlayBarBorder.BorderThickness = new Thickness(0);
-            BottomPlayBarBorder.Padding = new Thickness(18, 2, 18, 8);
-
-            if (!profile.EnableCustomPlayBar)
-            {
-                if (isLiquidGlass)
-                {
-                    BottomPlayBarBorder.Background = ThemeService.CreateLiquidGlassSurfaceBrush(accent, isLight, intensity: 0.94, blurAmount: 0.85f);
-                }
-                else if (isCrystalClear)
-                {
-                    BottomPlayBarBorder.Background = new SolidColorBrush(Colors.Transparent);
-                }
-                else
-                {
-                    BottomPlayBarBorder.Background = isLight
-                        ? ThemeService.CreateFrostedGlassBrush(tintedBarSurface, tintOpacity: 0.12, luminosityOpacity: 0.20, fallbackAlpha: 44)
-                        : ThemeService.CreateFrostedGlassBrush(tintedBarSurface, tintOpacity: 0.30, luminosityOpacity: 0.44, fallbackAlpha: 92);
-                }
-            }
+            NavPaneGlassPanel.Margin = enablePassUnder
+                ? new Thickness(-24, 0, 0, 102)
+                : new Thickness(-24, 0, 0, 0);
         }
-        else
+        if (NavFooterSettingsItem != null)
         {
-            RootLayout.RowDefinitions[2].Height = new GridLength(88);
-            BottomPlayBarBorder.Margin = new Thickness(0);
-            BottomPlayBarBorder.CornerRadius = new CornerRadius(0);
-            BottomPlayBarBorder.BorderThickness = new Thickness(0, 1, 0, 0);
-            BottomPlayBarBorder.Padding = new Thickness(18, 2, 18, 8);
-
-            if (!profile.EnableCustomPlayBar && isCustomLayer)
-            {
-                if (isLiquidGlass)
-                {
-                    BottomPlayBarBorder.Background = ThemeService.CreateLiquidGlassSurfaceBrush(accent, isLight, intensity: 1.05, blurAmount: 0.85f);
-                    BottomPlayBarBorder.BorderBrush = ThemeService.CreateLiquidGlassBorderBrush(accent, intensity: 1.0);
-                }
-                else if (isCrystalClear)
-                {
-                    BottomPlayBarBorder.Background = new SolidColorBrush(Colors.Transparent);
-                    BottomPlayBarBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(68, 148, 163, 184));
-                }
-                else
-                {
-                    BottomPlayBarBorder.Background = isLight
-                        ? ThemeService.CreateFrostedGlassBrush(tintedBarSurface, tintOpacity: 0.18, luminosityOpacity: 0.28, fallbackAlpha: 62)
-                        : ThemeService.CreateFrostedGlassBrush(tintedBarSurface, tintOpacity: 0.44, luminosityOpacity: 0.56, fallbackAlpha: 128);
-                    BottomPlayBarBorder.BorderBrush = new SolidColorBrush(isLight
-                        ? Color.FromArgb(180, borderMix.R, borderMix.G, borderMix.B)
-                        : Color.FromArgb(68, borderMix.R, borderMix.G, borderMix.B));
-                }
-            }
+            NavFooterSettingsItem.Margin = enablePassUnder
+                ? new Thickness(0, 0, 0, 106)
+                : new Thickness(0);
         }
+        Canvas.SetZIndex(BottomPlayBarHostGrid, 10);
+        Canvas.SetZIndex(AppTitleBar, 10);
+        SyncScrollViewerPassUnderBottomPadding(enablePassUnder);
+
+        RootLayout.RowDefinitions[2].Height = new GridLength(98);
+        BottomPlayBarBorder.Margin = new Thickness(0);
+        BottomPlayBarBorder.CornerRadius = new CornerRadius(0);
+        BottomPlayBarBorder.BorderThickness = new Thickness(0);
+        BottomPlayBarBorder.Background = new SolidColorBrush(Colors.Transparent);
+        BottomPlayBarBorder.ClearValue(Border.BorderBrushProperty);
+        BottomPlayBarBorder.Padding = new Thickness(18, 2, 18, 8);
+
+        SyncPlayBarLiquidGlassButtonAnimations(isLiquidGlass);
 
         // 2. 底栏音频律动流光呼吸灯带
         if (profile.EnablePlayBarRhythmGlow)
@@ -1081,6 +1068,7 @@ public sealed partial class MainWindow
 
         // 4. 卡片质感预设覆盖（当未手动指定详细卡片颜色或叠加风格时赋予鲜明视觉辨识度）
         ApplyCardVisualStyleOverlay(profile, accent, isLight);
+        ApplyLiquidGlassSlidersTheme(isLiquidGlass, accent, isLight);
 
         // 5. 全局卡片圆角（OverlayCornerRadius）与按钮胶囊圆角（ControlCornerRadius）全主题同步生效（液态玻璃自动呈现饱满 24px 水滴大圆角）
         double rawCardR = isLiquidGlass ? Math.Max(profile.CardCornerRadius, 24.0) : profile.CardCornerRadius;
@@ -1173,6 +1161,157 @@ public sealed partial class MainWindow
                         : Color.FromArgb(145, accent.R, accent.G, accent.B));
                 }
                 break;
+        }
+    }
+
+    private readonly HashSet<Slider> _hookedGlassSliders = [];
+    private bool _glassSlidersEnabled;
+    private Color _glassSliderAccent;
+    private bool _glassSliderIsLight;
+
+    private static readonly string[] s_glassSliderResKeys =
+    [
+        "SliderTrackFill",
+        "SliderTrackFillPointerOver",
+        "SliderTrackFillPressed",
+        "SliderTrackValueFill",
+        "SliderTrackValueFillPointerOver",
+        "SliderTrackValueFillPressed",
+        "SliderThumbBackground",
+        "SliderThumbBackgroundPointerOver",
+        "SliderThumbBackgroundPressed"
+    ];
+
+    /// <summary>
+    /// 液态玻璃进度条与音量条改造（对照 Alger 文档第 2 / 5.6 节）：
+    /// 6px 凹槽轨道 + 1px 微亮包边 + 青色流光渐变已播放段 + 18px 晶透白玉滑块球。
+    /// 切回普通主题时 100% 干净还原。
+    /// </summary>
+    private void ApplyLiquidGlassSlidersTheme(bool enable, Color accent, bool isLight)
+    {
+        _glassSlidersEnabled = enable;
+        _glassSliderAccent = accent;
+        _glassSliderIsLight = isLight;
+
+        Slider?[] targets = [SeekSlider, VolumeSlider, SimplePlayBarSeekSlider, SimplePlayBarVolumeSlider];
+        foreach (var slider in targets)
+        {
+            if (slider == null)
+            {
+                continue;
+            }
+
+            if (_hookedGlassSliders.Add(slider))
+            {
+                slider.Loaded += (_, _) =>
+                {
+                    ApplySingleLiquidGlassSlider(slider, _glassSlidersEnabled, _glassSliderAccent, _glassSliderIsLight);
+                };
+            }
+
+            ApplySingleLiquidGlassSlider(slider, enable, accent, isLight);
+        }
+    }
+
+    private static void ApplySingleLiquidGlassSlider(Slider slider, bool enable, Color accent, bool isLight)
+    {
+        var res = slider.Resources;
+        if (!enable)
+        {
+            foreach (var key in s_glassSliderResKeys)
+            {
+                res.Remove(key);
+            }
+
+            if (FindDescendantByName<Rectangle>(slider, "HorizontalTrackRect") is { } tr)
+            {
+                tr.ClearValue(FrameworkElement.HeightProperty);
+                tr.ClearValue(Rectangle.RadiusXProperty);
+                tr.ClearValue(Rectangle.RadiusYProperty);
+                tr.ClearValue(Shape.StrokeProperty);
+                tr.ClearValue(Shape.StrokeThicknessProperty);
+            }
+            if (FindDescendantByName<Rectangle>(slider, "HorizontalDecreaseRect") is { } dr)
+            {
+                dr.ClearValue(FrameworkElement.HeightProperty);
+                dr.ClearValue(Rectangle.RadiusXProperty);
+                dr.ClearValue(Rectangle.RadiusYProperty);
+            }
+            if (FindDescendantByName<Thumb>(slider, "HorizontalThumb") is { } th)
+            {
+                th.ClearValue(FrameworkElement.WidthProperty);
+                th.ClearValue(FrameworkElement.HeightProperty);
+                th.ClearValue(Control.CornerRadiusProperty);
+                th.ClearValue(Control.BorderThicknessProperty);
+                th.ClearValue(Control.BorderBrushProperty);
+            }
+            return;
+        }
+
+        Color grooveColor = isLight
+            ? Color.FromArgb(0x28, 0x0F, 0x17, 0x2A)
+            : Color.FromArgb(0x38, 0, 0, 0);
+        Color grooveHover = isLight
+            ? Color.FromArgb(0x36, 0x0F, 0x17, 0x2A)
+            : Color.FromArgb(0x46, 0, 0, 0);
+        res["SliderTrackFill"] = new SolidColorBrush(grooveColor);
+        res["SliderTrackFillPointerOver"] = new SolidColorBrush(grooveHover);
+        res["SliderTrackFillPressed"] = new SolidColorBrush(grooveHover);
+
+        Color cyanStart = ThemeService.LerpColor(Color.FromArgb(255, 0x3D, 0xCB, 0xF5), accent, 0.22);
+        Color cyanEnd = ThemeService.LerpColor(Color.FromArgb(255, 0x7B, 0xE3, 0xFA), accent, 0.14);
+        var valBrush = new LinearGradientBrush
+        {
+            StartPoint = new Point(0, 0.5),
+            EndPoint = new Point(1, 0.5),
+            GradientStops =
+            {
+                new GradientStop { Offset = 0.0, Color = cyanStart },
+                new GradientStop { Offset = 1.0, Color = cyanEnd }
+            }
+        };
+        res["SliderTrackValueFill"] = valBrush;
+        res["SliderTrackValueFillPointerOver"] = valBrush;
+        res["SliderTrackValueFillPressed"] = valBrush;
+
+        var thumbBg = new SolidColorBrush(Color.FromArgb(0xF0, 255, 255, 255));
+        var thumbActive = new SolidColorBrush(Colors.White);
+        res["SliderThumbBackground"] = thumbBg;
+        res["SliderThumbBackgroundPointerOver"] = thumbActive;
+        res["SliderThumbBackgroundPressed"] = thumbActive;
+
+        if (FindDescendantByName<Rectangle>(slider, "HorizontalTrackRect") is { } trackRect)
+        {
+            trackRect.Height = 6;
+            trackRect.RadiusX = 3;
+            trackRect.RadiusY = 3;
+            trackRect.Stroke = new SolidColorBrush(isLight
+                ? Color.FromArgb(0x50, 255, 255, 255)
+                : Color.FromArgb(0x2A, 255, 255, 255));
+            trackRect.StrokeThickness = 1;
+        }
+        if (FindDescendantByName<Rectangle>(slider, "HorizontalDecreaseRect") is { } decRect)
+        {
+            decRect.Height = 6;
+            decRect.RadiusX = 3;
+            decRect.RadiusY = 3;
+        }
+        if (FindDescendantByName<Thumb>(slider, "HorizontalThumb") is { } thumb)
+        {
+            thumb.Width = 18;
+            thumb.Height = 18;
+            thumb.CornerRadius = new CornerRadius(9);
+            thumb.BorderThickness = new Thickness(1.2);
+            thumb.BorderBrush = new LinearGradientBrush
+            {
+                StartPoint = new Point(0, 0),
+                EndPoint = new Point(1, 1),
+                GradientStops =
+                {
+                    new GradientStop { Offset = 0.0, Color = Color.FromArgb(0xE8, 255, 255, 255) },
+                    new GradientStop { Offset = 1.0, Color = Color.FromArgb(0x90, 0x3D, 0xCB, 0xF5) }
+                }
+            };
         }
     }
 
@@ -1585,6 +1724,84 @@ public sealed partial class MainWindow
                 var peakVis = _specPeakVisuals[i].Visual;
                 peakVis.Properties.InsertVector3("Translation", new Vector3(0f, peakOffsetY, 0f));
                 peakVis.Opacity = Math.Clamp(0.28f + _specPeakHeights[i] * 0.72f, 0.22f, 0.98f);
+            }
+        }
+    }
+
+    private void SyncPlayBarLiquidGlassButtonAnimations(bool enable)
+    {
+        if (BottomPlayBarBorder?.Child == null)
+        {
+            return;
+        }
+
+        var queue = new global::System.Collections.Generic.Queue<DependencyObject>();
+        queue.Enqueue(BottomPlayBarBorder.Child);
+        while (queue.Count > 0)
+        {
+            var cur = queue.Dequeue();
+            if (cur is global::Microsoft.UI.Xaml.Controls.Primitives.ButtonBase btn)
+            {
+                if (enable)
+                {
+                    GlassAnimationController.AttachInteractions(btn, LiquidGlassMaterialKind.Button);
+                }
+                else
+                {
+                    GlassAnimationController.DetachInteractions(btn);
+                }
+            }
+
+            int count = VisualTreeHelper.GetChildrenCount(cur);
+            for (int i = 0; i < count; i++)
+            {
+                queue.Enqueue(VisualTreeHelper.GetChild(cur, i));
+            }
+        }
+    }
+
+    private readonly global::System.Collections.Generic.Dictionary<FrameworkElement, Thickness> _scrollContentBottomClearanceSaved = new();
+
+    private void SyncScrollViewerPassUnderBottomPadding(bool enablePassUnderPlayBar)
+    {
+        if (MainContentWorkspaceGrid == null)
+        {
+            return;
+        }
+
+        if (!enablePassUnderPlayBar)
+        {
+            foreach (var (contentEl, origMargin) in _scrollContentBottomClearanceSaved)
+            {
+                try
+                {
+                    contentEl.Margin = origMargin;
+                }
+                catch
+                {
+                }
+            }
+            _scrollContentBottomClearanceSaved.Clear();
+            return;
+        }
+
+        int childCount = VisualTreeHelper.GetChildrenCount(MainContentWorkspaceGrid);
+        for (int i = 0; i < childCount; i++)
+        {
+            if (VisualTreeHelper.GetChild(MainContentWorkspaceGrid, i) is ScrollViewer sv &&
+                sv.VerticalScrollBarVisibility != ScrollBarVisibility.Disabled &&
+                sv.Content is FrameworkElement contentEl)
+            {
+                if (!_scrollContentBottomClearanceSaved.ContainsKey(contentEl))
+                {
+                    _scrollContentBottomClearanceSaved[contentEl] = contentEl.Margin;
+                }
+                var baseMargin = _scrollContentBottomClearanceSaved[contentEl];
+                contentEl.Margin = new Thickness(
+                    baseMargin.Left,
+                    baseMargin.Top,
+                    baseMargin.Right,
+                    Math.Max(baseMargin.Bottom, 98));
             }
         }
     }

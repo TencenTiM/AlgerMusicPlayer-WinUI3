@@ -1,5 +1,7 @@
-using Microsoft.Graphics.Canvas;
-using Microsoft.Graphics.Canvas.Effects;
+using System;
+using System.Diagnostics;
+using LiquidGlass.WinUI.Materials;
+using LiquidGlass.WinUI.Rendering;
 using Microsoft.UI.Composition;
 using Microsoft.UI.Xaml.Media;
 using Windows.UI;
@@ -7,226 +9,221 @@ using Windows.UI;
 namespace AlgerMusicPlayer.WinUI.Services.System;
 
 /// <summary>
-/// 原生 Windows DWM 合成器级 iOS 27「液态玻璃 (Liquid Glass)」实时 GPU 光学水晶画刷。
-/// 100% 采用同域纯 IGraphicsEffect 描述符管线 + CompositionBackdropBrush 实时采样：
-/// 1. 背后的壁纸/极光/视频 100% 锁死在窗口底层，DirectManipulation 240Hz 滚动时绝不随卡片移动；
-/// 2. 中心采用超清透零雾光学管线（0.45px 微润晶体 + 1.26x 鲜明度提艳 + 1.045x 通透微对比），完整保留背后景物锐利细节，告别泛白毛玻璃雾感；
-/// 3. 配合 OpticalLiquidGlassRenderer 挂载的原生 DWM 圆角边缘透镜折射环与 3D 弯月面高光暗槽，呈现饱满立体的凸水滴水晶质感。
+/// Liquid Glass 材质预设分类，映射到 LiquidGlass.WinUI 核心引擎预设体系。
+/// </summary>
+public enum LiquidGlassPreset
+{
+    /// <summary>
+    /// 内容卡片 / 文件夹面板（22px 强高斯模糊 + 中性微透底色 + 柔和边缘反光）。
+    /// </summary>
+    FrostedFolder = 0,
+
+    /// <summary>
+    /// 灵动胶囊 Dock / 悬浮播放栏 / 顶部搜索胶囊（6px 轻量模糊保留底色 + 强边缘折射 + 清晰上下高光棱线）。
+    /// </summary>
+    ClearDock = 1,
+
+    /// <summary>
+    /// 次级胶囊按钮与图标按钮（10px 中等模糊 + 清晰外缘高光）。
+    /// </summary>
+    GlassButton = 2,
+
+    /// <summary>
+    /// 侧边导航栏与大面积玻璃面板（20px 稳定磨砂以保障左侧菜单可读性）。
+    /// </summary>
+    GlassPanel = 3
+}
+
+/// <summary>
+/// 宿主应用与 LiquidGlass.WinUI 引擎的 Composition 光学画刷桥接类。
+/// 彻底移除会触发 DWM CreateEffectFactory 异常的双路 DAG 与 EffectOptimization 属性，
+/// 确保所有前端卡片、Dock 胶囊、导航栏均真实启用硬件级 Backdrop 高斯模糊与中性着色合成。
 /// </summary>
 public sealed class LiquidGlassCompositionBrush : XamlCompositionBrushBase
 {
-    private const string VeilColorProperty = "Veil.Color";
+    private bool _isConnected;
 
-    private readonly Color _accent;
-    private readonly bool _isLight;
-    private readonly float _intensity;
-    private readonly float _blurAmount;
-    private readonly float _saturation;
+    public Color AccentColor { get; private set; }
+    public bool IsLight { get; private set; }
+    public double Intensity { get; private set; }
+    public LiquidGlassPreset Preset { get; private set; }
+    public float? CustomBlurAmount { get; private set; }
+    public float? CustomTintOpacity { get; private set; }
+    public Color? CustomTintColor { get; private set; }
 
-    private CompositionBackdropBrush? _backdropBrush;
-    private CompositionEffectBrush? _effectBrush;
-    private double _contrastVeil;
+    /// <summary>
+    /// 最近一次诊断信息（指示当前线程 Compositor 是否完整运行于 GPU 模糊管线）。
+    /// </summary>
+    public static string LastPipelineDiagnostic { get; private set; } = "未连接";
 
-    public LiquidGlassCompositionBrush()
-        : this(Color.FromArgb(255, 16, 185, 129), isLight: false)
-    {
-    }
+    public static bool IsHardwareBlurSupported { get; private set; }
 
     public LiquidGlassCompositionBrush(
-        Color accent,
+        Color accentColor,
         bool isLight,
         double intensity = 1.0,
-        float blurAmount = 0.45f,
-        float saturation = 1.26f)
+        LiquidGlassPreset preset = LiquidGlassPreset.FrostedFolder,
+        float? customBlurAmount = null,
+        float? customCenterBlurWeight = null,
+        float? customTintOpacity = null,
+        Color? customTintColor = null)
     {
-        _accent = accent;
-        _isLight = isLight;
-        _intensity = (float)Math.Clamp(intensity, 0.55, 1.55);
-        _blurAmount = Math.Clamp(blurAmount, 0.0f, 16.0f);
-        _saturation = Math.Clamp(saturation, 1.05f, 1.65f);
+        AccentColor = accentColor;
+        IsLight = isLight;
+        Intensity = Math.Clamp(intensity, 0.5, 1.5);
+        Preset = preset;
+        CustomBlurAmount = customBlurAmount;
+        CustomTintOpacity = customTintOpacity;
+        CustomTintColor = customTintColor;
+        _ = customCenterBlurWeight;
 
-        FallbackColor = isLight
-            ? Color.FromArgb(14, 255, 255, 255)
-            : Color.FromArgb(18, 15, 23, 42);
-    }
-
-    public Color Accent => _accent;
-    public bool IsLight => _isLight;
-    public double Intensity => _intensity;
-    public float BlurAmount => _blurAmount;
-    public double ContrastVeil => _contrastVeil;
-
-    /// <summary>
-    /// 雾化层颜色的 sRGB 灰度（浅色基调为冰白、深色基调为墨夜）
-    /// </summary>
-    public static double GetVeilGray(bool isLight) => isLight ? 0.975 : 0.045;
-
-    /// <summary>
-    /// 复制一份参数完全相同的独立画刷实例
-    /// </summary>
-    public LiquidGlassCompositionBrush CloneIndependent() =>
-        new(_accent, _isLight, _intensity, _blurAmount, _saturation);
-
-    /// <summary>
-    /// 估算背后壁纸经过本玻璃中心后的 sRGB 灰度
-    /// </summary>
-    public double EstimateSurfaceGray(double wallpaperGray)
-    {
-        var (sheenTint, screenAlpha, glazeTint, glazeAlpha) = ResolveLayerParameters();
-        double c = Math.Clamp(wallpaperGray, 0.0, 1.0);
-
-        double s = screenAlpha / 255.0 * ColorToGray(sheenTint);
-        c = 1.0 - (1.0 - c) * (1.0 - s);
-
-        double g = glazeAlpha / 255.0;
-        c = c * (1.0 - g) + ColorToGray(glazeTint) * g;
-        return Math.Clamp(c, 0.0, 1.0);
+        FallbackColor = ResolveMaterial().FallbackColor;
     }
 
     /// <summary>
-    /// 设置可选微衬底浓度（默认 0 完全清透零白雾）
+    /// 将局部参数变更实时写入已连接的 GPU CompositionEffectBrush，避免重建 Visual 导致闪烁。
     /// </summary>
-    public void SetContrastVeil(double veil, bool animate = true)
+    public void UpdateOpticalParameters(Color accentColor, bool isLight, double intensity, LiquidGlassPreset preset, float? customBlurAmount = null, float? customTintOpacity = null, Color? customTintColor = null)
     {
-        veil = Math.Clamp(veil, 0.0, 0.85);
-        if (Math.Abs(veil - _contrastVeil) < 0.004)
-            return;
+        AccentColor = accentColor;
+        IsLight = isLight;
+        Intensity = Math.Clamp(intensity, 0.5, 1.5);
+        Preset = preset;
+        CustomBlurAmount = customBlurAmount;
+        CustomTintOpacity = customTintOpacity;
+        CustomTintColor = customTintColor;
 
-        _contrastVeil = veil;
-        var brush = _effectBrush;
-        if (brush == null)
-            return;
+        var material = ResolveMaterial();
+        FallbackColor = material.FallbackColor;
 
-        try
+        if (!_isConnected)
         {
-            var anim = brush.Compositor.CreateColorKeyFrameAnimation();
-            anim.InsertKeyFrame(1.0f, GetVeilColor());
-            anim.Duration = TimeSpan.FromMilliseconds(animate ? 260 : 1);
-            brush.StartAnimation(VeilColorProperty, anim);
+            return;
         }
-        catch
+
+        if (LiquidGlassMaterialManager.Current.ShouldUseFallbackSolid)
         {
+            RebuildBrush();
+            return;
+        }
+
+        if (CompositionBrush is CompositionEffectBrush effectBrush)
+        {
+            CompositionResourceCache.UpdateBackdropBrushProperties(
+                effectBrush,
+                material.BlurAmount,
+                material.Saturation,
+                material.TintColor,
+                material.TintOpacity,
+                includeTint: true);
+        }
+        else if (CompositionBrush is CompositionColorBrush colorBrush)
+        {
+            colorBrush.Color = material.FallbackColor;
         }
     }
 
     protected override void OnConnected()
     {
-        if (CompositionBrush != null)
-            return;
-
-        try
-        {
-            Compositor compositor = CompositionTarget.GetCompositorForCurrentThread();
-            var (sheenTint, screenAlpha, glazeTint, glazeAlpha) = ResolveLayerParameters();
-
-            // 1. 水晶鲜明度光学提艳（模拟高折射率液体晶体对背光色彩的润泽增艳）
-            using var vibrantBackdrop = new SaturationEffect
-            {
-                Source = new CompositionEffectSourceParameter("Backdrop"),
-                Saturation = _saturation
-            };
-
-            // 2. 清透微对比增强（消除泛灰白雾，令透射景物通透清亮）
-            using var crispContrast = new ContrastEffect
-            {
-                Source = vibrantBackdrop,
-                Contrast = 0.045f
-            };
-
-            // 3. 超清透水润微散射（默认仅 0.45px，完整保留草木与流光锐利纹理）
-            using var opticalCrystal = new GaussianBlurEffect
-            {
-                Source = crispContrast,
-                BlurAmount = _blurAmount,
-                BorderMode = EffectBorderMode.Hard
-            };
-
-            // 4. 极轻盈冰晶水光层（绝不发白发雾）
-            using var screenSheenSource = new ColorSourceEffect
-            {
-                Color = Color.FromArgb(screenAlpha, sheenTint.R, sheenTint.G, sheenTint.B)
-            };
-
-            using var screenLifted = new BlendEffect
-            {
-                Mode = BlendEffectMode.Screen,
-                Background = opticalCrystal,
-                Foreground = screenSheenSource
-            };
-
-            // 5. 极薄水色折射镀膜层
-            using var glazeSource = new ColorSourceEffect
-            {
-                Color = Color.FromArgb(glazeAlpha, glazeTint.R, glazeTint.G, glazeTint.B)
-            };
-
-            // 6. 可选局部微衬底层（默认 Alpha=0 完全透明）
-            using var veilSource = new ColorSourceEffect
-            {
-                Name = "Veil",
-                Color = GetVeilColor()
-            };
-
-            using var liquidComposite = new CompositeEffect
-            {
-                Mode = CanvasComposite.SourceOver
-            };
-            liquidComposite.Sources.Add(screenLifted);
-            liquidComposite.Sources.Add(glazeSource);
-            liquidComposite.Sources.Add(veilSource);
-
-            using var effectFactory = compositor.CreateEffectFactory(liquidComposite, new[] { VeilColorProperty });
-            CompositionEffectBrush effectBrush = effectFactory.CreateBrush();
-
-            _backdropBrush = compositor.CreateBackdropBrush();
-            effectBrush.SetSourceParameter("Backdrop", _backdropBrush);
-
-            _effectBrush = effectBrush;
-            CompositionBrush = effectBrush;
-        }
-        catch
-        {
-            try
-            {
-                Compositor compositor = CompositionTarget.GetCompositorForCurrentThread();
-                CompositionBrush = compositor.CreateColorBrush(FallbackColor);
-            }
-            catch
-            {
-            }
-        }
+        _isConnected = true;
+        RebuildBrush();
+        LiquidGlassMaterialManager.Current.MaterialEnvironmentChanged += OnMaterialEnvironmentChanged;
     }
 
     protected override void OnDisconnected()
     {
-        _effectBrush = null;
-        var oldBrush = CompositionBrush;
-        CompositionBrush = null;
-        oldBrush?.Dispose();
+        _isConnected = false;
+        LiquidGlassMaterialManager.Current.MaterialEnvironmentChanged -= OnMaterialEnvironmentChanged;
 
-        var oldBackdrop = _backdropBrush;
-        _backdropBrush = null;
-        oldBackdrop?.Dispose();
+        if (CompositionBrush != null)
+        {
+            CompositionBrush.Dispose();
+            CompositionBrush = null;
+        }
     }
 
-    private (Color SheenTint, byte ScreenAlpha, Color GlazeTint, byte GlazeAlpha) ResolveLayerParameters()
+    private void OnMaterialEnvironmentChanged(object? sender, EventArgs e)
     {
-        Color sheenTint = ThemeService.LerpColor(Color.FromArgb(255, 244, 252, 255), _accent, _isLight ? 0.14 : 0.22);
-        byte screenAlpha = (byte)Math.Clamp(Math.Round((_isLight ? 7.0 : 8.0) * _intensity), 3, 20);
-        Color glazeTint = _isLight
-            ? ThemeService.LerpColor(Color.FromArgb(255, 248, 253, 255), _accent, 0.10)
-            : ThemeService.LerpColor(Color.FromArgb(255, 14, 24, 38), _accent, 0.14);
-        byte glazeAlpha = (byte)Math.Clamp(Math.Round((_isLight ? 5.0 : 14.0) * _intensity), 2, 26);
-        return (sheenTint, screenAlpha, glazeTint, glazeAlpha);
+        DispatcherQueue?.TryEnqueue(() =>
+        {
+            if (_isConnected)
+            {
+                RebuildBrush();
+            }
+        });
     }
 
-    private Color GetVeilColor()
+    private void RebuildBrush()
     {
-        byte a = (byte)Math.Clamp(Math.Round(_contrastVeil * 255.0), 0, 255);
-        return _isLight
-            ? Color.FromArgb(a, 248, 251, 255)
-            : Color.FromArgb(a, 8, 13, 23);
+        if (!_isConnected)
+        {
+            return;
+        }
+
+        if (CompositionBrush != null)
+        {
+            CompositionBrush.Dispose();
+            CompositionBrush = null;
+        }
+
+        var compositor = CompositionTarget.GetCompositorForCurrentThread();
+        var material = ResolveMaterial();
+        FallbackColor = material.FallbackColor;
+
+        if (LiquidGlassMaterialManager.Current.ShouldUseFallbackSolid)
+        {
+            LastPipelineDiagnostic = "System Fallback Solid";
+            CompositionBrush = compositor.CreateColorBrush(material.FallbackColor);
+            return;
+        }
+
+        var cache = CompositionResourceCache.GetForCompositor(compositor);
+        var created = cache.CreateBackdropBrush(
+            material.BlurAmount,
+            material.Saturation,
+            material.TintColor,
+            material.TintOpacity,
+            includeTint: true,
+            material.FallbackColor);
+
+        IsHardwareBlurSupported = cache.IsHardwareBlurSupported;
+        LastPipelineDiagnostic = cache.LastDiagnostic;
+        Debug.WriteLine($"[LiquidGlassCompositionBrush] Preset={Preset}, Light={IsLight}, Blur={material.BlurAmount:F1}, TintOp={material.TintOpacity:F2}, Diag={LastPipelineDiagnostic}");
+        CompositionBrush = created;
     }
 
-    private static double ColorToGray(Color c) => (0.2126 * c.R + 0.7152 * c.G + 0.0722 * c.B) / 255.0;
+    internal LiquidGlassMaterial ResolveMaterial()
+    {
+        var kind = MapKind(Preset);
+        var material = LiquidGlassMaterialPreset.GetPreset(kind, IsLight);
+
+        // 严禁把 AccentColor 强行混入玻璃基底，彻底杜绝绿框/绿底偏色；仅在显式传入 CustomTintColor 时替换（例如半实心浮层 #D00B2B36）
+        if (CustomTintColor.HasValue)
+        {
+            material.TintColor = CustomTintColor.Value;
+        }
+
+        if (CustomBlurAmount.HasValue)
+        {
+            material.BlurAmount = Math.Clamp(CustomBlurAmount.Value, 2.0, 48.0);
+        }
+
+        // 若未显式覆盖 CustomTintOpacity，则直接保留预设自身的精确玻璃着色浓度（#30FFFFFF / #1AFFFFFF）
+        if (CustomTintOpacity.HasValue)
+        {
+            material.TintOpacity = Math.Clamp(CustomTintOpacity.Value, 0.04, 0.92);
+        }
+        return material;
+    }
+
+    internal static LiquidGlassMaterialKind MapKind(LiquidGlassPreset preset)
+    {
+        return preset switch
+        {
+            LiquidGlassPreset.ClearDock => LiquidGlassMaterialKind.Dock,
+            LiquidGlassPreset.GlassButton => LiquidGlassMaterialKind.Button,
+            LiquidGlassPreset.GlassPanel => LiquidGlassMaterialKind.Panel,
+            _ => LiquidGlassMaterialKind.Folder
+        };
+    }
 }

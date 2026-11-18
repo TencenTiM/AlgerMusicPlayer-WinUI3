@@ -673,8 +673,19 @@ public class ThemeService
         SetOrUpdateSolidBrush(res, "BrandAccentBorderSubtleBrush", borderSubtle);
         SetOrUpdateSolidBrush(res, "BrandAccentPressedSubtleBrush", pressedSubtle);
 
-        // 2. 原地更新双色流光渐变填充画刷（覆盖主操作按钮、选中态胶囊、上下曲悬停）
-        SetOrUpdateGradientBrush(res, "BrandAccentFillBrush", fillStart, fillEnd, profile.GradientAngle);
+        // 2. 原地更新双色流光渐变填充画刷或液态水滴画刷（非降级模式升级为透明折射水滴胶囊，降级模式保持实心渐变）
+        string bdKind = profile.BackdropType ?? "Mica";
+        bool isDegradedBackdrop = bdKind is "Mica" or "MicaAlt" or "Acrylic" or "Video";
+        bool useDropletButtons = !isDegradedBackdrop && GlassHub.IsGpuAccelerationEnabled && LiquidGlassWinUI.LiquidGlassBrush.LastError == null;
+
+        if (useDropletButtons)
+        {
+            SetOrUpdateDropletBrush(res, "BrandAccentFillBrush", fillStart, isLight ? 0.58 : 0.48, isLight, refThickness: 15.0, refFactor: 2.35);
+        }
+        else
+        {
+            SetOrUpdateGradientBrush(res, "BrandAccentFillBrush", fillStart, fillEnd, profile.GradientAngle);
+        }
         SetOrUpdateGradientBrush(res, "BrandAccentHoverFillBrush", fillHoverStart, fillHoverEnd, profile.GradientAngle);
         SetOrUpdateGradientBrush(res, "BrandAccentPressedFillBrush", fillPressedStart, fillPressedEnd, profile.GradientAngle);
 
@@ -684,11 +695,28 @@ public class ThemeService
         var sliderColor = EnsureReadableButtonFill(sliderRaw, isLight);
         SetOrUpdateSolidBrush(res, "ThemePlayBarSliderBrush", sliderColor);
 
-        // 3. 原地更新底部圆形主播放按钮渐变画刷（支持独立播放键配色或跟随品牌双色流光）
-        bool customPlayBtn = profile.EnableCustomPlayBar && !string.IsNullOrWhiteSpace(profile.PlayButtonColorHex);
-        var playBtnStart = customPlayBtn ? EnsureReadableButtonFill(ParseColorOrDefault(profile.PlayButtonColorHex, accent), isLight) : fillStart;
-        var playBtnEnd = customPlayBtn ? playBtnStart : fillEnd;
-        SetOrUpdateGradientBrush(res, "ThemePlayButtonBrush", playBtnStart, playBtnEnd, profile.GradientAngle);
+        // 3. 原地更新底部圆形主播放按钮画刷（非降级模式使用 DialCallKey 同款青色水滴画刷；降级模式回退青色/主题渐变）
+        bool isLiquidGlassProfile = string.Equals(profile.CardVisualStyle, "LiquidGlass", StringComparison.OrdinalIgnoreCase) ||
+            (string.Equals(profile.BackdropType, "Image", StringComparison.OrdinalIgnoreCase) &&
+             (string.IsNullOrWhiteSpace(profile.CardVisualStyle) ||
+              string.Equals(profile.CardVisualStyle, "Default", StringComparison.OrdinalIgnoreCase)));
+        bool customPlayBtn = !string.IsNullOrWhiteSpace(profile.PlayButtonColorHex) &&
+                             (profile.EnableCustomPlayBar || isLiquidGlassProfile);
+        var cyanPlayColor = Color.FromArgb(0xFF, 0x3D, 0xCB, 0xF5);
+        var playBtnStart = customPlayBtn
+            ? EnsureReadableButtonFill(ParseColorOrDefault(profile.PlayButtonColorHex, accent), isLight)
+            : (isLiquidGlassProfile ? cyanPlayColor : fillStart);
+        var playBtnEnd = customPlayBtn
+            ? playBtnStart
+            : (isLiquidGlassProfile ? cyanPlayColor : fillEnd);
+        if (useDropletButtons)
+        {
+            SetOrUpdateDropletBrush(res, "ThemePlayButtonBrush", playBtnStart, isLight ? 0.60 : 0.50, isLight, refThickness: 18.0, refFactor: 2.40, magnification: 1.04);
+        }
+        else
+        {
+            SetOrUpdateGradientBrush(res, "ThemePlayButtonBrush", playBtnStart, playBtnEnd, profile.GradientAngle);
+        }
         SetOrUpdateGradientBrush(res, "ThemePlayButtonHoverBrush", AdjustLightness(playBtnStart, -0.08), AdjustLightness(playBtnEnd, -0.08), profile.GradientAngle);
         SetOrUpdateGradientBrush(res, "ThemePlayButtonPressedBrush", AdjustLightness(playBtnStart, -0.15), AdjustLightness(playBtnEnd, -0.15), profile.GradientAngle);
     }
@@ -754,19 +782,263 @@ public class ThemeService
     }
 
     /// <summary>
-    /// 构建原生 Windows DWM 合成器级清透水感「液态玻璃 (Liquid Glass)」实时 GPU 画刷（低模糊高通透核心）
+    /// 构建原生 Windows DWM 合成器级 Liquid Glass（液体玻璃）双通道光学画刷
     /// </summary>
-    public static Brush CreateLiquidGlassSurfaceBrush(Color accent, bool isLight, double intensity = 1.0, float blurAmount = 0.45f)
+    public static Brush CreateLiquidGlassSurfaceBrush(
+        Color accent,
+        bool isLight,
+        double intensity = 1.0,
+        LiquidGlassPreset preset = LiquidGlassPreset.FrostedFolder,
+        float? customBlurAmount = null,
+        float? customCenterBlurWeight = null,
+        float? customTintOpacity = null,
+        Color? customTintColor = null,
+        double? customCornerRadiusPx = null)
     {
-        return new LiquidGlassCompositionBrush(accent, isLight, intensity, blurAmount);
+        if (!GlassHub.IsGpuAccelerationEnabled)
+        {
+            Color fallbackCol = customTintColor ?? (isLight
+                ? Color.FromArgb(0xD8, 255, 255, 255)
+                : Color.FromArgb(0xCC, 0x0C, 0x15, 0x24));
+            return new SolidColorBrush(fallbackCol);
+        }
+
+        if (GlassHub.IsDegradedMode || LiquidGlassWinUI.LiquidGlassBrush.LastError != null)
+        {
+            return new LiquidGlassCompositionBrush(accent, isLight, intensity, preset, customBlurAmount, customCenterBlurWeight, customTintOpacity, customTintColor);
+        }
+
+        double safeIntensity = Math.Clamp(intensity, 0.75, 1.25);
+
+        // 高不透明浮层 / 抽屉 / 弹出菜单：强高斯模糊 + 控制着色不透明度防止透字
+        if (customTintOpacity is >= 0.70f)
+        {
+            Color tint = customTintColor ?? (isLight
+                ? Color.FromArgb(255, 0xEC, 0xF4, 0xF9)
+                : Color.FromArgb(255, 0x0A, 0x20, 0x2C));
+            double blur = customBlurAmount.HasValue
+                ? Math.Clamp(customBlurAmount.Value / 14.0, 0.35, 1.85)
+                : 1.45;
+            double modalCr = Math.Clamp(customCornerRadiusPx ?? 16.0, 6.0, 26.0);
+
+            return new LiquidGlassWinUI.LiquidGlassBrush
+            {
+                BlurAmount = blur,
+                BloomAmount = 0.85,
+                RefFactor = 2.20,
+                RefThickness = modalCr,
+                RefDispersion = 1.20,
+                DispersionRange = 0.30,
+                Magnification = 1.0,
+                RefFresnelRange = 52.0,
+                RefFresnelHardness = 0.0,
+                RefFresnelFactor = 26.0,
+                GlareAngle = -135.0,
+                GlareConvergence = 100.0,
+                GlareFactor = 68.0,
+                GlareOppositeFactor = 65.0,
+                GlareHardness = 14.0,
+                GlareRange = 32.0,
+                ShapeRadius = modalCr,
+                ShapeRoundness = 2.0,
+                TintR = tint.R,
+                TintG = tint.G,
+                TintB = tint.B,
+                TintA = Math.Clamp(customTintOpacity.Value, 0.72, 0.90),
+                Exposure = isLight ? 1.02 : 0.88,
+                Brightness = 0.0,
+                Contrast = 1.05,
+                Saturation = 1.10,
+                Vibrance = 0.12
+            };
+        }
+
+        // 次级胶囊与交互按钮：轻量模糊保留背景质感，强化水滴边缘折射
+        if (preset == LiquidGlassPreset.GlassButton)
+        {
+            Color tint = customTintColor ?? (isLight
+                ? Color.FromArgb(255, 255, 255, 255)
+                : Color.FromArgb(255, 0x0A, 0x16, 0x24));
+            double tintAlpha = customTintOpacity.HasValue
+                ? Math.Clamp(customTintOpacity.Value, 0.0, 0.65)
+                : (isLight ? 0.28 : 0.20);
+            double blur = customBlurAmount.HasValue
+                ? Math.Clamp(customBlurAmount.Value / 18.0, 0.0, 1.20)
+                : 0.25;
+
+            return new LiquidGlassWinUI.LiquidGlassBrush
+            {
+                BlurAmount = blur,
+                BloomAmount = 0.15,
+                RefFactor = 2.45,
+                RefThickness = 18.0,
+                RefDispersion = 3.50,
+                DispersionRange = 0.39,
+                Magnification = 1.02,
+                RefFresnelRange = 57.84,
+                RefFresnelHardness = 0.0,
+                RefFresnelFactor = 24.0,
+                GlareAngle = -135.0,
+                GlareConvergence = 100.0,
+                GlareFactor = 84.0,
+                GlareOppositeFactor = 80.0,
+                GlareHardness = 13.0,
+                GlareRange = 36.13,
+                ShapeRadius = 0.85,
+                ShapeRoundness = 2.0,
+                TintR = tint.R,
+                TintG = tint.G,
+                TintB = tint.B,
+                TintA = tintAlpha,
+                Exposure = isLight ? 1.04 : 1.12,
+                Brightness = 0.03,
+                Contrast = 1.08,
+                Saturation = 1.15,
+                Vibrance = 0.18
+            };
+        }
+
+        // 核心大卡片 / 灵动 Dock（FrostedFolder / ClearDock / GlassPanel）：深色用微暗海军蓝保障白字，浅色用亮霜白
+        var created = new LiquidGlassWinUI.LiquidGlassBrush();
+        ApplySurfaceBrushProperties(created, isLight, intensity, preset, customBlurAmount, customTintOpacity, customTintColor, customCornerRadiusPx);
+        return created;
     }
 
     /// <summary>
-    /// 构建「液态玻璃 (Liquid Glass)」无白边透明边框画刷（去除外圈高反差白边，消除圆角阶梯像素与内外沿接缝）
+    /// 原地更新（或按需创建）Liquid Glass 表面画刷，避免拖动 DIY 滑块时重复销毁重建 DWM 着色器管线与引发视觉树重置
     /// </summary>
-    public static Brush CreateLiquidGlassBorderBrush(Color accent, double intensity = 1.0)
+    public static void SetOrUpdateLiquidGlassSurfaceBrush(
+        ResourceDictionary dict,
+        string key,
+        Color accentColor,
+        bool isLight,
+        double intensity = 1.0,
+        LiquidGlassPreset preset = LiquidGlassPreset.FrostedFolder,
+        double customCornerRadiusPx = 0,
+        double? customOpacityPercent = null)
     {
-        return new SolidColorBrush(Color.FromArgb(0, 0, 0, 0));
+        float? customTintOpacity = customOpacityPercent.HasValue
+            ? (float)Math.Clamp(customOpacityPercent.Value / 100.0 * 0.70, 0.0, 0.70)
+            : null;
+        double? cornerPx = customCornerRadiusPx > 0 ? customCornerRadiusPx : null;
+
+        if (!GlassHub.IsGpuAccelerationEnabled)
+        {
+            Color fallbackCol = isLight
+                ? Color.FromArgb(0xD8, 255, 255, 255)
+                : Color.FromArgb(0xCC, 0x0C, 0x15, 0x24);
+            if (customOpacityPercent.HasValue)
+            {
+                byte alpha = (byte)Math.Round(Math.Clamp(customOpacityPercent.Value, 4.0, 95.0) / 100.0 * 255.0);
+                fallbackCol = Color.FromArgb(alpha, fallbackCol.R, fallbackCol.G, fallbackCol.B);
+            }
+            SetOrUpdateSolidBrush(dict, key, fallbackCol);
+            return;
+        }
+
+        if (GlassHub.IsDegradedMode || LiquidGlassWinUI.LiquidGlassBrush.LastError != null)
+        {
+            if (dict.TryGetValue(key, out var existingComp) && existingComp is LiquidGlassCompositionBrush lgComp)
+            {
+                lgComp.UpdateOpticalParameters(accentColor, isLight, intensity, preset, customTintOpacity: customTintOpacity);
+                return;
+            }
+            dict[key] = new LiquidGlassCompositionBrush(accentColor, isLight, intensity, preset, customTintOpacity: customTintOpacity);
+            return;
+        }
+
+        if (dict.TryGetValue(key, out var existing) && existing is LiquidGlassWinUI.LiquidGlassBrush lgb)
+        {
+            ApplySurfaceBrushProperties(lgb, isLight, intensity, preset, customBlurAmount: null, customTintOpacity, customTintColor: null, cornerPx);
+            return;
+        }
+
+        var created = new LiquidGlassWinUI.LiquidGlassBrush();
+        ApplySurfaceBrushProperties(created, isLight, intensity, preset, customBlurAmount: null, customTintOpacity, customTintColor: null, cornerPx);
+        dict[key] = created;
+    }
+
+    private static void ApplySurfaceBrushProperties(
+        LiquidGlassWinUI.LiquidGlassBrush lgb,
+        bool isLight,
+        double intensity,
+        LiquidGlassPreset preset,
+        float? customBlurAmount,
+        float? customTintOpacity,
+        Color? customTintColor,
+        double? customCornerRadiusPx)
+    {
+        double safeIntensity = Math.Clamp(intensity, 0.75, 1.25);
+        bool isDockPreset = preset == LiquidGlassPreset.ClearDock;
+        Color cardTint = customTintColor ?? (isLight
+            ? Color.FromArgb(255, 255, 255, 255)
+            : Color.FromArgb(255, 0x08, 0x10, 0x1C));
+        double baseCardAlpha = isLight ? 0.34 : (isDockPreset ? 0.22 : 0.38);
+        double cardAlpha = customTintOpacity.HasValue
+            ? Math.Clamp(customTintOpacity.Value, 0.0, 0.70)
+            : Math.Clamp(baseCardAlpha * safeIntensity, 0.12, 0.55);
+        double cardBlur = customBlurAmount.HasValue
+            ? Math.Clamp(customBlurAmount.Value / 18.0, 0.15, 1.40)
+            : (isDockPreset ? 0.25 : 0.88);
+        double cardCr = Math.Clamp(customCornerRadiusPx ?? (isDockPreset ? 18.0 : 14.0), 6.0, 26.0);
+
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.BlurAmountProperty, cardBlur);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.BloomAmountProperty, isDockPreset ? 0.15 : 0.35);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.RefFactorProperty, isDockPreset ? 2.85 : 3.15);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.RefThicknessProperty, cardCr);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.RefDispersionProperty, 3.10);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.DispersionRangeProperty, 0.39);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.MagnificationProperty, 1.0);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.RefFresnelRangeProperty, 56.0);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.RefFresnelHardnessProperty, 0.0);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.RefFresnelFactorProperty, 28.0);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.GlareAngleProperty, -135.0);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.GlareConvergenceProperty, 100.0);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.GlareFactorProperty, isDockPreset ? 82.0 : 76.0);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.GlareOppositeFactorProperty, isDockPreset ? 78.0 : 72.0);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.GlareHardnessProperty, 13.0);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.GlareRangeProperty, 35.0);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.ShapeRadiusProperty, cardCr);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.ShapeRoundnessProperty, 2.0);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.TintRProperty, cardTint.R);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.TintGProperty, cardTint.G);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.TintBProperty, cardTint.B);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.TintAProperty, cardAlpha);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.ExposureProperty, isLight ? 1.04 : 1.02);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.BrightnessProperty, 0.02);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.ContrastProperty, 1.06);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.SaturationProperty, 1.15);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.VibranceProperty, 0.18);
+    }
+
+    /// <summary>
+    /// 仅当依赖属性发生实际数值变化时才写入 LiquidGlassBrush，避免高频拖动滑块时重复向 DWM 推送无意义标量
+    /// </summary>
+    private static void SetLiquidGlassBrushPropertyIfChanged(
+        LiquidGlassWinUI.LiquidGlassBrush brush,
+        DependencyProperty dp,
+        double nextValue)
+    {
+        if (brush.GetValue(dp) is not double current || Math.Abs(current - nextValue) > 0.0005)
+        {
+            brush.SetValue(dp, nextValue);
+        }
+    }
+
+    /// <summary>
+    /// 构建「液态玻璃 (Liquid Glass)」中性镜面高光边界画刷（第 4 层精细上/下反光边缘，摒弃廉价高饱和霓虹粗框）
+    /// </summary>
+    public static Brush CreateLiquidGlassBorderBrush(
+        Color accent,
+        double intensity = 1.0,
+        bool isLight = false,
+        LiquidGlassPreset preset = LiquidGlassPreset.FrostedFolder)
+    {
+        _ = accent;
+        var kind = LiquidGlassCompositionBrush.MapKind(preset);
+        var material = LiquidGlass.WinUI.Materials.LiquidGlassMaterialPreset.GetPreset(kind, isLight);
+        double boost = Math.Clamp(intensity, 0.75, 1.35);
+        return LiquidGlass.WinUI.Rendering.GlassHighlightRenderer.CreateSpecularBorderBrush(material, boost);
     }
 
     /// <summary>
@@ -861,6 +1133,65 @@ public class ThemeService
         return lgb;
     }
 
+    public static void SetOrUpdateDropletBrush(
+        ResourceDictionary dict,
+        string key,
+        Color tint,
+        double tintA,
+        bool isLight,
+        double refThickness = 22.0,
+        double refFactor = 2.45,
+        double magnification = 1.0)
+    {
+        if (dict.TryGetValue(key, out var existing) && existing is LiquidGlassWinUI.LiquidGlassBrush lgb)
+        {
+            ApplyDropletBrushProperties(lgb, tint, tintA, isLight, refThickness, refFactor, magnification);
+            return;
+        }
+
+        var created = new LiquidGlassWinUI.LiquidGlassBrush();
+        ApplyDropletBrushProperties(created, tint, tintA, isLight, refThickness, refFactor, magnification);
+        dict[key] = created;
+    }
+
+    private static void ApplyDropletBrushProperties(
+        LiquidGlassWinUI.LiquidGlassBrush lgb,
+        Color tint,
+        double tintA,
+        bool isLight,
+        double refThickness,
+        double refFactor,
+        double magnification)
+    {
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.BlurAmountProperty, 0.0);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.BloomAmountProperty, 0.0);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.RefFactorProperty, refFactor);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.RefThicknessProperty, refThickness);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.RefDispersionProperty, 3.50);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.DispersionRangeProperty, 0.39);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.MagnificationProperty, magnification);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.RefFresnelRangeProperty, 57.84);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.RefFresnelHardnessProperty, 0.0);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.RefFresnelFactorProperty, 24.0);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.GlareAngleProperty, -135.0);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.GlareConvergenceProperty, 100.0);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.GlareFactorProperty, 84.0);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.GlareOppositeFactorProperty, 80.0);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.GlareHardnessProperty, 13.0);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.GlareRangeProperty, 36.13);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.ShapeRadiusProperty, 1.0);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.ShapeRoundnessProperty, 2.0);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.TintRProperty, tint.R);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.TintGProperty, tint.G);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.TintBProperty, tint.B);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.TintAProperty, tintA);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.ExposureProperty, isLight ? 1.06 : 1.16);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.BrightnessProperty, 0.03);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.ContrastProperty, 1.08);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.SaturationProperty, 1.15);
+        SetLiquidGlassBrushPropertyIfChanged(lgb, LiquidGlassWinUI.LiquidGlassBrush.VibranceProperty, 0.18);
+    }
+
     private static void SetOrUpdateGradientBrush(ResourceDictionary dict, string key, Color c1, Color c2, double angle)
     {
         var (start, end) = GetGradientEndpoints(angle);
@@ -891,7 +1222,10 @@ public class ThemeService
         {
             try
             {
-                brush.Color = color;
+                if (brush.Color != color)
+                {
+                    brush.Color = color;
+                }
                 return;
             }
             catch
@@ -1186,6 +1520,39 @@ public class ThemeService
     // ==================== 主题市场服务（官方 GitHub 仓库 + 本地创意精选 + 外部订阅源合并） ====================
 
     /// <summary>
+    /// 同步瞬时返回当前已缓存远程条目与内置精选的合并列表（用于主题市场零等待首屏展示）
+    /// </summary>
+    public List<MarketplaceThemeItem> GetInstantMarketplaceItems()
+    {
+        return MergeMarketplaceItems(_cachedRemoteMarketItems);
+    }
+
+    private static List<MarketplaceThemeItem> MergeMarketplaceItems(List<MarketplaceThemeItem>? cachedRemote)
+    {
+        var result = new List<MarketplaceThemeItem>();
+        if (cachedRemote != null)
+        {
+            foreach (var remoteItem in cachedRemote)
+            {
+                if (!result.Any(x => string.Equals(x.Id, remoteItem.Id, StringComparison.OrdinalIgnoreCase)))
+                {
+                    result.Add(remoteItem);
+                }
+            }
+        }
+
+        foreach (var curated in ThemeMarketplaceCatalog.GetCuratedMarketItems())
+        {
+            if (!result.Any(x => string.Equals(x.Id, curated.Id, StringComparison.OrdinalIgnoreCase)))
+            {
+                result.Add(curated);
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
     /// 获取主题市场列表（优先展示内置官方主题仓库与外部订阅源拉取的主题，并合并内置创意精选）
     /// </summary>
     public async Task<List<MarketplaceThemeItem>> GetMarketplaceItemsAsync(bool forceRefreshRemote = false)
@@ -1229,27 +1596,7 @@ public class ThemeService
             LastRemoteRefreshError = null;
         }
 
-        var result = new List<MarketplaceThemeItem>();
-        if (_cachedRemoteMarketItems != null)
-        {
-            foreach (var remoteItem in _cachedRemoteMarketItems)
-            {
-                if (!result.Any(x => string.Equals(x.Id, remoteItem.Id, StringComparison.OrdinalIgnoreCase)))
-                {
-                    result.Add(remoteItem);
-                }
-            }
-        }
-
-        foreach (var curated in ThemeMarketplaceCatalog.GetCuratedMarketItems())
-        {
-            if (!result.Any(x => string.Equals(x.Id, curated.Id, StringComparison.OrdinalIgnoreCase)))
-            {
-                result.Add(curated);
-            }
-        }
-
-        return result;
+        return MergeMarketplaceItems(_cachedRemoteMarketItems);
     }
 
     private static bool ShouldUseGitHubMirrors(string url)

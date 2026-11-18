@@ -59,12 +59,15 @@ public partial class App : Application
         try
         {
             Directory.CreateDirectory(WebView2DataDirectory);
+            bool enableGpu = Services?.GetService<ConfigService>()?.Settings.EnableGpuAcceleration ?? true;
+            string browserArgs = "--disable-background-timer-throttling --disable-renderer-backgrounding" +
+                                 (enableGpu ? string.Empty : " --disable-gpu --disable-gpu-compositing");
             _sharedWebViewEnv ??= await CoreWebView2Environment.CreateWithOptionsAsync(
                 string.Empty,
                 WebView2DataDirectory,
                 new CoreWebView2EnvironmentOptions
                 {
-                    AdditionalBrowserArguments = "--disable-background-timer-throttling --disable-renderer-backgrounding"
+                    AdditionalBrowserArguments = browserArgs
                 });
             return _sharedWebViewEnv;
         }

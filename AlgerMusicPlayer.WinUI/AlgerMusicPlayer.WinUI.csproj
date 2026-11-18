@@ -6,9 +6,9 @@
     <RootNamespace>AlgerMusicPlayer.WinUI</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\icon.ico</ApplicationIcon>
-    <Platforms>x64;ARM64</Platforms>
+    <Platforms>x64</Platforms>
     <PlatformTarget>x64</PlatformTarget>
-    <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <UseWinUI>true</UseWinUI>
     <EnableCoreMrtTooling>false</EnableCoreMrtTooling>
@@ -22,9 +22,10 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.6.250205002" />
-    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.1742" GeneratePathProperty="true" />
-    <PackageReference Include="Microsoft.Graphics.Win2D" Version="1.3.1" />
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.2.0" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2270" GeneratePathProperty="true" />
+    <PackageReference Include="Microsoft.Graphics.Win2D" Version="1.4.0" />
+    <ProjectReference Include="..\LiquidGlass.WinUI\LiquidGlass.WinUI.csproj" />
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="9.0.2" />
     <PackageReference Include="NAudio" Version="2.2.1" />
@@ -33,6 +34,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Content Include="..\LiquidGlass.WinUI\Native\CustomEffectRuntimeNative.dll" Link="CustomEffectRuntimeNative.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" />
     <Content Include="Assets\icon.ico" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\icon.png" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\Platforms\*.png" CopyToOutputDirectory="PreserveNewest" />
@@ -44,35 +46,53 @@
   <!-- 在未安装完整 Visual Studio UWP 组件的纯 .NET CLI 环境下，使用 Windows SDK BuildTools 的 makepri.exe 自动合并生成 resources.pri -->
   <Target Name="GenerateWinUIPriFile" AfterTargets="Build">
     <PropertyGroup>
-      <MakePriExe>$(PkgMicrosoft_Windows_SDK_BuildTools)\bin\10.0.26100.0\x64\makepri.exe</MakePriExe>
+      <MakePriExe Condition="Exists('$(PkgMicrosoft_Windows_SDK_BuildTools)\bin\10.0.28000.0\x64\makepri.exe')">$(PkgMicrosoft_Windows_SDK_BuildTools)\bin\10.0.28000.0\x64\makepri.exe</MakePriExe>
+      <MakePriExe Condition="'$(MakePriExe)' == '' And Exists('$(PkgMicrosoft_Windows_SDK_BuildTools)\bin\10.0.26100.0\x64\makepri.exe')">$(PkgMicrosoft_Windows_SDK_BuildTools)\bin\10.0.26100.0\x64\makepri.exe</MakePriExe>
       <PriStagingDir>$(IntermediateOutputPath)PriStaging</PriStagingDir>
       <PriConfigXml>$(IntermediateOutputPath)priconfig.xml</PriConfigXml>
     </PropertyGroup>
+    <ItemGroup Condition="'$(MakePriExe)' == ''">
+      <_CandidateMakePri Include="$(PkgMicrosoft_Windows_SDK_BuildTools)\bin\*\x64\makepri.exe" />
+    </ItemGroup>
+    <PropertyGroup Condition="'$(MakePriExe)' == '' And '@(_CandidateMakePri)' != ''">
+      <_CandidateMakePriRaw>@(_CandidateMakePri)</_CandidateMakePriRaw>
+      <MakePriExe>$(_CandidateMakePriRaw.Split(';')[0])</MakePriExe>
+    </PropertyGroup>
+    <Error Condition="!Exists('$(MakePriExe)')" Text="makepri.exe 未找到，请检查 Microsoft.Windows.SDK.BuildTools 路径: $(PkgMicrosoft_Windows_SDK_BuildTools)" />
     <RemoveDir Directories="$(PriStagingDir)" />
-    <MakeDir Directories="$(PriStagingDir);$(PriStagingDir)\Views;$(PriStagingDir)\Assets\Platforms" />
+    <MakeDir Directories="$(PriStagingDir);$(PriStagingDir)\Views;$(PriStagingDir)\Themes;$(PriStagingDir)\Assets\Platforms;$(PriStagingDir)\LiquidGlass.WinUI\Themes" />
     <Copy SourceFiles="$(TargetDir)Microsoft.UI.Xaml.Controls.pri;$(TargetDir)App.xbf" DestinationFolder="$(PriStagingDir)" SkipUnchangedFiles="true" />
     <ItemGroup>
       <_ViewXbfFiles Include="$(TargetDir)Views\*.xbf" />
+      <_ThemeXbfFiles Include="$(TargetDir)Themes\*.xbf" />
+      <_LiquidGlassXbfFiles Include="$(TargetDir)LiquidGlass.WinUI\Themes\*.xbf" />
       <_PlatformAssetFiles Include="$(ProjectDir)Assets\Platforms\*.png" />
     </ItemGroup>
     <Copy SourceFiles="@(_ViewXbfFiles)" DestinationFolder="$(PriStagingDir)\Views" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(_ThemeXbfFiles)" DestinationFolder="$(PriStagingDir)\Themes" SkipUnchangedFiles="true" Condition="'@(_ThemeXbfFiles)' != ''" />
+    <Copy SourceFiles="@(_LiquidGlassXbfFiles)" DestinationFolder="$(PriStagingDir)\LiquidGlass.WinUI\Themes" SkipUnchangedFiles="true" Condition="'@(_LiquidGlassXbfFiles)' != ''" />
     <Copy SourceFiles="@(_PlatformAssetFiles)" DestinationFolder="$(PriStagingDir)\Assets\Platforms" SkipUnchangedFiles="true" />
-    <Exec Command="&quot;$(MakePriExe)&quot; createconfig /cf &quot;$(PriConfigXml)&quot; /dq zh-CN /o /pv 10.0.0" Condition="Exists('$(MakePriExe)')" />
-    <Exec Command="&quot;$(MakePriExe)&quot; new /pr &quot;$(PriStagingDir)&quot; /cf &quot;$(PriConfigXml)&quot; /of &quot;$(TargetDir)resources.pri&quot; /o" Condition="Exists('$(MakePriExe)')" />
+    <Exec Command="&quot;$(MakePriExe)&quot; createconfig /cf &quot;$(PriConfigXml)&quot; /dq zh-CN /o /pv 10.0.0" />
+    <Exec Command="&quot;$(MakePriExe)&quot; new /pr &quot;$(PriStagingDir)&quot; /cf &quot;$(PriConfigXml)&quot; /of &quot;$(TargetDir)resources.pri&quot; /o" />
   </Target>
 
-  <!-- Publish 时同步复制合并后的 resources.pri 与 XBF 视图字节码到发布目录 -->
+  <!-- Publish 时同步复制合并后的 resources.pri、XBF 视图字节码与原生效应 DLL 到发布目录 -->
   <Target Name="CopyWinUIPriToPublishDir" AfterTargets="Publish" DependsOnTargets="GenerateWinUIPriFile">
-    <MakeDir Directories="$(PublishDir)Views;$(PublishDir)Assets;$(PublishDir)Assets\Platforms;$(PublishDir)mpv\win-x64" />
+    <MakeDir Directories="$(PublishDir)Views;$(PublishDir)Themes;$(PublishDir)LiquidGlass.WinUI\Themes;$(PublishDir)Assets;$(PublishDir)Assets\Platforms;$(PublishDir)mpv\win-x64" />
     <ItemGroup>
       <_PublishViewXbfFiles Include="$(TargetDir)Views\*.xbf" />
+      <_PublishThemeXbfFiles Include="$(TargetDir)Themes\*.xbf" />
+      <_PublishLiquidGlassXbfFiles Include="$(TargetDir)LiquidGlass.WinUI\Themes\*.xbf" />
       <_PublishAssetFiles Include="$(ProjectDir)Assets\*.*" />
       <_PublishPlatformAssetFiles Include="$(ProjectDir)Assets\Platforms\*.png" />
       <_PublishMpvFiles Include="$(ProjectDir)mpv\win-x64\*.*" />
     </ItemGroup>
     <Copy SourceFiles="$(TargetDir)resources.pri" DestinationFolder="$(PublishDir)" Condition="Exists('$(TargetDir)resources.pri')" />
     <Copy SourceFiles="$(TargetDir)App.xbf" DestinationFolder="$(PublishDir)" Condition="Exists('$(TargetDir)App.xbf')" />
+    <Copy SourceFiles="$(TargetDir)CustomEffectRuntimeNative.dll" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" Condition="Exists('$(TargetDir)CustomEffectRuntimeNative.dll') And !Exists('$(PublishDir)CustomEffectRuntimeNative.dll')" />
     <Copy SourceFiles="@(_PublishViewXbfFiles)" DestinationFolder="$(PublishDir)Views" />
+    <Copy SourceFiles="@(_PublishThemeXbfFiles)" DestinationFolder="$(PublishDir)Themes" SkipUnchangedFiles="true" Condition="'@(_PublishThemeXbfFiles)' != ''" />
+    <Copy SourceFiles="@(_PublishLiquidGlassXbfFiles)" DestinationFolder="$(PublishDir)LiquidGlass.WinUI\Themes" SkipUnchangedFiles="true" Condition="'@(_PublishLiquidGlassXbfFiles)' != ''" />
     <Copy SourceFiles="@(_PublishAssetFiles)" DestinationFolder="$(PublishDir)Assets" SkipUnchangedFiles="true" />
     <Copy SourceFiles="@(_PublishPlatformAssetFiles)" DestinationFolder="$(PublishDir)Assets\Platforms" SkipUnchangedFiles="true" />
     <Copy SourceFiles="@(_PublishMpvFiles)" DestinationFolder="$(PublishDir)mpv\win-x64" SkipUnchangedFiles="true" />
