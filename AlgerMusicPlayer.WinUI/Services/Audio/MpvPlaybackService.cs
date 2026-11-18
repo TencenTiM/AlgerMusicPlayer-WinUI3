@@ -268,10 +268,17 @@ public sealed class MpvPlaybackService : IDisposable
         StateChanged?.Invoke();
 
         await EnsureStartedAsync(ct);
-        await SetPropertyAsync("volume", Math.Round(request.Volume * 100.0, 2));
-        await SetPropertyAsync("speed", Math.Round(request.PlaybackRate, 2));
-        await SetPropertyAsync("referrer", request.HttpReferrer ?? string.Empty);
-        await ApplyEqAsync(request.EqEnabled, request.EqBandGains);
+        string startProp = request.SeekTimeSeconds > 0
+            ? request.SeekTimeSeconds.ToString("F2", global::System.Globalization.CultureInfo.InvariantCulture)
+            : "none";
+        // 并发下发播放参数并在 loadfile 前写入 start，避免流先从 00:00 缓冲再二次 Seek
+        await Task.WhenAll(
+            SetPropertyAsync("volume", Math.Round(request.Volume * 100.0, 2)),
+            SetPropertyAsync("speed", Math.Round(request.PlaybackRate, 2)),
+            SetPropertyAsync("referrer", request.HttpReferrer ?? string.Empty),
+            SetPropertyAsync("start", startProp),
+            ApplyEqAsync(request.EqEnabled, request.EqBandGains)
+        );
 
         var fileLoadedTask = WaitForEventAsync("file-loaded", LoadTimeoutMs, sequence, ct);
         try
@@ -282,18 +289,31 @@ public sealed class MpvPlaybackService : IDisposable
         catch (Exception ex)
         {
             CancelEventWaiters("file-loaded", ex, sequence);
+            if (request.SeekTimeSeconds > 0)
+            {
+                _ = SetPropertyAsync("start", "none");
+            }
             throw;
         }
 
         if (sequence != _loadSequence || ct.IsCancellationRequested)
         {
+            if (request.SeekTimeSeconds > 0)
+            {
+                _ = SetPropertyAsync("start", "none");
+            }
             throw new OperationCanceledException("播放请求已被新的歌曲替代");
         }
 
         if (request.SeekTimeSeconds > 0)
         {
-            await SendCommandAsync(["seek", request.SeekTimeSeconds, "absolute+exact"]);
-            _currentTimeSeconds = request.SeekTimeSeconds;
+            _ = SetPropertyAsync("start", "none");
+            // 兜底：若个别封装格式未响应 start 参数，再补发一次精确跳转
+            if (_currentTimeSeconds < request.SeekTimeSeconds - 2.0)
+            {
+                await SendCommandAsync(["seek", request.SeekTimeSeconds, "absolute+exact"]);
+                _currentTimeSeconds = request.SeekTimeSeconds;
+            }
         }
 
         await SetPropertyAsync("pause", !request.ShouldPlay);

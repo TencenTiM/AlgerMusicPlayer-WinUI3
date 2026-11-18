@@ -384,7 +384,7 @@ public class AudioPlayerService : IDisposable
     /// <summary>
     /// 播放指定歌曲并可选替换当前播放队列
     /// </summary>
-    public async Task PlaySongAsync(SongItem song, IEnumerable<SongItem>? newQueue = null, string? forcePlatform = null, TimeSpan? initialSeekPosition = null, string? preResolvedUrl = null)
+    public async Task PlaySongAsync(SongItem song, IEnumerable<SongItem>? newQueue = null, string? forcePlatform = null, TimeSpan? initialSeekPosition = null, string? preResolvedUrl = null, bool allowFastStart = true)
     {
         if (song == null) return;
 
@@ -451,7 +451,7 @@ public class AudioPlayerService : IDisposable
             if (!song.IsLocalSong && string.IsNullOrWhiteSpace(preResolvedUrl))
             {
                 bool hasValidPrefetch = false;
-                if (string.IsNullOrWhiteSpace(effectiveForcePlatform) && initialSeekPosition == null)
+                if (string.IsNullOrWhiteSpace(effectiveForcePlatform) && allowFastStart)
                 {
                     lock (_prefetchLock)
                     {
@@ -505,7 +505,7 @@ public class AudioPlayerService : IDisposable
 
         try
         {
-            var resolvedSource = preResolvedUrl ?? await ResolvePlayableSourceAsync(song, effectiveForcePlatform, ct, isPrefetch: false, allowFastStart: initialSeekPosition == null);
+            var resolvedSource = preResolvedUrl ?? await ResolvePlayableSourceAsync(song, effectiveForcePlatform, ct, isPrefetch: false, allowFastStart: allowFastStart);
             if (sessionId != _currentPlaySessionId || ct.IsCancellationRequested) return;
 
             if (string.IsNullOrWhiteSpace(resolvedSource))
@@ -722,7 +722,7 @@ public class AudioPlayerService : IDisposable
             kbps: kbps,
             sizeBytes: _unblockService.LastResolvedSizeBytes);
         ApplyResolvedPlaybackInfo(song, platform, unblockUrl, badge, isPrefetch: false);
-        await PlaySongAsync(song, initialSeekPosition: Position, preResolvedUrl: unblockUrl);
+        await PlaySongAsync(song, initialSeekPosition: Position, preResolvedUrl: unblockUrl, allowFastStart: false);
     }
 
     /// <summary>
@@ -794,7 +794,8 @@ public class AudioPlayerService : IDisposable
         await PlaySongAsync(
             CurrentSong,
             forcePlatform: normalizedKey,
-            initialSeekPosition: savedPos.TotalSeconds > 1 ? savedPos : null);
+            initialSeekPosition: savedPos.TotalSeconds > 1 ? savedPos : null,
+            allowFastStart: false);
     }
 
     /// <summary>
@@ -829,7 +830,7 @@ public class AudioPlayerService : IDisposable
         StatusMessage?.Invoke($"正在切换《{CurrentSong.Name}》音质至 {displayName}...");
         var currentPlat = FormatPlatformBadgeDisplay(CurrentSong.ResolvedPlatform ?? CurrentSong.Source);
         PlaybackBadgesChanged?.Invoke(currentPlat, "切换中...");
-        await PlaySongAsync(CurrentSong, forcePlatform: _activeQueueForcePlatform, initialSeekPosition: savedPos.TotalSeconds > 1 ? savedPos : null);
+        await PlaySongAsync(CurrentSong, forcePlatform: _activeQueueForcePlatform, initialSeekPosition: savedPos.TotalSeconds > 1 ? savedPos : null, allowFastStart: false);
         var actualBadge = GetEffectiveQualityBadge(CurrentSong);
         QualityBadgeChanged?.Invoke(actualBadge);
         StatusMessage?.Invoke($"已切换音质：{displayName}（当前音源实际输出：{actualBadge}）");
@@ -3097,6 +3098,42 @@ public class AudioPlayerService : IDisposable
         if (_configService.Settings.AutoPlay)
         {
             await PlaySongAsync(song, initialSeekPosition: savedPos > TimeSpan.Zero ? savedPos : null);
+        }
+        else if (!song.IsLocalSong)
+        {
+            _ = PrefetchRestoredSongAsync(song);
+        }
+    }
+
+    /// <summary>
+    /// 启动后在后台静默预解析上次保留的在线歌曲播放地址，确保用户手动点击继续播放时秒开
+    /// </summary>
+    private async Task PrefetchRestoredSongAsync(SongItem song)
+    {
+        try
+        {
+            lock (_prefetchLock)
+            {
+                if (_prefetchedSources.TryGetValue(song.Id, out var existing) &&
+                    DateTime.UtcNow - existing.Time < PrefetchTtl)
+                {
+                    return;
+                }
+            }
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(12));
+            var url = await ResolvePlayableSourceAsync(song, _activeQueueForcePlatform, cts.Token, isPrefetch: true, allowFastStart: true);
+            if (string.IsNullOrWhiteSpace(url) || cts.IsCancellationRequested) return;
+            if (CurrentSong?.Id != song.Id || IsPlaying || IsBuffering) return;
+
+            lock (_prefetchLock)
+            {
+                _prefetchedSources[song.Id] = (url, DateTime.UtcNow);
+            }
+        }
+        catch
+        {
+            // 后台预解析失败静默忽略，实际点击播放时会正常重新解析
         }
     }
 
